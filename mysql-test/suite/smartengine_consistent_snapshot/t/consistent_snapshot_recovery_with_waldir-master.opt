@@ -1,0 +1,4 @@
+--initialize=--objectstore-region=$MYSQL_TMP_DIR
+--initialize=--innodb_log_group_home_dir=$MYSQL_TMP_DIR
+--initialize=--smartengine_data_dir=$MYSQL_TMP_DIR/smartengine_sst
+--initialize=--smartengine_wal_dir=$MYSQL_TMP_DIR/smartengine_wal

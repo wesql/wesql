@@ -1682,16 +1682,81 @@ bool Consistent_archive::archive_smartengine_wals_and_metas() {
              err_msg.c_str());
       return true;
     }
+
+    std::string se_snapshot_meta_dir;
+    se_snapshot_meta_dir.assign(m_se_backup_keyid);
+    se_snapshot_meta_dir.append(CONSISTENT_SE_ARCHIVE_META_SUBDIR);
+    se_snapshot_meta_dir.append(FN_DIRSEP);
+    ss = snapshot_objstore->put_object(
+        std::string_view(opt_objstore_bucket),
+        std::string_view(se_snapshot_meta_dir), std::string_view(""));
+    if (!ss.is_succ()) {
+      err_msg.assign(
+          "persistent smartengine archive meta dir to object store failed: ");
+      err_msg.append("key=");
+      err_msg.append(se_snapshot_meta_dir);
+      err_msg.append(" error=");
+      err_msg.append(ss.error_message());
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_SMARTENGINE_LOG,
+             err_msg.c_str());
+      return true;
+    }
+    
+    std::string se_snapshot_wal_dir;
+    se_snapshot_wal_dir.assign(m_se_backup_keyid);
+    se_snapshot_wal_dir.append(CONSISTENT_SE_ARCHIVE_WAL_SUBDIR);
+    se_snapshot_wal_dir.append(FN_DIRSEP);
+    ss = snapshot_objstore->put_object(
+        std::string_view(opt_objstore_bucket),
+        std::string_view(se_snapshot_wal_dir), std::string_view(""));
+    if (!ss.is_succ()) {
+      err_msg.assign(
+          "persistent smartengine archive wal dir to object store failed: ");
+      err_msg.append("key=");
+      err_msg.append(se_snapshot_wal_dir);
+      err_msg.append(" error=");
+      err_msg.append(ss.error_message());
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_SMARTENGINE_LOG,
+             err_msg.c_str());
+      return true;
+    }
   } else {
-    if (my_mkdir(m_se_snapshot_dir, 0777, MYF(0)) < 0) {
+    std::string se_snapshot_wal_dir;
+    std::string se_snapshot_meta_dir;
+    char se_snapshot[FN_REFLEN + 1] = {0};
+    strmake(se_snapshot, m_se_snapshot_dir, sizeof(se_snapshot) - 1);
+    convert_dirname(se_snapshot, se_snapshot, NullS);
+
+    if (my_mkdir(se_snapshot, 0777, MYF(0)) < 0) {
       err_msg.assign("Failed to create smartengine archive local directory: ");
-      err_msg.append(m_se_snapshot_dir);
+      err_msg.append(se_snapshot);
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_SMARTENGINE_LOG,
+             err_msg.c_str());
+      return true;
+    }
+
+    se_snapshot_wal_dir.assign(se_snapshot);
+    se_snapshot_wal_dir.append(CONSISTENT_SE_ARCHIVE_WAL_SUBDIR);
+    if (my_mkdir(se_snapshot_wal_dir.c_str(), 0777, MYF(0)) < 0) {
+      err_msg.assign(
+          "Failed to create smartengine archive wal local directory: ");
+      err_msg.append(se_snapshot_wal_dir);
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_SMARTENGINE_LOG,
+             err_msg.c_str());
+      return true;
+    }
+    se_snapshot_meta_dir.assign(se_snapshot);
+    se_snapshot_meta_dir.append(CONSISTENT_SE_ARCHIVE_META_SUBDIR);
+    if (my_mkdir(se_snapshot_meta_dir.c_str(), 0777, MYF(0)) < 0) {
+      err_msg.assign(
+          "Failed to create smartengine archive meta local directory: ");
+      err_msg.append(se_snapshot_meta_dir);
       LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_SMARTENGINE_LOG,
              err_msg.c_str());
       return true;
     }
     err_msg.assign("local copy smartengine backup begin: ");
-    err_msg.append(m_se_snapshot_dir);
+    err_msg.append(se_snapshot);
     LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_SMARTENGINE_LOG,
            err_msg.c_str());
   }
@@ -1713,7 +1778,17 @@ bool Consistent_archive::archive_smartengine_wals_and_metas() {
   for (uint i = 0; i < dir_info->number_off_files; i++) {
     FILEINFO *file = dir_info->dir_entry + i;
     char ds_source[FN_REFLEN + 1] = {0};
-    char ds_destination[FN_REFLEN + 1] = {0};
+    std::string se_destination;
+    std::string se_wal_keyid;
+    std::string se_meta_keyid;
+    // wal_key = prefix/wal/
+    se_wal_keyid.assign(m_se_backup_keyid);
+    se_wal_keyid.append(CONSISTENT_SE_ARCHIVE_WAL_SUBDIR);
+    se_wal_keyid.append(FN_DIRSEP);
+    // meta_key = prefix/meta/
+    se_meta_keyid.assign(m_se_backup_keyid);
+    se_meta_keyid.append(CONSISTENT_SE_ARCHIVE_META_SUBDIR);
+    se_meta_keyid.append(FN_DIRSEP);
 
     // skip . and .. directories
     if (0 == strcmp(file->name, ".") || 0 == strcmp(file->name, "..")) {
@@ -1734,8 +1809,11 @@ bool Consistent_archive::archive_smartengine_wals_and_metas() {
     // Directly persistent file to object store, not tar.
     if (m_se_tar_compression_mode == CONSISTENT_SNAPSHOT_NO_TAR) {
       std::string se_keyid;
-      // key = prefix + se_backup_name + "/"
-      se_keyid.assign(m_se_backup_keyid);
+      if (file_has_suffix(MYSQL_SE_WAL_FILE_SUFFIX, file->name)) {
+        se_keyid.assign(se_wal_keyid);
+      } else {
+        se_keyid.assign(se_meta_keyid);
+      }
       se_keyid.append(file->name);
 
       objstore::Status ss = snapshot_objstore->put_object_from_file(
@@ -1759,20 +1837,32 @@ bool Consistent_archive::archive_smartengine_wals_and_metas() {
         return true;
       }
     } else {
+      char ds_destination[FN_REFLEN + 1] = {0};
       // If tar smartengine snapshot need or persistent to local.
-      strmake(ds_destination, m_se_snapshot_dir,
-              sizeof(ds_destination) - strlen(file->name) - 1);
-      strmake(convert_dirname(ds_destination, ds_destination, NullS),
-              file->name, strlen(file->name));
-      DBUG_PRINT("info",
-                 ("Copying file: %s to local %s", ds_source, ds_destination));
+      strmake(ds_destination, m_se_snapshot_dir, sizeof(ds_destination) - 1);
+      convert_dirname(ds_destination, ds_destination, NullS);
 
-      int ret = my_copy(ds_source, ds_destination, MYF(MY_HOLD_ORIGINAL_MODES));
+      if (file_has_suffix(MYSQL_SE_WAL_FILE_SUFFIX, file->name)) {
+        se_destination.assign(ds_destination);
+        se_destination.append(CONSISTENT_SE_ARCHIVE_WAL_SUBDIR);
+        se_destination.append(FN_DIRSEP);
+      } else {
+        se_destination.assign(ds_destination);
+        se_destination.append(CONSISTENT_SE_ARCHIVE_META_SUBDIR);
+        se_destination.append(FN_DIRSEP);
+      }
+      se_destination.append(file->name);
+
+      DBUG_PRINT("info", ("Copying file: %s to local %s", ds_source,
+                          se_destination.c_str()));
+
+      int ret = my_copy(ds_source, se_destination.c_str(),
+                        MYF(MY_HOLD_ORIGINAL_MODES));
       if (ret) {
         err_msg.assign("local copy smartengine file failed: ");
         err_msg.append(ds_source);
         err_msg.append(" to ");
-        err_msg.append(ds_destination);
+        err_msg.append(se_destination);
         LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_SMARTENGINE_LOG,
                err_msg.c_str());
         my_dirend(dir_info);

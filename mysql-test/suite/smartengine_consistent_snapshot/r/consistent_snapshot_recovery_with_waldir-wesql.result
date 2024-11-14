@@ -1,0 +1,38 @@
+# Wait for at least 1 snapshots to be generated 
+CREATE DATABASE db1;
+CREATE TABLE t1(c1 int) ENGINE=SMARTENGINE ;
+INSERT INTO t1 values(1);
+INSERT INTO t1 values(2);
+INSERT INTO t1 values(3);
+INSERT INTO t1 values(4);
+SELECT * FROM t1;
+c1
+1
+2
+3
+4
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `c1` int DEFAULT NULL
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+# Wait for at least 1 snapshots to be generated 
+# Crash
+set debug = 'd, crash_commit_before_log';
+INSERT INTO t1 values(5);
+ERROR HY000: Lost connection to MySQL server during query
+# Force rmdir datadir for recovery test
+# Force rmdir innodb redo dir for recovery test
+# Force rmdir smartengine wal dir for recovery test
+# Force rmdir smartengine data dir for recovery test
+# Create an empty data directory...
+# Recovery start from object store.
+# restart
+SELECT * FROM t1;
+c1
+1
+2
+3
+4
+DROP TABLE t1;
+DROP DATABASE db1;

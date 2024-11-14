@@ -1,0 +1,54 @@
+#
+# Test for consistent snapshot recovery from object store
+#
+
+--echo # Wait for at least 1 snapshots to be generated 
+let $wait_condition= SELECT count(*) >= 1 FROM INFORMATION_SCHEMA.SNAPSHOT_PERSISTENT_SNAPSHOT_INDEX;
+--source include/wait_condition_or_abort.inc
+
+CREATE DATABASE db1;
+CREATE TABLE t1(c1 int) ENGINE=SMARTENGINE ;
+INSERT INTO t1 values(1);
+INSERT INTO t1 values(2);
+INSERT INTO t1 values(3);
+INSERT INTO t1 values(4);
+SELECT * FROM t1;
+SHOW CREATE TABLE t1;
+
+--echo # Wait for at least 1 snapshots to be generated 
+let $wait_condition= SELECT count(*) >= 2 FROM INFORMATION_SCHEMA.SNAPSHOT_PERSISTENT_SNAPSHOT_INDEX;
+--source include/wait_condition_or_abort.inc
+
+--let $MYSQLD_DATADIR=`select @@datadir`
+--let $MYSQLD_INNODB_REDO_DIR=`select @@innodb_log_group_home_dir`
+--let $MYSQLD_SE_WAL_DIR=`select @@smartengine_wal_dir`
+--let $MYSQLD_SE_DATA_DIR=`select @@smartengine_data_dir`
+--let $region = `select @@objectstore_region`
+
+--echo # Crash
+set debug = 'd, crash_commit_before_log';
+--exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+--error 2013
+INSERT INTO t1 values(5);
+--source include/wait_until_disconnected.inc
+
+--echo # Force rmdir datadir for recovery test
+--force-rmdir $MYSQLD_DATADIR
+--echo # Force rmdir innodb redo dir for recovery test
+--force-rmdir $MYSQLD_INNODB_REDO_DIR/#innodb_redo
+--echo # Force rmdir smartengine wal dir for recovery test
+--force-rmdir $MYSQLD_SE_WAL_DIR
+--echo # Force rmdir smartengine data dir for recovery test
+--force-rmdir $MYSQLD_SE_DATA_DIR
+--echo # Create an empty data directory...
+--mkdir $MYSQLD_DATADIR
+
+# consistent snapshot recovery
+--echo # Recovery start from object store.
+--let $_expect_file_name = $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+--let $restart_parameters=restart
+--source include/start_mysqld.inc
+
+SELECT * FROM t1;
+DROP TABLE t1;
+DROP DATABASE db1;
