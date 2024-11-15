@@ -92,6 +92,8 @@ Consistent_recovery::Consistent_recovery()
  */
 int Consistent_recovery::recovery_consistent_snapshot(int flags) {
   DBUG_TRACE;
+  std::string err_msg;
+
   if (!opt_recovery_from_objstore && !opt_initialize_from_objstore) return 0;
 
   if (!opt_serverless) return 0;
@@ -101,7 +103,6 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
   my_setwd(mysql_real_data_home, MYF(0));
   if (opt_initialize && opt_initialize_from_objstore) {
     m_recovery_type = CONSISTENT_RECOVERY_PITR;
-    std::string err_msg;
     err_msg.assign("Initialize database from source object store snapshot ");
     err_msg.append(" provider=");
     err_msg.append(opt_initialize_objstore_provider);
@@ -119,10 +120,24 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
     err_msg.append(opt_initialize_branch_objstore_id);
 
     if (opt_recovery_consistent_snapshot_timestamp) {
-      err_msg.append(" to timestamp ");
+      err_msg.append(" timestamp=");
       err_msg.append(opt_recovery_consistent_snapshot_timestamp);
     }
 
+    err_msg.append(" to provider=");
+    err_msg.append(opt_objstore_provider);
+    err_msg.append(" region=");
+    err_msg.append(opt_objstore_region);
+    if (opt_objstore_endpoint) {
+      err_msg.append(" endpoint=");
+      err_msg.append(opt_objstore_endpoint);
+    }
+    err_msg.append(" bucket=");
+    err_msg.append(opt_objstore_bucket);
+    err_msg.append(" repo_objectsotre_id=");
+    err_msg.append(opt_repo_objstore_id);
+    err_msg.append(" branch_objectsotre_id=");
+    err_msg.append(opt_branch_objstore_id);
     LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
     // Init source object store.
     {
@@ -185,22 +200,7 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
 
     // Init smartengine destination objec store.
     if (opt_initialize_smartengine_objectstore_data) {
-      err_msg.assign("Initialize smartengine data from source object store ");
-      err_msg.append(" provider=");
-      err_msg.append(opt_objstore_provider);
-      err_msg.append(" region=");
-      err_msg.append(opt_objstore_region);
-      if (opt_objstore_endpoint) {
-        err_msg.append(" endpoint=");
-        err_msg.append(opt_objstore_endpoint);
-      }
-      err_msg.append(" bucket=");
-      err_msg.append(opt_objstore_bucket);
-      err_msg.append(" repo_objectsotre_id=");
-      err_msg.append(opt_repo_objstore_id);
-      err_msg.append(" branch_objectsotre_id=");
-      err_msg.append(opt_branch_objstore_id);
-
+      err_msg.assign("Initialize smartengine object store data ");
       LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
 
       objstore::init_objstore_provider(opt_objstore_provider);
@@ -257,8 +257,22 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
              "--recovery_snapshot_timestamp");
       return 1;
     }
-    LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
-           "Crash recovery snapshot from object store");
+    err_msg.assign("Crash recovery database from object store");
+    err_msg.append(" provider=");
+    err_msg.append(opt_objstore_provider);
+    err_msg.append(" region=");
+    err_msg.append(opt_objstore_region);
+    if (opt_objstore_endpoint) {
+      err_msg.append(" endpoint=");
+      err_msg.append(opt_objstore_endpoint);
+    }
+    err_msg.append(" bucket=");
+    err_msg.append(opt_objstore_bucket);
+    err_msg.append(" repo_objectsotre_id=");
+    err_msg.append(opt_repo_objstore_id);
+    err_msg.append(" branch_objectsotre_id=");
+    err_msg.append(opt_branch_objstore_id);
+    LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
 
     objstore::init_objstore_provider(opt_objstore_provider);
 
@@ -271,7 +285,7 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
         opt_objstore_endpoint ? &endpoint : nullptr, opt_objstore_use_https,
         obj_error_msg);
     if (recovery_objstore == nullptr) {
-      std::string err_msg = "Failed to create object store instance";
+      err_msg.assign("Failed to create object store instance");
       if (!obj_error_msg.empty()) {
         err_msg.append(": ");
         err_msg.append(obj_error_msg);
@@ -336,7 +350,6 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
   convert_dirname(m_mysql_archive_recovery_dir, m_mysql_archive_recovery_dir,
                   NullS);
   if (remove_file(m_mysql_archive_recovery_dir)) {
-    std::string err_msg;
     err_msg.assign("Failed to create tmp recovery dir: ");
     err_msg.append(m_mysql_archive_recovery_dir);
     err_msg.append(" error=");
@@ -344,7 +357,6 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
     LogErr(WARNING_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
   }
   if (my_mkdir(m_mysql_archive_recovery_dir, my_umask_dir, MYF(0))) {
-    std::string err_msg;
     err_msg.assign("Failed to create tmp recovery dir: ");
     err_msg.append(m_mysql_archive_recovery_dir);
     err_msg.append(" error=");
@@ -362,7 +374,6 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
   convert_dirname(m_mysql_archive_recovery_data_dir,
                   m_mysql_archive_recovery_data_dir, NullS);
   if (my_mkdir(m_mysql_archive_recovery_data_dir, my_umask_dir, MYF(0))) {
-    std::string err_msg;
     err_msg.assign("Failed to create tmp recovery snapshot dir: ");
     err_msg.append(m_mysql_archive_recovery_data_dir);
     err_msg.append(" error=");
@@ -378,7 +389,6 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
   convert_dirname(m_mysql_archive_recovery_binlog_dir,
                   m_mysql_archive_recovery_binlog_dir, NullS);
   if (my_mkdir(m_mysql_archive_recovery_binlog_dir, my_umask_dir, MYF(0))) {
-    std::string err_msg;
     err_msg.assign("Failed to create tmp recovery binlog dir: ");
     err_msg.append(m_mysql_archive_recovery_binlog_dir);
     err_msg.append(" error=");
@@ -442,6 +452,8 @@ int Consistent_recovery::recovery_consistent_snapshot(int flags) {
 bool Consistent_recovery::read_consistent_snapshot_file() {
   DBUG_TRACE;
   ulong recovery_ts = 0;
+  assert (m_state == CONSISTENT_RECOVERY_STATE_NONE);
+
   // If opt_recovery_consistent_snapshot_timestamp is set, PITR instance.
   if (opt_initialize && opt_recovery_consistent_snapshot_timestamp) {
     if (convert_str_to_datetime(opt_recovery_consistent_snapshot_timestamp,
@@ -595,6 +607,8 @@ bool Consistent_recovery::read_consistent_snapshot_file() {
   // Keep consistent snapshot file for diagnosis, until the next recovery.
   // remove_file(consistent_file_name);
   m_state = CONSISTENT_RECOVERY_STATE_SNAPSHOT_FILE;
+  LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
+         "recover persistent snapshot index file finish.");
   return false;
 }
 
@@ -887,7 +901,7 @@ bool Consistent_recovery::recovery_mysql_innodb() {
   }
   m_state = CONSISTENT_RECOVERY_STATE_MYSQL_INNODB;
   LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
-         "reocver persistent innodb objects finish.");
+         "recover persistent innodb objects finish.");
   return false;
 }
 
@@ -1412,6 +1426,11 @@ bool Consistent_recovery::recovery_binlog(const char *binlog_index_name
 bool Consistent_recovery::recovery_smartengine_objectstore_data() {
   if (!opt_initialize_smartengine_objectstore_data) return false;
 
+  // no recovery process
+  if (m_state == CONSISTENT_RECOVERY_STATE_NONE ||
+      m_state == CONSISTENT_RECOVERY_STATE_END)
+    return false;
+
   // get source all smartengine extent objects.
   std::vector<objstore::ObjectMeta> objects;
   bool finished = false;
@@ -1425,11 +1444,13 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
   source_se_objecstore_prefix.append(
       CONSISTENT_RECOVERY_SMARTENGINE_OBJECTSTORE_ROOT_PATH);
   source_se_objecstore_prefix.append(FN_DIRSEP);
+
+  err_msg.assign("recovery smartengine sst from source ");
+  err_msg.append(source_se_objecstore_prefix);
+  LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
+
   do {
     std::vector<objstore::ObjectMeta> tmp_objects;
-    // Only return the files and directories at the first-level directory.
-    // innodb_archive_000001.tar or innodb_archive_000001.tar.gz
-    // or innodb_archive_000001/
     objstore::Status ss = recovery_objstore->list_object(
         std::string_view(opt_initialize_objstore_bucket),
         source_se_objecstore_prefix, true, start_after, finished, tmp_objects);
@@ -1480,6 +1501,9 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
       return true;
     }
   }
+  m_state = CONSISTENT_RECOVERY_STATE_SST;
+  LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
+         "recovery smartengine sst finish");
   return false;
 }
 
@@ -1493,7 +1517,6 @@ bool Consistent_recovery::recovery_consistent_snapshot_finish() {
   if (m_state == CONSISTENT_RECOVERY_STATE_NONE ||
       m_state == CONSISTENT_RECOVERY_STATE_END)
     return false;
-  m_state = CONSISTENT_RECOVERY_STATE_END;
   Consistent_snapshot_recovery_status recovery_status;
   memset(&recovery_status, 0, sizeof(recovery_status));
   recovery_status.m_recovery_status =
@@ -1526,6 +1549,9 @@ bool Consistent_recovery::recovery_consistent_snapshot_finish() {
     file_name.append(CONSISTENT_SNAPSHOT_RECOVERY_FILE);
     std::remove(file_name.c_str());
   }
+  m_state = CONSISTENT_RECOVERY_STATE_END;
+  LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
+         "recover persistent snapshot data finish.");
   return false;
 }
 
@@ -1580,6 +1606,9 @@ int Consistent_recovery::consistent_snapshot_consensus_recovery_finish() {
     file_name.assign(mysql_real_data_home);
     file_name.append(CONSISTENT_SNAPSHOT_RECOVERY_FILE);
     remove_file(file_name);
+    LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
+           "recover persistent snapshot wait raft recovery finish and delete "
+           "#status_snapshot_recovery file");
     return 0;
   }
   return 1;
@@ -2126,6 +2155,8 @@ int Consistent_recovery::write_consistent_snapshot_recovery_status(
   if (!status_file.is_open()) {
     return 1;
   }
+  LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
+         "write snapshot recovery status file.");
   status_file << recovery_status.m_recovery_status << std::endl;
   status_file << recovery_status.m_end_binlog_pos << std::endl;
   status_file << recovery_status.m_end_consensus_index << std::endl;
@@ -2142,6 +2173,8 @@ int Consistent_recovery::write_consistent_snapshot_recovery_status(
  */
 int Consistent_recovery::read_consistent_snapshot_recovery_status(
     Consistent_snapshot_recovery_status &recovery_status) {
+  if (!opt_recovery_from_objstore && !opt_initialize_from_objstore) return 1;
+
   std::string file_name;
   std::ifstream status_file;
   convert_dirname(mysql_real_data_home, mysql_real_data_home, NullS);

@@ -34,6 +34,7 @@ let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTE
 let $wait_timeout= 600;
 --source include/wait_condition_or_abort.inc
 
+--echo # clone database ro
 let $ro_port = query_get_value("select $source_port+988 as c1", c1, 1);
 let $tmp_dir = $MYSQLTEST_VARDIR/tmp;
 let MYSQLD_DATADIR = $tmp_dir/snapshot_clone_ro_test;
@@ -91,6 +92,86 @@ SELECT count(*) FROM t1;
 --force-rmdir $MYSQLD_DATADIR
 --remove_file $MYSQLD_ERROR_LOG
 --remove_file $MYSQLD_ERROR_START_LOG
+
+--connection default
+INSERT INTO t1 values(1);
+INSERT INTO t1 values(2);
+INSERT INTO t1 values(3);
+INSERT INTO t1 values(4);
+INSERT INTO t1 values(5);
+SELECT count(*) FROM t1;
+
+--echo # Wait for all binlog persistent
+let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
+let $wait_timeout= 600;
+--source include/wait_condition_or_abort.inc
+
+--echo # clone database ro2 with log_bin, innodb_log_group_home_dir, smartengine_data_dir and smartengine_wal_dir
+let $ro2_port = query_get_value("select $source_port+989 as c1", c1, 1);
+let $tmp_dir = $MYSQLTEST_VARDIR/tmp;
+let MYSQLD_DATADIR = $tmp_dir/snapshot_clone_ro2_test;
+let MYSQLD_ERROR_LOG = $tmp_dir/ro2_boost.err;
+let MYSQLD_ERROR_START_LOG = $tmp_dir/ro2_start.err;
+let MYSQLD_LOG_DIR = $tmp_dir/ro2_log;
+--mkdir $MYSQLD_LOG_DIR
+let MYSQLD_BINLOG_DIR = $MYSQLD_LOG_DIR/master-bin;
+let MYSQLD_INNODB_WAL_DIR = $MYSQLD_LOG_DIR;
+let MYSQLD_SE_SST_DATADIR = $MYSQLD_LOG_DIR/smartengine_sst;
+let MYSQLD_SE_WAL_DIR = $MYSQLD_LOG_DIR/smartengine_wal;
+
+let MYSQLD_EXTRA_INIT_ARGS = --initialize_from_objectstore=true --initialize_smartengine_objectstore_data=true --initialize_objectstore_region=$source_region --initialize_objectstore_bucket=$source_bucket --initialize_repo_objectstore_id=$source_repo;
+
+--echo # Initialize ro2 server
+let $MYSQLD_EXTRA_ARGS = --port=$ro2_port --socket=$MYSQLD_DATADIR/test.sock --console --skip-ssl --log-bin=$MYSQLD_BINLOG_DIR --objectstore-region=.local_region --log-error-verbosity=3 --datadir=$MYSQLD_DATADIR --innodb_log_group_home_dir=$MYSQLD_INNODB_WAL_DIR --smartengine_data_dir=$MYSQLD_SE_SST_DATADIR --smartengine_wal_dir=$MYSQLD_SE_WAL_DIR;
+--exec $MYSQLD --initialize-insecure --no-defaults $MYSQLD_ARGS $MYSQLD_EXTRA_ARGS $MYSQLD_EXTRA_INIT_ARGS > $MYSQLD_ERROR_LOG 2>&1
+--echo # Start ro2 server
+let $ro2_cluster_info= '127.0.0.1:19989@1';
+--exec $MYSQLD --no-defaults $MYSQLD_ARGS $MYSQLD_EXTRA_ARGS --raft-replication-force-change-meta=ON --raft-replication-cluster-info=$ro2_cluster_info --log-error=$MYSQLD_ERROR_START_LOG 2>&1 &
+
+--echo # Wait ro2 accept connection
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+--let $mysql_errno= 9999
+--let $wait_counter= 300
+while ($mysql_errno)
+{
+  connect (ro2,127.0.0.1,root,,test,$ro2_port);
+  if ($mysql_errno == 1045){
+    --let mysql_errno=0
+  }
+  if ($mysql_errname == ER_SECURE_TRANSPORT_REQUIRED){
+    --let mysql_errno=0
+  }
+  if ($mysql_errno){
+    --sleep 0.1
+    --dec $wait_counter
+    if (!$wait_counter){
+      --die Server failed to connect new ro2 node
+    }
+  }
+}
+--enable_result_log
+--enable_query_log
+--enable_abort_on_error
+
+--echo # Wait ro2 changed leader
+let $wait_timeout= 60;
+let $wait_condition= select count(*)=1 from information_schema.wesql_cluster_local where role='leader';
+--source include/wait_condition.inc
+
+--echo # Connection ro2
+--connection ro2
+SELECT count(*) FROM t1;
+
+--echo # Shutdown ro2
+--shutdown_server 0
+
+--echo # Cleanup ro2
+--force-rmdir $MYSQLD_DATADIR
+--remove_file $MYSQLD_ERROR_LOG
+--remove_file $MYSQLD_ERROR_START_LOG
+--force-rmdir $MYSQLD_LOG_DIR
 
 --connection default
 

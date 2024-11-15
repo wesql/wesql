@@ -15,6 +15,7 @@ SELECT count(*) FROM t1;
 count(*)
 20
 # Wait for all binlog persistent
+# clone database ro
 # Initialize ro server
 # Start ro server
 # Wait ro accept connection
@@ -25,5 +26,25 @@ count(*)
 20
 # Shutdown ro
 # Cleanup ro
+INSERT INTO t1 values(1);
+INSERT INTO t1 values(2);
+INSERT INTO t1 values(3);
+INSERT INTO t1 values(4);
+INSERT INTO t1 values(5);
+SELECT count(*) FROM t1;
+count(*)
+25
+# Wait for all binlog persistent
+# clone database ro2 with log_bin, innodb_log_group_home_dir, smartengine_data_dir and smartengine_wal_dir
+# Initialize ro2 server
+# Start ro2 server
+# Wait ro2 accept connection
+# Wait ro2 changed leader
+# Connection ro2
+SELECT count(*) FROM t1;
+count(*)
+25
+# Shutdown ro2
+# Cleanup ro2
 # Cleanup
 DROP TABLE t1;
