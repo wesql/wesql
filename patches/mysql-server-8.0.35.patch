@@ -4652,7 +4652,7 @@ index c288026b810..22d6c7b9d24 100644
  
  #endif /* _log_event_h */
 diff --git a/sql/mysqld.cc b/sql/mysqld.cc
-index 3f94e768956..e9cf788165b 100644
+index 3f94e768956..4fa04b96e23 100644
 --- a/sql/mysqld.cc
 +++ b/sql/mysqld.cc
 @@ -774,15 +774,18 @@ MySQL clients support the protocol:
@@ -4861,13 +4861,13 @@ index 3f94e768956..e9cf788165b 100644
 +    if (opt_serverless &&
 +        consistent_recovery.recovery_binlog(opt_binlog_index_name, ln)) {
 +      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
-+             "Failed to recovery binlog from archive dir or object store");
++             "Failed to recovery binlog from object storage");
 +      unireg_abort(MYSQLD_ABORT_EXIT);
 +    }
      /*
        Skip opening the index file if we start with --help. This is necessary
        to avoid creating the file in an otherwise empty datadir, which will
-@@ -6503,6 +6618,35 @@ static int init_server_components() {
+@@ -6503,6 +6618,44 @@ static int init_server_components() {
        LogErr(ERROR_LEVEL, ER_CANT_INITIALIZE_BUILTIN_PLUGINS);
      unireg_abort(1);
    }
@@ -4882,17 +4882,26 @@ index 3f94e768956..e9cf788165b 100644
 +            CONSISTENT_RECOVERY_SMARTENGINE_EXTENT)) {
 +      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
 +             "Failed to recovery innodb and smartengine data files from object "
-+             "store");
++             "storage");
 +      unireg_abort(MYSQLD_ABORT_EXIT);
 +    }
 +    consistent_recovery.recovery_consistent_snapshot_finish();
 +    unireg_abort(MYSQLD_SUCCESS_EXIT);
 +  }
++  // Consistent recovery innodb after innodb plugin is loaded.
++  if (!opt_initialize && opt_serverless) {
++    if (consistent_recovery.recovery_mysql_innodb()) {
++      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
++             "Failed to recovery innodb data files");
++      unireg_abort(MYSQLD_ABORT_EXIT);
++    }
++  }
++
 +  // Consistent recovery smartengine after smartengine plugin is loaded.
 +  if (!opt_initialize && opt_serverless) {
 +    if (consistent_recovery.recovery_smartengine()) {
 +      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
-+             "Failed to recovery innodb and smartengine data files");
++             "Failed to recovery smartengine data files");
 +      unireg_abort(MYSQLD_ABORT_EXIT);
 +    }
 +  }
@@ -4903,7 +4912,7 @@ index 3f94e768956..e9cf788165b 100644
  
    /*
      Needs to be done before dd::init() which runs DDL commands (for real)
-@@ -6785,6 +6929,27 @@ static int init_server_components() {
+@@ -6785,6 +6938,27 @@ static int init_server_components() {
      unireg_abort(1);
    }
  
@@ -4931,7 +4940,7 @@ index 3f94e768956..e9cf788165b 100644
    if (opt_initialize) log_output_options = LOG_FILE;
  
    /*
-@@ -6818,6 +6983,20 @@ static int init_server_components() {
+@@ -6818,6 +6992,20 @@ static int init_server_components() {
    /*
      Set the default storage engines
    */
@@ -4952,7 +4961,7 @@ index 3f94e768956..e9cf788165b 100644
    if (initialize_storage_engine(default_storage_engine, "",
                                  &global_system_variables.table_plugin))
      unireg_abort(MYSQLD_ABORT_EXIT);
-@@ -6890,7 +7069,20 @@ static int init_server_components() {
+@@ -6890,7 +7078,20 @@ static int init_server_components() {
      unireg_abort(MYSQLD_ABORT_EXIT);
    }
  
@@ -4974,7 +4983,7 @@ index 3f94e768956..e9cf788165b 100644
      /*
        Configures what object is used by the current log to store processed
        gtid(s). This is necessary in the MYSQL_BIN_LOG::MYSQL_BIN_LOG to
-@@ -7531,6 +7723,11 @@ int mysqld_main(int argc, char **argv)
+@@ -7531,6 +7732,11 @@ int mysqld_main(int argc, char **argv)
    */
    init_server_psi_keys();
  
@@ -4986,7 +4995,24 @@ index 3f94e768956..e9cf788165b 100644
    /*
      Now that some instrumentation is in place,
      recreate objects which were initialised early,
-@@ -7830,6 +8027,63 @@ int mysqld_main(int argc, char **argv)
+@@ -7818,6 +8024,16 @@ int mysqld_main(int argc, char **argv)
+     unireg_abort(exit_state);
+   }
+ 
++  // In recovery serverless mode, we first create the data directory if it does
++  // not exist. Otherwise, my_setwd will fail.
++  if (!is_help_or_validate_option() && !opt_initialize && opt_serverless &&
++      opt_recovery_from_objstore) {
++    MY_STAT stat;
++    if (!my_stat(mysql_real_data_home, &stat, MYF(0)) &&
++        initialize_create_data_directory(mysql_real_data_home))
++      unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
++  }
++
+   /*
+    We have enough space for fiddling with the argv, continue
+   */
+@@ -7830,6 +8046,58 @@ int mysqld_main(int argc, char **argv)
      unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
    }
  
@@ -4997,7 +5023,6 @@ index 3f94e768956..e9cf788165b 100644
 +      LogErr(ERROR_LEVEL, ER_OBJSTORE_ID_CHECK_ERROR, "invalid empty objectstore id");
 +      unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
 +    }
-+
 +    std::string err_msg;
 +    std::string_view endpoint(
 +        opt_objstore_endpoint ? std::string_view(opt_objstore_endpoint) : "");
@@ -5032,16 +5057,12 @@ index 3f94e768956..e9cf788165b 100644
 +            recovery_status) == 0) {
 +      // If recovery is not completed, we need to recover from object store
 +      // again.
-+      if (consistent_recovery.recovery_consistent_snapshot(
-+              CONSISTENT_RECOVERY_INNODB))
++      if (consistent_recovery.recovery_consistent_snapshot(0))
 +        unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
 +    } else {
 +      if (!my_stat(mysql_path, &stat, MYF(0))) {
-+        if (!my_stat(mysql_real_data_home, &stat, MYF(0)) &&
-+            initialize_create_data_directory(mysql_real_data_home))
-+          unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
-+        if (consistent_recovery.recovery_consistent_snapshot(
-+                CONSISTENT_RECOVERY_INNODB))
++        // Innodb and smartengine data recovery after plugin loaded.
++        if (consistent_recovery.recovery_consistent_snapshot(0))
 +          unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
 +      }
 +    }
@@ -5050,7 +5071,7 @@ index 3f94e768956..e9cf788165b 100644
    /*
     The subsequent calls may take a long time : e.g. innodb log read.
     Thus set the long running service control manager timeout
-@@ -7879,6 +8133,16 @@ int mysqld_main(int argc, char **argv)
+@@ -7879,6 +8147,16 @@ int mysqld_main(int argc, char **argv)
      if (gtid_state->read_gtid_executed_from_table() == -1) unireg_abort(1);
    }
  
@@ -5067,7 +5088,7 @@ index 3f94e768956..e9cf788165b 100644
    if (opt_bin_log) {
      /*
        Initialize GLOBAL.GTID_EXECUTED and GLOBAL.GTID_PURGED from
-@@ -7998,6 +8262,14 @@ int mysqld_main(int argc, char **argv)
+@@ -7998,6 +8276,14 @@ int mysqld_main(int argc, char **argv)
      (void)RUN_HOOK(server_state, after_engine_recovery, (nullptr));
    }
  
@@ -5082,7 +5103,7 @@ index 3f94e768956..e9cf788165b 100644
    if (init_ssl_communication()) unireg_abort(MYSQLD_ABORT_EXIT);
    if (network_init()) unireg_abort(MYSQLD_ABORT_EXIT);
  
-@@ -8133,8 +8405,22 @@ int mysqld_main(int argc, char **argv)
+@@ -8133,8 +8419,22 @@ int mysqld_main(int argc, char **argv)
  
    initialize_information_schema_acl();
  
@@ -5105,7 +5126,7 @@ index 3f94e768956..e9cf788165b 100644
    if (Events::init(opt_noacl || opt_initialize))
      unireg_abort(MYSQLD_ABORT_EXIT);
  
-@@ -9267,6 +9553,12 @@ struct my_option my_long_options[] = {
+@@ -9267,6 +9567,12 @@ struct my_option my_long_options[] = {
       &opt_upgrade_mode, &opt_upgrade_mode, &upgrade_mode_typelib, GET_ENUM,
       REQUIRED_ARG, UPGRADE_AUTO, 0, 0, nullptr, 0, nullptr},
  
@@ -5118,7 +5139,7 @@ index 3f94e768956..e9cf788165b 100644
      {nullptr, 0, nullptr, nullptr, nullptr, nullptr, GET_NO_ARG, NO_ARG, 0, 0,
       0, nullptr, 0, nullptr}};
  
-@@ -11131,6 +11423,7 @@ static int get_options(int *argc_ptr, char ***argv_ptr) {
+@@ -11131,6 +11437,7 @@ static int get_options(int *argc_ptr, char ***argv_ptr) {
  #ifndef _WIN32
    if (mysqld_chroot) set_root(mysqld_chroot);
  #endif
@@ -5126,7 +5147,7 @@ index 3f94e768956..e9cf788165b 100644
    if (fix_paths()) return 1;
  
    /*
-@@ -11184,6 +11477,11 @@ static void set_server_version(void) {
+@@ -11184,6 +11491,11 @@ static void set_server_version(void) {
  #ifndef NDEBUG
    if (!strstr(MYSQL_SERVER_SUFFIX_STR, "-debug"))
      end = my_stpcpy(end, "-debug");
@@ -5138,7 +5159,7 @@ index 3f94e768956..e9cf788165b 100644
  #endif
  #ifdef HAVE_VALGRIND
    if (SERVER_VERSION_LENGTH - (end - server_version) >
-@@ -11795,6 +12093,13 @@ PSI_mutex_key key_monitor_info_run_lock;
+@@ -11795,6 +12107,13 @@ PSI_mutex_key key_monitor_info_run_lock;
  PSI_mutex_key key_LOCK_delegate_connection_mutex;
  PSI_mutex_key key_LOCK_group_replication_connection_mutex;
  
@@ -5152,7 +5173,7 @@ index 3f94e768956..e9cf788165b 100644
  /* clang-format off */
  static PSI_mutex_info all_server_mutexes[]=
  {
-@@ -11861,6 +12166,12 @@ static PSI_mutex_info all_server_mutexes[]=
+@@ -11861,6 +12180,12 @@ static PSI_mutex_info all_server_mutexes[]=
    { &key_mutex_slave_parallel_pend_jobs, "Relay_log_info::pending_jobs_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_mutex_slave_parallel_worker_count, "Relay_log_info::exit_count_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_mutex_slave_parallel_worker, "Worker_info::jobs_lock", 0, 0, PSI_DOCUMENT_ME},
@@ -5165,7 +5186,7 @@ index 3f94e768956..e9cf788165b 100644
    { &key_TABLE_SHARE_LOCK_ha_data, "TABLE_SHARE::LOCK_ha_data", 0, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_error_messages, "LOCK_error_messages", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_log_throttle_qni, "LOCK_log_throttle_qni", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
-@@ -11887,7 +12198,7 @@ static PSI_mutex_info all_server_mutexes[]=
+@@ -11887,7 +12212,7 @@ static PSI_mutex_info all_server_mutexes[]=
    { &key_monitor_info_run_lock, "Source_IO_monitor::run_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_delegate_connection_mutex, "LOCK_delegate_connection_mutex", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_group_replication_connection_mutex, "LOCK_group_replication_connection_mutex", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
@@ -5174,7 +5195,7 @@ index 3f94e768956..e9cf788165b 100644
    { &key_LOCK_global_conn_mem_limit, "LOCK_global_conn_mem_limit", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME}
  };
  /* clang-format on */
-@@ -11906,6 +12217,14 @@ PSI_rwlock_key key_rwlock_Binlog_transmit_delegate_lock;
+@@ -11906,6 +12231,14 @@ PSI_rwlock_key key_rwlock_Binlog_transmit_delegate_lock;
  PSI_rwlock_key key_rwlock_Binlog_relay_IO_delegate_lock;
  PSI_rwlock_key key_rwlock_resource_group_mgr_map_lock;
  
@@ -5189,7 +5210,7 @@ index 3f94e768956..e9cf788165b 100644
  /* clang-format off */
  static PSI_rwlock_info all_server_rwlocks[]=
  {
-@@ -11922,6 +12241,13 @@ static PSI_rwlock_info all_server_rwlocks[]=
+@@ -11922,6 +12255,13 @@ static PSI_rwlock_info all_server_rwlocks[]=
    { &key_rwlock_Trans_delegate_lock, "Trans_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_Server_state_delegate_lock, "Server_state_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_Binlog_storage_delegate_lock, "Binlog_storage_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
@@ -5203,7 +5224,7 @@ index 3f94e768956..e9cf788165b 100644
    { &key_rwlock_receiver_sid_lock, "gtid_retrieved", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_rpl_filter_lock, "rpl_filter_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_channel_to_filter_lock, "channel_to_filter_lock", 0, 0, PSI_DOCUMENT_ME},
-@@ -11960,6 +12286,12 @@ PSI_cond_key key_cond_slave_worker_hash;
+@@ -11960,6 +12300,12 @@ PSI_cond_key key_cond_slave_worker_hash;
  PSI_cond_key key_monitor_info_run_cond;
  PSI_cond_key key_COND_delegate_connection_cond_var;
  PSI_cond_key key_COND_group_replication_connection_cond_var;
@@ -5216,7 +5237,7 @@ index 3f94e768956..e9cf788165b 100644
  
  /* clang-format off */
  static PSI_cond_info all_server_conds[]=
-@@ -11997,6 +12329,12 @@ static PSI_cond_info all_server_conds[]=
+@@ -11997,6 +12343,12 @@ static PSI_cond_info all_server_conds[]=
    { &key_cond_slave_parallel_pend_jobs, "Relay_log_info::pending_jobs_cond", 0, 0, PSI_DOCUMENT_ME},
    { &key_cond_slave_parallel_worker, "Worker_info::jobs_cond", 0, 0, PSI_DOCUMENT_ME},
    { &key_cond_mta_gaq, "Relay_log_info::mta_gaq_cond", 0, 0, PSI_DOCUMENT_ME},
