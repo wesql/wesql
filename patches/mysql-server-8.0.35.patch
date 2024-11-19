@@ -7933,7 +7933,7 @@ index 61828fe0164..0c4a3aaa94e 100644
          if (mysql_bin_log.rotate_and_purge(thd, true)) *write_to_binlog = -1;
        }
 diff --git a/sql/sql_show.cc b/sql/sql_show.cc
-index 64c61f060db..b8b760aeaea 100644
+index 64c61f060db..2ca297bfae4 100644
 --- a/sql/sql_show.cc
 +++ b/sql/sql_show.cc
 @@ -72,6 +72,8 @@
@@ -7974,7 +7974,7 @@ index 64c61f060db..b8b760aeaea 100644
      table->field[TMP_TABLE_COLUMNS_COLUMN_KEY]->store(
          (const char *)pos, strlen((const char *)pos), cs);
  
-@@ -4957,6 +4958,501 @@ static int hton_fill_schema_table(THD *thd, Table_ref *tables, Item *cond) {
+@@ -4957,6 +4958,513 @@ static int hton_fill_schema_table(THD *thd, Table_ref *tables, Item *cond) {
    return 0;
  }
  
@@ -8088,10 +8088,22 @@ index 64c61f060db..b8b760aeaea 100644
 +    uint64_t log_previous_consensus_index = std::stoull(found_previous_consensus_index);
 +
 +    size_t first_dot = found_log_slice_name.find('.');
++    if (first_dot == std::string::npos) {
++      my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++      goto err;
++    }
 +    size_t second_dot = found_log_slice_name.find('.', first_dot + 1);
++    if (second_dot == std::string::npos) {
++      my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++      goto err;
++    }
 +    std::string log_name = found_log_slice_name.substr(0, second_dot);
 +    left_string = found_log_slice_name.substr(second_dot + 1);
 +    size_t third_dot = left_string.find('.');
++    if (third_dot == std::string::npos) {
++      my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++      goto err;
++    }
 +    std::string term = left_string.substr(0, third_dot);
 +    std::string end_pos = left_string.substr(third_dot + 1);
 +    uint64_t slice_consensus_term = std::stoull(term);
@@ -8476,7 +8488,7 @@ index 64c61f060db..b8b760aeaea 100644
  ST_FIELD_INFO engines_fields_info[] = {
      {"ENGINE", 64, MYSQL_TYPE_STRING, 0, 0, "Engine", 0},
      {"SUPPORT", 8, MYSQL_TYPE_STRING, 0, 0, "Support", 0},
-@@ -5097,6 +5593,90 @@ ST_FIELD_INFO tmp_table_columns_fields_info[] = {
+@@ -5097,6 +5605,90 @@ ST_FIELD_INFO tmp_table_columns_fields_info[] = {
       MYSQL_TYPE_STRING, 0, 0, "Generation expression", 0},
      {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
  
@@ -8567,7 +8579,7 @@ index 64c61f060db..b8b760aeaea 100644
  /** For creating fields of information_schema.OPTIMIZER_TRACE */
  extern ST_FIELD_INFO optimizer_trace_info[];
  
-@@ -5135,6 +5715,29 @@ ST_SCHEMA_TABLE schema_tables[] = {
+@@ -5135,6 +5727,29 @@ ST_SCHEMA_TABLE schema_tables[] = {
       make_tmp_table_columns_format, get_schema_tmp_table_columns_record, true},
      {"TMP_TABLE_KEYS", tmp_table_keys_fields_info, show_temporary_tables,
       make_old_format, get_schema_tmp_table_keys_record, true},
