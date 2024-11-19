@@ -1,17 +1,26 @@
 /*
- * Portions Copyright (c) 2024, ApeCloud Inc Holding Limited
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+  Portions Copyright (c) 2024, ApeCloud Inc Holding Limited 
+  Portions Copyright (c) 2009, 2023, Oracle and/or its affiliates.
 
- * http://www.apache.org/licenses/LICENSE-2.0
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
 
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+   This program is also distributed with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have included with MySQL.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License, version 2.0, for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #ifndef BINLOG_ARCHIVE_INCLUDED
 #define BINLOG_ARCHIVE_INCLUDED
@@ -238,6 +247,12 @@ class Binlog_archive_worker {
   bool is_thread_alive() const { return m_thd_state.is_thread_alive(); }
   bool is_thread_running() const { return m_thd_state.is_running(); }
   int terminate_binlog_archive_worker_thread();
+  bool is_binlog_archive_worker_waiting() const {
+    return atomic_binlog_archive_worker_waiting.load(std::memory_order_acquire);
+  }
+  void set_binlog_archive_worker_waiting(bool waiting) {
+    atomic_binlog_archive_worker_waiting.store(waiting, std::memory_order_release);
+  }
 
  private:
   Binlog_archive *m_archive;
@@ -249,6 +264,7 @@ class Binlog_archive_worker {
   thread_state m_thd_state;
   mysql_mutex_t m_worker_run_lock;
   mysql_cond_t m_worker_run_cond;
+  std::atomic<bool> atomic_binlog_archive_worker_waiting;
 };
 
 /**
@@ -275,11 +291,17 @@ class Binlog_archive_update_index_worker {
   bool is_thread_alive() const { return m_thd_state.is_thread_alive(); }
   bool is_thread_running() const { return m_thd_state.is_running(); }
   int terminate_binlog_archive_update_index_worker();
-  bool update_index_is_failed() const {
+  bool is_update_index_failed() const {
     return atomic_update_index_failed.load(std::memory_order_acquire);
   }
   void set_update_index_failed(bool failed) {
     atomic_update_index_failed.store(failed, std::memory_order_release);
+  }
+  bool is_update_index_waiting() const {
+    return atomic_update_index_waiting.load(std::memory_order_acquire);
+  }
+  void set_update_index_waiting(bool waiting) {
+    atomic_update_index_waiting.store(waiting, std::memory_order_release);
   }
 
  private:
@@ -291,6 +313,7 @@ class Binlog_archive_update_index_worker {
   mysql_mutex_t m_worker_run_lock;
   mysql_cond_t m_worker_run_cond;
   std::atomic<bool> atomic_update_index_failed;
+  std::atomic<bool> atomic_update_index_waiting;
 };
 
 /**
@@ -376,12 +399,13 @@ class Binlog_archive {
       my_off_t &persisted_mysql_binlog_pos);
 
   int get_mysql_current_archive_binlog(LOG_INFO *linfo, bool need_lock = true);
-
+  uint64_t get_slice_queue_map_term() { return m_slice_queue_and_map_term; }
   Binlog_archive_update_index_worker *m_update_index_worker;
   Binlog_archive_worker **m_workers;
 
   mysql_mutex_t m_slice_mutex;
-  bool m_slice_queue_and_map_initted;
+  uint64_t m_slice_queue_and_map_term;  // the term of the slice queue and map
+                                        // last change
   circular_buffer_queue<Binlog_expected_slice> m_expected_slice_queue;
   mysql_cond_t m_queue_cond;
   // File and slice tracking
@@ -391,8 +415,9 @@ class Binlog_archive {
   int32_t m_last_expected_file_seq{-1};  // last added slice file expected queue
   int32_t m_last_expected_slice_seq{-1};  // last added slice seq expected queue
 
-  void notify_slice_persisted(const Binlog_expected_slice &slice,
-                              bool is_slice_persisted);
+  bool notify_slice_persisted(const Binlog_expected_slice &slice,
+                              bool is_slice_persisted,
+                              uint64_t slice_queue_map_term);
   bool update_index_file(bool need_slice_lock);
 
  private:

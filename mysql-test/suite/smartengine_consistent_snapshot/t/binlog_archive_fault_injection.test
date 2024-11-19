@@ -117,7 +117,7 @@ INSERT INTO t1 values(4,'abcd');
 --source include/grep_pattern.inc
 
 --let $grep_file=$error_log
---let $grep_pattern=binlog archive persistent abort
+--let $grep_pattern=persistent abort
 --let $grep_output=boolean
 --source include/grep_pattern.inc
 
