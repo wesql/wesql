@@ -10,7 +10,6 @@
 #include "monitoring/query_perf_context.h"
 #include "util/sync_point.h"
 #include "logger/log_module.h"
-#include "memory/base_malloc.h"
 #include "util/stack_trace.h"
 
 
@@ -23,7 +22,8 @@ using namespace port;
 namespace monitor
 {
 
-void InstrumentedMutex::Lock() {
+void InstrumentedMutex::Lock()
+{
   QUERY_COUNT(CountPoint::DB_MUTEX_WAIT);
   QUERY_TRACE_BEGIN(TracePoint::DB_MUTEX_WAIT);
   LockInternal();
@@ -33,38 +33,43 @@ void InstrumentedMutex::Lock() {
   QUERY_TRACE_END();
 }
 
-void InstrumentedMutex::Unlock() {
+void InstrumentedMutex::Unlock()
+{
   uint64_t locked_nanos = env_ != nullptr ? env_->NowNanos() - start_nano_ : 0;
   mutex_.Unlock();
   if (backtrace_limit_nano_ != nullptr && locked_nanos > *backtrace_limit_nano_) {
     std::string backtrace_str = StackTrace::backtrace_slow();
-    __SE_LOG(WARN, "Mutex %p holding too long, %luns.\n%s",
-                  this, locked_nanos, backtrace_str.c_str());
+    __SE_LOG(SYSTEM, "Mutex %p holding too long, %luns.\n%s",
+        this, locked_nanos, backtrace_str.c_str());
   }
 }
 
-void InstrumentedMutex::LockInternal() {
+void InstrumentedMutex::LockInternal()
+{
 #ifndef NDEBUG
   ThreadStatusUtil::TEST_StateDelay(ThreadStatus::STATE_MUTEX_WAIT);
 #endif
   mutex_.Lock();
 }
 
-void InstrumentedCondVar::Wait() {
+void InstrumentedCondVar::Wait()
+{
   QUERY_COUNT(CountPoint::DB_MUTEX_WAIT);
   QUERY_TRACE_BEGIN(TracePoint::DB_MUTEX_WAIT);
   WaitInternal();
   QUERY_TRACE_END();
 }
 
-void InstrumentedCondVar::WaitInternal() {
+void InstrumentedCondVar::WaitInternal()
+{
 #ifndef NDEBUG
   ThreadStatusUtil::TEST_StateDelay(ThreadStatus::STATE_MUTEX_WAIT);
 #endif
   cond_.Wait();
 }
 
-bool InstrumentedCondVar::TimedWait(uint64_t abs_time_us) {
+bool InstrumentedCondVar::TimedWait(uint64_t abs_time_us)
+{
   bool result = false;
   QUERY_COUNT(CountPoint::DB_MUTEX_WAIT);
   QUERY_TRACE_BEGIN(TracePoint::DB_MUTEX_WAIT);
@@ -73,7 +78,8 @@ bool InstrumentedCondVar::TimedWait(uint64_t abs_time_us) {
   return result;
 }
 
-bool InstrumentedCondVar::TimedWaitInternal(uint64_t abs_time_us) {
+bool InstrumentedCondVar::TimedWaitInternal(uint64_t abs_time_us)
+{
 #ifndef NDEBUG
   ThreadStatusUtil::TEST_StateDelay(ThreadStatus::STATE_MUTEX_WAIT);
 #endif
@@ -83,5 +89,6 @@ bool InstrumentedCondVar::TimedWaitInternal(uint64_t abs_time_us) {
 
   return cond_.TimedWait(abs_time_us);
 }
+
 }  // namespace monitor
 }  // namespace smartengine

@@ -30,7 +30,7 @@ Status DBImpl::DisableFileDeletions() {
   if (disable_delete_obsolete_files_ == 1) {
     SE_LOG(INFO, "File Deletions Disabled");
   } else {
-    __SE_LOG(WARN, "File Deletions Disabled, but already disabled. Counter: %d", disable_delete_obsolete_files_);
+    __SE_LOG(SYSTEM, "File Deletions Disabled, but already disabled. Counter: %d", disable_delete_obsolete_files_);
   }
   return Status::OK();
 }
@@ -53,7 +53,7 @@ Status DBImpl::EnableFileDeletions(bool force) {
       should_purge_files = true;
       FindObsoleteFiles(&job_context, true);
     } else {
-      __SE_LOG(WARN, "File Deletions Enable, but not really enabled. Counter: %d", disable_delete_obsolete_files_);
+      __SE_LOG(SYSTEM, "File Deletions Enable, but not really enabled. Counter: %d", disable_delete_obsolete_files_);
     }
   }
   if (should_purge_files) {

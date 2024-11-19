@@ -394,7 +394,6 @@ set(SOURCES
         db/db_impl_files.cc
         db/db_impl_open.cc
         db/db_impl_debug.cc
-        db/db_info_dumper.cc
         db/db_iter.cc
         db/dbformat.cc
         db/dump_job.cc

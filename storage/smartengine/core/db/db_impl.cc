@@ -38,7 +38,6 @@
 #include "backup/hotbackup_impl.h"
 #include "cache/row_cache.h"
 #include "compact/compaction_job.h"
-#include "db/db_info_dumper.h"
 #include "db/db_iter.h"
 #include "db/dbformat.h"
 #include "db/flush_job.h"
@@ -330,28 +329,6 @@ CompressionType GetCompressionFlush(const ImmutableCFOptions& ioptions, const in
   return compress_type;
 }
 
-namespace {
-void DumpSupportInfo() {
-  SE_LOG(INFO, "Compression algorithms supported:");
-  __SE_LOG(INFO, "\tSnappy supported: %d", Snappy_Supported());
-  __SE_LOG(INFO, "\tZlib supported: %d", Zlib_Supported());
-  __SE_LOG(INFO, "\tBzip supported: %d", BZip2_Supported());
-  __SE_LOG(INFO, "\tLZ4 supported: %d", LZ4_Supported());
-  __SE_LOG(INFO, "\tZSTD supported: %d", ZSTD_Supported());
-  __SE_LOG(INFO, "Fast CRC32 supported: %d",
-                   crc32c::IsFastCrc32Supported());
-}
-
-template <class T>
-static void free_entry(const Slice& key, void* value) {
-  T* typed_value = reinterpret_cast<T*>(value);
-  if (nullptr != typed_value) {
-    typed_value->~T();
-    base_free(typed_value);
-  }
-}
-}  // namespace
-
 void all_sub_table_unref_handle(void *ptr)
 {
   AllSubTable *all_sub_table = static_cast<AllSubTable *>(ptr);
@@ -585,10 +562,9 @@ DBImpl::DBImpl(const DBOptions &options, const std::string &dbname)
   ctx->opt_print_stats_ = false;
 
   DumpSmartEngineBuildVersion();
-  DumpDBFileSummary(immutable_db_options_, dbname_);
+  FileNameUtil::dump(immutable_db_options_, dbname_);
   immutable_db_options_.Dump();
   mutable_db_options_.Dump();
-  DumpSupportInfo();
 }
 
 DBImpl::~DBImpl() {
@@ -727,7 +703,7 @@ DBImpl::~DBImpl() {
   if (nullptr != global_ctx) {
     MOD_DELETE_OBJECT(GlobalContext, global_ctx);
   }
-  SE_LOG(INFO, "Shutdown complete");
+  SE_LOG(SYSTEM, "Shutdown complete");
 }
 
 void DBImpl::schedule_master_thread() {
@@ -766,7 +742,7 @@ void DBImpl::bg_master_thread_func() {
   uint64_t sequence_step = 256;
   uint64_t last_monitor_ts = env_->NowMicros() / 1'000;
   bool idle_flag = true;
-  SE_LOG(WARN, "smartengine Master Thread online");
+  SE_LOG(SYSTEM, "smartengine Master Thread online");
   int ret = 0;
   while (!db_shutting_down() && bg_error_.ok()) {
     uint64_t auto_compaction_ms = mutable_db_options_.idle_tasks_schedule_time * 1000;
@@ -882,7 +858,7 @@ void DBImpl::bg_master_thread_func() {
   master_thread_running_.store(false, std::memory_order_release);
   bg_cv_.SignalAll();
   mutex_.Unlock();
-  SE_LOG(WARN, "smartengine Master Thread go offline", K(ret), K((int)bg_error_.code()));
+  SE_LOG(SYSTEM, "smartengine Master Thread go offline", K(ret), K((int)bg_error_.code()));
 }
 
 Directory* DBImpl::Directories::GetDataDir(size_t path_id) {
@@ -2685,11 +2661,8 @@ Top3ModMemInfo DBImpl::pull_top3_mod_mem_info() {
   std::sort(items_processed, items_processed + mod_cnt_processed);
   // we know there are more than three mods
   for (int topk = 1; topk < 4; ++topk) {
-    __SE_LOG(WARN,
-             "Top %d module is %s, the memory usage beyond quota is %lld MB.",
-             topk,
-             AllocMgr::get_instance()->get_mod_name_by_mod_id(
-                 items_processed[topk - 1].id_),
+    __SE_LOG(SYSTEM, "Top %d module is %s, the memory usage beyond quota is %lld MB.",
+             topk, AllocMgr::get_instance()->get_mod_name_by_mod_id(items_processed[topk - 1].id_),
              items_processed[topk - 1].malloc_size_ / (1 << 20));
   }
   ret.top1 = items_processed[0].malloc_size_ / (1 << 20);

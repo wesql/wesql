@@ -1027,7 +1027,7 @@ static MYSQL_SYSVAR_ULONG(
     PLUGIN_VAR_RQCMDARG,
     "DBOptions::db_total_write_buffer_size for SE",
     nullptr, se_set_db_total_write_buffer_size,
-    100L << 30, 0L, LONG_MAX, 0);
+    128 * 1024 * 1024, 0L, LONG_MAX, 0);
 
 static MYSQL_SYSVAR_INT(
     max_write_buffer_number_to_maintain,

@@ -1106,16 +1106,12 @@ int PersistentCache::erase(const storage::ExtentId &data_extent_id)
 {
   se_assert(!is_recovering_);
   int ret = Status::kOk;
-  char cache_key_buf[MAX_PERSISTENT_CACHEL_KEY_SIZE] = {0};
-  Slice cache_key;
-  generate_cache_key(data_extent_id, cache_key_buf, cache_key);
 
-  if (IS_NOTNULL(cache_->Lookup(cache_key))) {
-    ret = Status::kErrorUnexpected;
-    SE_LOG(WARN, "the data extent id must have been evicted", K(ret), K(data_extent_id)); 
-  } else if (FAILED(cache_file_.erase(data_extent_id))) {
+  if (FAILED(cache_file_.erase(data_extent_id))) {
     SE_LOG(WARN, "fail to erase from cache file", K(ret), K(data_extent_id));
   } else {
+    // TODO (Zhao Dongsheng): There may left some staled entries after persistenct cache recovery.
+    evict_cache(data_extent_id);
     SE_LOG(INFO, "success to erase from cache file", K(data_extent_id));
   }
 

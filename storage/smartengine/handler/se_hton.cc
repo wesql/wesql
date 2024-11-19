@@ -204,7 +204,7 @@ logger::InfoLogLevel get_se_log_level(ulong l)
 {
   switch (l) {
     case 0 /* SYSTEM_LEVEL */:
-      return logger::InfoLogLevel::FATAL_LEVEL;
+      return logger::InfoLogLevel::SYSTEM_LEVEL;
     case 1 /* ERROR_LEVEL */:
       return logger::InfoLogLevel::ERROR_LEVEL;
     case 2 /* WARNING_LEVEL */:

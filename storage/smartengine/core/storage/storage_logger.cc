@@ -560,7 +560,7 @@ int StorageLogger::replay(memory::ArenaAllocator &arena)
   } else if (FAILED(version_set_->recover_extent_space_manager())) {
     SE_LOG(ERROR, "fail to recover extent space manager", K(ret));
   } else {
-    SE_LOG(INFO, "success to replay", K_(log_file_number));
+    SE_LOG(SYSTEM, "success to replay manifest", K_(log_file_number));
   }
 
   return ret;
@@ -810,7 +810,7 @@ int StorageLogger::load_checkpoint(memory::ArenaAllocator &arena)
     } else if (FAILED(version_set_->load_checkpoint(checkpoint_reader, header))) {
       SE_LOG(WARN, "fail to load partition group meta checkpoint", K(ret));
     } else {
-      SE_LOG(INFO, "success to load checkpoint", K(checkpoint_name.c_str()), K(log_number));
+      SE_LOG(SYSTEM, "success to load checkpoint", K(checkpoint_name.c_str()), K(log_number));
     }
     FREE_OBJECT(RandomAccessFile, arena, checkpoint_reader);
   }
@@ -893,7 +893,7 @@ int StorageLogger::replay_after_ckpt(memory::ArenaAllocator &arena)
       } else {
         break;
       }
-      SE_LOG(INFO, "replay manifest file", K(log_file_number));
+      SE_LOG(SYSTEM, "replay manifest file", K(log_file_number));
       if (FAILED(create_log_reader(manifest_name, reader, arena))) {
         SE_LOG(WARN, "fail to create log reader", K(ret));
       } else {
@@ -977,7 +977,7 @@ int StorageLogger::replay_after_ckpt(memory::ArenaAllocator &arena)
     }
   }
 
-  SE_LOG(INFO, "success to replay after checkpoint", K_(log_file_number));
+  SE_LOG(SYSTEM, "success to replay after checkpoint", K_(log_file_number));
 
   return ret;
 }

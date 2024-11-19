@@ -156,7 +156,6 @@ SET(SE_SOURCES
   core/db/db_impl_files.cc
   core/db/db_impl_open.cc
   core/db/db_impl_debug.cc
-  core/db/db_info_dumper.cc
   core/db/db_iter.cc
   core/db/dbformat.cc
   core/db/replay_task.cc

@@ -155,24 +155,14 @@ void DBOptions::Dump() const {
 }  // DBOptions::Dump
 
 void ColumnFamilyOptions::Dump() const {
-  __SE_LOG(INFO, "                       Options.comparator: %s",
-                   comparator->Name());
-  __SE_LOG(INFO, "                 Options.memtable_factory: %s",
-                   memtable_factory->Name());
-  __SE_LOG(INFO, "                    Options.table_factory: %s",
-                   table_factory->Name());
-  __SE_LOG(INFO, "                    table_factory options: %s",
-                   table_factory->GetPrintableTableOptions().c_str());
-  __SE_LOG(INFO,
-                "                Options.write_buffer_size: %ld", write_buffer_size);
-  __SE_LOG(INFO, "             Options.flush_delete_percent: %d",
-                   flush_delete_percent);
-  __SE_LOG(INFO, "        Options.compaction_delete_percent: %d",
-                   compaction_delete_percent);
-  __SE_LOG(INFO, "     Options.flush_delete_percent_trigger: %d",
-                   flush_delete_percent_trigger);
-  __SE_LOG(INFO, "      Options.flush_delete_record_trigger: %d",
-                   flush_delete_record_trigger);
+  __SE_LOG(INFO, "                       Options.comparator: %s", comparator->Name());
+  __SE_LOG(INFO, "                 Options.memtable_factory: %s", memtable_factory->Name());
+  __SE_LOG(INFO, "                    Options.table_factory: %s", table_factory->Name());
+  __SE_LOG(INFO, "                Options.write_buffer_size: %ld", write_buffer_size);
+  __SE_LOG(INFO, "             Options.flush_delete_percent: %d", flush_delete_percent);
+  __SE_LOG(INFO, "        Options.compaction_delete_percent: %d", compaction_delete_percent);
+  __SE_LOG(INFO, "     Options.flush_delete_percent_trigger: %d", flush_delete_percent_trigger);
+  __SE_LOG(INFO, "      Options.flush_delete_record_trigger: %d", flush_delete_record_trigger);
   if (!compression_per_level.empty()) {
     for (unsigned int i = 0; i < compression_per_level.size(); i++) {
       __SE_LOG(

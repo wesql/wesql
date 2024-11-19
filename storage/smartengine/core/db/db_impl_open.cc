@@ -413,7 +413,7 @@ int DBImpl::before_replay_wal_files()
     }
   }
 
-  SE_LOG(INFO, "max sequence number in recovery point", K_(max_seq_in_rp));
+  SE_LOG(SYSTEM, "max sequence number in recovery point", K_(max_seq_in_rp));
 
   if (immutable_db_options_.avoid_flush_during_recovery) {
     if (nullptr == (global_ctx = versions_->get_global_ctx())) {
@@ -1472,7 +1472,7 @@ Status DB::Open(const Options &options,
          impl->versions_->LastAllocatedSequence());
 
   if (s.ok()) {
-    __SE_LOG(INFO, "DB pointer %p", impl);
+    SE_LOG(SYSTEM, "success to open DBImpl");
   }
   if (!s.ok()) {
     for (auto* h : *handles) {

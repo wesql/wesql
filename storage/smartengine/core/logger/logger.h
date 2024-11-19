@@ -35,8 +35,7 @@ enum InfoLogLevel : unsigned char {
   INFO_LEVEL,
   WARN_LEVEL,
   ERROR_LEVEL,
-  FATAL_LEVEL,
-  HEADER_LEVEL,
+  SYSTEM_LEVEL, // system-level logs should always be printed
   NUM_INFO_LOG_LEVELS,
 };
 
@@ -281,7 +280,7 @@ void Logger::print_log_kv(const char *mod_name,
   LogLocation log_location(file_name, function_name, line_num);
   if (nullptr != mod_name
       && level >= InfoLogLevel::DEBUG_LEVEL
-      && level <= InfoLogLevel::FATAL_LEVEL
+      && level < InfoLogLevel::NUM_INFO_LOG_LEVELS
       && log_location.is_valid()
       && nullptr != info_string)  {
     LogBuffer log_buffer;
@@ -305,7 +304,7 @@ void Logger::print_log_fmt(const char *mod_name,
   LogLocation log_location(file_name, function_name, line_num);
   if (nullptr != mod_name
       && level >= InfoLogLevel::DEBUG_LEVEL
-      && level <= InfoLogLevel::FATAL_LEVEL
+      && level < InfoLogLevel::NUM_INFO_LOG_LEVELS
       && log_location.is_valid()
       && nullptr != fmt)  {
     LogBuffer log_buffer;

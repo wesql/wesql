@@ -10,24 +10,33 @@
 #include "env/env.h"
 #include "monitoring/statistics.h"
 
-namespace smartengine {
-namespace monitor {
+namespace smartengine
+{
+namespace monitor
+{
 
 class InstrumentedCondVar;
 
 // A wrapper class for port::Mutex that provides additional layer
 // for collecting stats and instrumentation.
-class InstrumentedMutex {
+class InstrumentedMutex
+{
  public:
   explicit InstrumentedMutex(uint64_t *backtrace_limit_nano,
                              util::Env *env,
                              bool adaptive = false)
-      : mutex_(adaptive), env_(env), start_nano_(0),
-        backtrace_limit_nano_(backtrace_limit_nano) {}
+      : mutex_(adaptive),
+        env_(env),
+        start_nano_(0),
+        backtrace_limit_nano_(backtrace_limit_nano)
+  {}
 
   explicit InstrumentedMutex()
-      : mutex_(false), env_(nullptr), start_nano_(0),
-      backtrace_limit_nano_(nullptr) {}
+      : mutex_(false),
+        env_(nullptr),
+        start_nano_(0),
+        backtrace_limit_nano_(nullptr)
+  {}
 
 
   void Lock();
@@ -46,11 +55,10 @@ class InstrumentedMutex {
 
 // A wrapper class for port::Mutex that provides additional layer
 // for collecting stats and instrumentation.
-class InstrumentedMutexLock {
+class InstrumentedMutexLock
+{
  public:
-  explicit InstrumentedMutexLock(InstrumentedMutex* mutex) : mutex_(mutex) {
-    mutex_->Lock();
-  }
+  explicit InstrumentedMutexLock(InstrumentedMutex* mutex) : mutex_(mutex) { mutex_->Lock(); }
 
   ~InstrumentedMutexLock() { mutex_->Unlock(); }
 
@@ -60,7 +68,8 @@ class InstrumentedMutexLock {
   void operator=(const InstrumentedMutexLock&) = delete;
 };
 
-class InstrumentedCondVar {
+class InstrumentedCondVar
+{
  public:
   explicit InstrumentedCondVar(InstrumentedMutex* instrumented_mutex)
       : cond_(&(instrumented_mutex->mutex_))

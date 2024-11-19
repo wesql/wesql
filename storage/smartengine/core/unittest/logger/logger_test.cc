@@ -165,10 +165,10 @@ TEST(TestLogger, test_log_print)
 	COMPACTION_LOG(ERROR, "test print debug log with vars by K.", K(ret), "var_bool", var_bool, "var_int8", var_int8, K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
 	__COMPACTION_LOG(ERROR, "test print debug log with vars by fmt. ret = %d, var_bool = %d, var_int8 = %d, var_str = %s\n", ret, var_bool, var_int8, var_str);
 
-	COMPACTION_LOG(FATAL, "test print debug log without vars.");
-	COMPACTION_LOG(FATAL, "test print debug log with vars by K.", K(ret), K(var_bool), K(var_int8), K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
-	COMPACTION_LOG(FATAL, "test print debug log with vars by K.", K(ret), "var_bool", var_bool, "var_int8", var_int8, K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
-	__COMPACTION_LOG(FATAL, "test print debug log with vars by fmt. ret = %d, var_bool = %d, var_int8 = %d, var_str = %s\n", ret, var_bool, var_int8, var_str);
+	COMPACTION_LOG(SYSTEM, "test print debug log without vars.");
+	COMPACTION_LOG(SYSTEM, "test print debug log with vars by K.", K(ret), K(var_bool), K(var_int8), K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
+	COMPACTION_LOG(SYSTEM, "test print debug log with vars by K.", K(ret), "var_bool", var_bool, "var_int8", var_int8, K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
+	__COMPACTION_LOG(SYSTEM, "test print debug log with vars by fmt. ret = %d, var_bool = %d, var_int8 = %d, var_str = %s\n", ret, var_bool, var_int8, var_str);
 
 	FLUSH_LOG(DEBUG, "test print debug log without vars.");
 	FLUSH_LOG(DEBUG, "test print debug log with vars by K.", K(ret), K(var_bool), K(var_int8), K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
@@ -180,10 +180,10 @@ TEST(TestLogger, test_log_print)
 	FLUSH_LOG(WARN, "test print debug log with vars by K.", K(ret), "var_bool", var_bool, "var_int8", var_int8, K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
 	__FLUSH_LOG(WARN, "test print debug log with vars by fmt. ret = %d, var_bool = %d, var_int8 = %d, var_str = %s\n", ret, var_bool, var_int8, var_str);
 
-	FLUSH_LOG(FATAL, "test print debug log without vars.");
-	FLUSH_LOG(FATAL, "test print debug log with vars by K.", K(ret), K(var_bool), K(var_int8), K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
-	FLUSH_LOG(FATAL, "test print debug log with vars by K.", K(ret), "var_bool", var_bool, "var_int8", var_int8, K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
-	__FLUSH_LOG(FATAL, "test print debug log with vars by fmt. ret = %d, var_bool = %d, var_int8 = %d, var_str = %s\n", ret, var_bool, var_int8, var_str);
+	FLUSH_LOG(SYSTEM, "test print debug log without vars.");
+	FLUSH_LOG(SYSTEM, "test print debug log with vars by K.", K(ret), K(var_bool), K(var_int8), K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
+	FLUSH_LOG(SYSTEM, "test print debug log with vars by K.", K(ret), "var_bool", var_bool, "var_int8", var_int8, K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
+	__FLUSH_LOG(SYSTEM, "test print debug log with vars by fmt. ret = %d, var_bool = %d, var_int8 = %d, var_str = %s\n", ret, var_bool, var_int8, var_str);
 
 	HANDLER_LOG(DEBUG, "test print debug log without vars.");
 	HANDLER_LOG(DEBUG, "test print debug log with vars by K.", K(ret), K(var_bool), K(var_int8), K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
@@ -195,10 +195,10 @@ TEST(TestLogger, test_log_print)
 	HANDLER_LOG(WARN, "test print debug log with vars by K.", K(ret), "var_bool", var_bool, "var_int8", var_int8, K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
 	__HANDLER_LOG(WARN, "test print debug log with vars by fmt. ret = %d, var_bool = %d, var_int8 = %d, var_str = %s\n", ret, var_bool, var_int8, var_str);
 
-	HANDLER_LOG(FATAL, "test print debug log without vars.");
-	HANDLER_LOG(FATAL, "test print debug log with vars by K.", K(ret), K(var_bool), K(var_int8), K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
-	HANDLER_LOG(FATAL, "test print debug log with vars by K.", K(ret), "var_bool", var_bool, "var_int8", var_int8, K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
-	__HANDLER_LOG(FATAL, "test print debug log with vars by fmt. ret = %d, var_bool = %d, var_int8 = %d, var_str = %s\n", ret, var_bool, var_int8, var_str);
+	HANDLER_LOG(SYSTEM, "test print debug log without vars.");
+	HANDLER_LOG(SYSTEM, "test print debug log with vars by K.", K(ret), K(var_bool), K(var_int8), K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
+	HANDLER_LOG(SYSTEM, "test print debug log with vars by K.", K(ret), "var_bool", var_bool, "var_int8", var_int8, K(var_uint8), K(var_int16), K(var_uint16), K(var_int32), K(var_uint32), K(var_int64), K(var_uint64), K(var_double), K(var_float), K(var_str));
+	__HANDLER_LOG(SYSTEM, "test print debug log with vars by fmt. ret = %d, var_bool = %d, var_int8 = %d, var_str = %s\n", ret, var_bool, var_int8, var_str);
   dup2(stdout_fd, fileno(stdout));
   dup2(stderr_fd, fileno(stderr));
 	std::cout<<"test_log_print over"<<std::endl;

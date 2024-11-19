@@ -17,6 +17,11 @@
 
 namespace smartengine
 {
+namespace common
+{
+struct ImmutableDBOptions;
+} // namespace common
+
 namespace schema
 {
 class TableSchema;
@@ -24,6 +29,7 @@ class TableSchema;
 
 namespace util
 {
+class Env;
 
 enum FileType
 {
@@ -41,6 +47,7 @@ enum FileType
 class FileNameUtil
 {
 public:
+  static void dump(const common::ImmutableDBOptions &immutable_db_options, const std::string &dbname);
   static int parse_file_name(const std::string &file_name, int64_t &file_number, FileType &file_type);
 
   static std::string current_file_path(const std::string &dir);
@@ -68,6 +75,7 @@ private:
 
 private:
   static std::string file_name(int64_t file_number, const char *suffix);
+  static int dump_dir(util::Env *env, const std::string &dir);
 
 };
 

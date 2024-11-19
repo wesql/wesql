@@ -31,7 +31,7 @@ namespace smartengine
 {
 namespace logger
 {
-const char *const Logger::err_str_[] = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
+const char *const Logger::err_str_[] = {"DEBUG", "INFO", "WARN", "ERROR", "SYSTEM"};
 int Logger::num_log_file_switch_ = 0;
 
 void Logger::set_log_level(InfoLogLevel log_level)
@@ -144,7 +144,7 @@ void Logger::print_log_kv(const char *mod_name,
   LogLocation log_location(file_name, function_name, line_num);
   if (nullptr != mod_name
       && level >= InfoLogLevel::DEBUG_LEVEL
-      && level <= InfoLogLevel::FATAL_LEVEL
+      && level < InfoLogLevel::NUM_INFO_LOG_LEVELS
       && log_location.is_valid()
       && nullptr != info_string)  {
     LogBuffer log_buffer;
@@ -167,7 +167,7 @@ void Logger::print_log_fmt(const char *mod_name,
   int64_t len = 0;
   if (nullptr != mod_name
       && level >= InfoLogLevel::DEBUG_LEVEL
-      && level <= InfoLogLevel::FATAL_LEVEL
+      && level < InfoLogLevel::NUM_INFO_LOG_LEVELS
       && log_location.is_valid()
       && nullptr != fmt) {
     LogBuffer log_buffer;
@@ -194,9 +194,9 @@ void Logger::print_log_header(const char *mod_name,
     struct tm time;
     if (nullptr != (::localtime_r(const_cast<const time_t *>(&tv.tv_sec), &time))) {
       int64_t len = snprintf(log_buffer.current(), log_buffer.remain(),
-                              "[%04d-%02d-%02d %02d:%02d:%02d.%06ld] %-5s [%ld] %s %s(%s:%d) ",
-                              time.tm_year + 1900, time.tm_mon + 1, time.tm_mday, time.tm_hour, time.tm_min, time.tm_sec, tv.tv_usec,
-                              err_str_[level], GETTID(), mod_name, log_location.function_name_, file_name, log_location.line_num_);
+                             "[%04d-%02d-%02d %02d:%02d:%02d.%06ld] %-6s [%ld] %s %s(%s:%d) ",
+                             time.tm_year + 1900, time.tm_mon + 1, time.tm_mday, time.tm_hour, time.tm_min, time.tm_sec, tv.tv_usec,
+                             err_str_[level], GETTID(), mod_name, log_location.function_name_, file_name, log_location.line_num_);
       log_buffer.advance(len);
     }
   }
