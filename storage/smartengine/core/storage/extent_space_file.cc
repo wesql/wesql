@@ -677,7 +677,7 @@ int FileExtentSpace::move_one_extent_to_front(DataFile *src_data_file,
     SE_LOG(WARN, "fail to init new extent", K(ret), K(new_io_info));
   } else if (FAILED(origin_extent.read(nullptr, 0, origin_io_info.extent_size_, extent_buf, extent_slice))) {
     SE_LOG(WARN, "fail to read origin extent", K(ret), K(origin_extent_id));
-  } else if (FAILED(new_extent.write(extent_slice))) {
+  } else if (FAILED(new_extent.write(extent_slice, 0 /*offset*/))) {
     SE_LOG(WARN, "fail to append new extent", K(ret), K(new_io_info));
   } else {
     SE_LOG(INFO, "success to move one extent to front", K(origin_extent_id), K(new_io_info));

@@ -18,18 +18,22 @@
 
 namespace smartengine
 {
+using namespace common;
+
 namespace table
 {
 
 Footer::Footer()
     : magic_numer_(FOOTER_MAGIC_NUMBER),
       checksum_type_(kCRC32c),
+      extent_id_(),
       index_block_handle_()
 {}
 
 Footer::Footer(const Footer &footer)
     : magic_numer_(footer.magic_numer_),
       checksum_type_(footer.checksum_type_),
+      extent_id_(footer.extent_id_),
       index_block_handle_(footer.index_block_handle_)
 {}
 
@@ -39,6 +43,7 @@ Footer &Footer::operator=(const Footer &footer)
 {
   magic_numer_ = footer.magic_numer_;
   checksum_type_ = footer.checksum_type_;
+  extent_id_ = footer.extent_id_;
   index_block_handle_ = footer.index_block_handle_;
 
   return *this;
@@ -48,6 +53,7 @@ void Footer::reset()
 {
   magic_numer_ = FOOTER_MAGIC_NUMBER;
   checksum_type_ = kCRC32c;
+  extent_id_.reset();
   index_block_handle_.reset();
 }
 
@@ -57,9 +63,76 @@ bool Footer::is_valid() const
          index_block_handle_.is_valid();
 }
 
-DEFINE_TO_STRING(Footer, KV_(magic_numer), KV_(checksum_type), KV_(index_block_handle))
+int Footer::serialize(char *buf, int64_t buf_len, int64_t &pos) const
+{
+  int ret = Status::kOk;
+  int32_t header_size = get_serialize_size();
+  int32_t header_version = FOOTER_VERSION;
 
-DEFINE_COMPACTIPLE_SERIALIZATION(Footer, checksum_type_, index_block_handle_)
+  if (IS_NULL(buf) || UNLIKELY(buf_len <= 0) || UNLIKELY(pos < 0) || UNLIKELY(pos >= buf_len)) {
+    ret = Status::kInvalidArgument;
+    SE_LOG(WARN, "invalid argument", K(ret), KP(buf), K(buf_len), K(pos));
+  } else if (FAILED(util::encode_fixed_int32(buf, buf_len, pos, header_size))) {
+    SE_LOG(WARN, "fail to encode header size", K(ret), K(header_size));
+  } else if (FAILED(util::encode_fixed_int32(buf, buf_len, pos, header_version))) {
+    SE_LOG(WARN, "fail to encode header version", K(ret));
+  } else if (FAILED(util::encode_fixed_int64(buf, buf_len, pos, magic_numer_))) {
+    SE_LOG(WARN, "fail to encode magic number", K(ret));
+  } else if (FAILED(util::encode_fixed_int8(buf, buf_len, pos, checksum_type_))) {
+    SE_LOG(WARN, "fail to encode checksum type", K(ret));
+  } else if (FAILED(extent_id_.serialize(buf, buf_len, pos))) {
+    SE_LOG(WARN, "fail to serialize extent id", K(ret));
+  } else if (FAILED(index_block_handle_.serialize(buf, buf_len, pos))) {
+    SE_LOG(WARN, "fail to serialize index block handle", K(ret));
+  } else {
+    // succeed
+  }
+
+  return ret;
+}
+
+int Footer::deserialize(const char *buf, int64_t buf_len, int64_t &pos)
+{
+  int ret = Status::kOk;
+  int32_t header_size = 0;
+  int32_t header_version = 0;
+
+  if (IS_NULL(buf) || UNLIKELY(buf_len <= 0) || UNLIKELY(pos < 0) || UNLIKELY(pos >= buf_len)) {
+    ret = Status::kInvalidArgument;
+    SE_LOG(WARN, "invalid argument", K(ret), KP(buf), K(buf_len), K(pos));
+  } else if (FAILED(util::decode_fixed_int32(buf, buf_len, pos, header_size))) {
+    SE_LOG(WARN, "fail to decode header size", K(ret));
+  } else if (FAILED(util::decode_fixed_int32(buf, buf_len, pos, header_version))) {
+    SE_LOG(WARN, "fail to decode header version", K(ret));
+  } else if (FAILED(util::decode_fixed_int64(buf, buf_len, pos, magic_numer_))) {
+    SE_LOG(WARN, "fail to decode magic number", K(ret));
+  } else if (FAILED(util::decode_fixed_int8(buf, buf_len, pos, checksum_type_))) {
+    SE_LOG(WARN, "fail to decode checksum type", K(ret));
+  } else if (FAILED(extent_id_.deserialize(buf, buf_len, pos))) {
+    SE_LOG(WARN, "fail to deserialize extent id", K(ret));
+  } else if (FAILED(index_block_handle_.deserialize(buf, buf_len, pos))) {
+    SE_LOG(WARN, "fail to deserialize index block handle", K(ret));
+  } else {
+    // succeed
+  }
+
+  return ret;
+}
+
+int64_t Footer::get_serialize_size() const
+{
+  // header size and header version
+  int64_t size = sizeof(int32_t) + sizeof(int32_t);
+  size += sizeof(magic_numer_);
+  size += sizeof(checksum_type_);
+  size += extent_id_.get_serialize_size();
+  size += index_block_handle_.get_serialize_size();
+  
+  return size;
+}
+
+DEFINE_TO_STRING(Footer, KV_(magic_numer), KV_(checksum_type), KV_(extent_id), KV_(index_block_handle))
+
 
 ExtentInfo::ExtentInfo()
     : table_space_id_(0),

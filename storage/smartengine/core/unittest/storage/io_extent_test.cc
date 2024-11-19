@@ -131,7 +131,7 @@ protected:
     ret = writable_extent.init(io_info_.extent_id_, io_info_.unique_id_, io_info_.fd_);
     ASSERT_EQ(Status::kOk, ret);
     memcpy(aligned_buf_, data_.data(), MAX_EXTENT_SIZE);
-    ret = writable_extent.write(Slice(aligned_buf_, MAX_EXTENT_SIZE));
+    ret = writable_extent.write(Slice(aligned_buf_, MAX_EXTENT_SIZE), 0);
     ASSERT_EQ(Status::kOk, ret);   
   }
 
@@ -194,7 +194,7 @@ public:
                              std::string());
     ASSERT_EQ(Status::kOk, ret);
     memcpy(aligned_buf_, data_.data(), MAX_EXTENT_SIZE);
-    ret = object_extent.write(Slice(aligned_buf_, MAX_EXTENT_SIZE));
+    ret = object_extent.write(Slice(aligned_buf_, MAX_EXTENT_SIZE), 0);
     ASSERT_EQ(Status::kOk, ret);   
   }
 
@@ -234,7 +234,7 @@ TEST_F(FileIOExtentTest, file_io_extent_write)
   FileIOExtent file_extent;
 
   // not init
-  ret = file_extent.write(Slice());
+  ret = file_extent.write(Slice(), 0);
   ASSERT_EQ(Status::kNotInit, ret);
 
   // init
@@ -242,26 +242,67 @@ TEST_F(FileIOExtentTest, file_io_extent_write)
   ASSERT_EQ(Status::kOk, ret);
 
   // empty data
-  ret = file_extent.write(Slice());
+  ret = file_extent.write(Slice(), 0);
   ASSERT_EQ(Status::kInvalidArgument, ret);
 
   // invalid data size
-  ret = file_extent.write(Slice(data_.data(), storage::MAX_EXTENT_SIZE * 2));
+  ret = file_extent.write(Slice(data_.data(), storage::MAX_EXTENT_SIZE * 2), 0);
   ASSERT_EQ(Status::kInvalidArgument, ret);
 
   // not aligned data, success write
   char *not_aligned_addr = (aligned_buf_ + DIOHelper::DIO_ALIGN_SIZE /2);
   memcpy(not_aligned_addr, data_.data(), MAX_EXTENT_SIZE);
-  ret = file_extent.write(Slice(not_aligned_addr, MAX_EXTENT_SIZE));
+  ret = file_extent.write(Slice(not_aligned_addr, MAX_EXTENT_SIZE), 0);
   ASSERT_EQ(Status::kOk, ret);
 
   // aligned data, success write
   memcpy(aligned_buf_, data_.data(), MAX_EXTENT_SIZE);
-  ret = file_extent.write(Slice(aligned_buf_, MAX_EXTENT_SIZE));
+  ret = file_extent.write(Slice(aligned_buf_, MAX_EXTENT_SIZE), 0);
   ASSERT_EQ(Status::kOk, ret);
 
   // check data
   check_read(data_, &file_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+}
+
+TEST_F(FileIOExtentTest, file_io_extent_positioned_write)
+{
+  int ret = Status::kOk;
+  FileIOExtent file_extent;
+  int64_t offset = 0;
+  int64_t size = 4 * 1024;
+
+  // not init
+  ret = file_extent.write(Slice(), offset);
+  ASSERT_EQ(Status::kNotInit, ret);
+
+  // init
+  ret = file_extent.init(io_info_.extent_id_, io_info_.unique_id_, io_info_.fd_);
+  ASSERT_EQ(Status::kOk, ret);
+
+  // invalid argument
+  // invalid data
+  ret = file_extent.write(Slice(), 0);
+  ASSERT_EQ(Status::kInvalidArgument, ret);
+  // invalid offset
+  ret = file_extent.write(Slice(data_), -1);
+  ASSERT_EQ(Status::kInvalidArgument, ret);
+  // exceed extent size
+  ret = file_extent.write(Slice(data_.data(), size), storage::MAX_EXTENT_SIZE - 1024);
+  ASSERT_EQ(Status::kInvalidArgument, ret);
+
+  // not aligned offset 
+  ret = file_extent.write(Slice(data_.data(), size), 1024);
+  ASSERT_EQ(Status::kErrorUnexpected, ret);
+  // not aligned size
+  ret = file_extent.write(Slice(data_.data(), 1024), storage::MAX_EXTENT_SIZE - size);
+  ASSERT_EQ(Status::kErrorUnexpected, ret);
+
+  // success write
+  ret = file_extent.write(Slice(data_.data() + storage::MAX_EXTENT_SIZE - size, size), storage::MAX_EXTENT_SIZE - size);
+  ASSERT_EQ(Status::kOk, ret);
+  
+  // check data
+  check_read(data_, &file_extent, storage::MAX_EXTENT_SIZE - size, size, 0, nullptr);
 }
 
 TEST_F(FileIOExtentTest, file_io_extent_sync_read)
@@ -422,7 +463,7 @@ TEST_F(ObjectIOExtentTest, object_io_extent_write)
   std::string data;
 
   // not init
-  ret = object_extent.write(Slice());
+  ret = object_extent.write(Slice(), 0);
   ASSERT_EQ(Status::kNotInit, ret);
 
   // init object extent
@@ -434,16 +475,21 @@ TEST_F(ObjectIOExtentTest, object_io_extent_write)
   ASSERT_EQ(Status::kOk, ret);
 
   // invalid argument
-  ret = object_extent.write(Slice());
+  ret = object_extent.write(Slice(), 0);
   ASSERT_EQ(Status::kInvalidArgument, ret);
 
   // invalid data size
-  ret = object_extent.write(Slice(data.data(), storage::MAX_EXTENT_SIZE * 2));
+  ret = object_extent.write(Slice(data.data(), storage::MAX_EXTENT_SIZE * 2), 0);
+  ASSERT_EQ(Status::kInvalidArgument, ret);
+  // invalid data offset
+  ret = object_extent.write(Slice(data.data(), storage::MAX_EXTENT_SIZE), -1);
+  ASSERT_EQ(Status::kInvalidArgument, ret);
+  ret = object_extent.write(Slice(data.data(), storage::MAX_EXTENT_SIZE -1), 1);
   ASSERT_EQ(Status::kInvalidArgument, ret);
 
   // success write
   data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE);
-  ret = object_extent.write(Slice(data.data(), data.size()));
+  ret = object_extent.write(Slice(data.data(), data.size()), 0);
   ASSERT_EQ(Status::kOk, ret);
 
   // check data
@@ -533,9 +579,14 @@ TEST_F(ObjectIOExtentTest, object_io_extent_sync_read_with_persistent_cache)
   int ret = Status::kOk;
   ObjectIOExtent object_extent;
   Slice result;
+  int64_t need_recover_extent_count = 0;
 
   // init persistent cache
-  ret = cache::PersistentCache::get_instance().init(Env::Default(), test_dir, 1 * 1024 * 1024 * 1024, common::kReadWriteThrough);
+  ret = cache::PersistentCache::get_instance().init(Env::Default(),
+                                                    test_dir,
+                                                    1 * 1024 * 1024 * 1024,
+                                                    1,
+                                                    common::kReadWriteThrough);
   ASSERT_EQ(Status::kOk, ret);
 
   // Prepare data
@@ -667,7 +718,11 @@ TEST_F(ObjectIOExtentTest, object_io_extent_async_read_with_persistent_cache)
   ObjectIOExtent object_extent;
 
   // init persistent cache
-  ret = cache::PersistentCache::get_instance().init(Env::Default(), test_dir, 1 * 1024 * 1024 * 1024, common::kReadWriteThrough);
+  ret = cache::PersistentCache::get_instance().init(Env::Default(),
+                                                    test_dir,
+                                                    1 * 1024 * 1024 * 1024,
+                                                    1,
+                                                    common::kReadWriteThrough);
   ASSERT_EQ(Status::kOk, ret);
 
   // Prepare data

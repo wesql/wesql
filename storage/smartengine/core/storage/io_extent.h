@@ -34,7 +34,8 @@ public:
   IOExtent();
   virtual ~IOExtent();
 
-  virtual int write(const common::Slice &data) = 0;
+  virtual void reset();
+  virtual int write(const common::Slice &data, int64_t offset) = 0;
   virtual int read(util::AIOHandle *aio_handle,
                    int64_t offset,
                    int64_t size,
@@ -43,12 +44,15 @@ public:
   virtual int prefetch(util::AIOHandle *aio_handle, int64_t offset, int64_t size) = 0;
   virtual ExtentId get_extent_id() const { return extent_id_; }
   virtual int64_t get_unique_id(char *id, const int64_t max_size) const;
+  inline void set_large_object_extent() { is_large_object_extent_ = true; }
+  inline bool is_large_object_extent() const { return is_large_object_extent_; }
 
   DEFINE_PURE_VIRTUAL_CONSTRUCTOR_SIZE()
 protected:
   bool is_inited_;
   ExtentId extent_id_;
   int64_t unique_id_; // for unique identify in cache
+  bool is_large_object_extent_; // is large object extent
 };
 
 class FileIOExtent : public IOExtent
@@ -58,7 +62,8 @@ public:
   ~FileIOExtent() override;
 
   int init(const ExtentId &extent_id, int64_t unique_id, int fd);
-  int write(const common::Slice &data) override;
+  void reset() override; 
+  int write(const common::Slice &data, int64_t offset) override;
   int read(util::AIOHandle *aio_handle, int64_t offset, int64_t size, char *buf, common::Slice &result) override;
   int prefetch(util::AIOHandle *aio_handle, int64_t offset, int64_t size) override; 
 
@@ -90,7 +95,8 @@ public:
            ::objstore::ObjectStore *object_store,
            const std::string &bucket,
            const std::string &prefix);
-  int write(const common::Slice &data) override;
+  void reset() override;
+  int write(const common::Slice &data, int64_t offset) override;
   int read(util::AIOHandle *aio_handle, int64_t offset, int64_t size, char *buf, common::Slice &result) override;
   int prefetch(util::AIOHandle *aio_handle, int64_t offset, int64_t size) override; 
 

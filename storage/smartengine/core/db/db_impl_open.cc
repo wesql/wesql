@@ -246,6 +246,7 @@ int DBImpl::prepare_recovery(const ColumnFamilyOptions &cf_options)
       if (FAILED(cache::PersistentCache::get_instance().init(env_,
                                                              immutable_db_options_.persistent_cache_dir,
                                                              immutable_db_options_.persistent_cache_size,
+                                                             std::thread::hardware_concurrency(),
                                                              static_cast<PersistentCacheMode>(immutable_db_options_.persistent_cache_mode)))) {
         SE_LOG(WARN, "fail to init PersistentCache", K(ret), "persist_cache_dir", immutable_db_options_.persistent_cache_dir,
             "persistent_cache_size", immutable_db_options_.persistent_cache_size);
@@ -798,7 +799,7 @@ int DBImpl::replay_one_wal_file(uint64_t file_number,
   SE_LOG(INFO, "begin replay the wal file", K(file_name));
   EnvOptions tmp_options = env_options_;
   tmp_options.arena = &arena;
-  uint64_t file_size;
+  uint64_t file_size = 0;
   if (FAILED(env_->NewSequentialFile(file_name, file, tmp_options).code())) {
     SE_LOG(WARN, "fail to open file", K(ret), K(file_name));
   } else if (FAILED(env_->GetFileSize(file_name, &file_size).code())) {

@@ -696,6 +696,11 @@ class PosixEnv : public Env
     thread_pools_[pri].SetBackgroundThreads(num);
   }
 
+  virtual void WaitForJobsAndJoinAllThreads(Priority pri) override {
+    assert(pri >= Priority::STATS && pri < Priority::TOTAL);
+    thread_pools_[pri].WaitForJobsAndJoinAllThreads();
+  }
+
   // Allow increasing the number of worker threads.
   virtual void IncBackgroundThreadsIfNeeded(int num, Priority pri) override {
     assert(pri >= Priority::STATS && pri <= Priority::FILTER);

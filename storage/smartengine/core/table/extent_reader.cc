@@ -82,6 +82,7 @@ int ExtentReader::init(const ExtentReaderArgs &args)
   } else if (FAILED(cache_entry_key_.setup(extent_))) {
     SE_LOG(WARN, "fail to setup cache key", K(ret), K(args));
   } else {
+    se_assert(extent_meta_->is_normal_extent());
     internal_key_comparator_ = args.internal_key_comparator_;
     block_cache_ = args.block_cache_;
     is_inited_ = true;
@@ -654,7 +655,7 @@ int ExtentReader::read_data_block(const BlockInfo &block_info, AIOHandle *aio_ha
                                               aio_handle,
                                               block_buf,
                                               block_content))) {
-    SE_LOG(WARN, "fail to read and uncompress block", K(ret), K(block_info), KP(aio_handle));
+    SE_LOG(WARN, "fail to read and uncompress block", K(ret), K(block_info), KP(aio_handle), K(*extent_meta_));
   } else if (block_info.is_columnar_format()) {
     if (FAILED(convert_to_row_block(block_content, block_info, row_block_content))) {
       SE_LOG(WARN, "fail to convert column block to row block", K(ret), K(block_info));

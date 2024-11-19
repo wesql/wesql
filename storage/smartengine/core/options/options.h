@@ -228,8 +228,8 @@ struct DbPath {
 
 enum PersistentCacheMode
 {
-  kReadThrough = 0,
-  kReadWriteThrough,
+  kReadWriteThrough = 0,
+  kReadThrough,
   kMaxPersistentCacheMode
 };
 

@@ -53,9 +53,9 @@ struct ExtentId {
     file_number = r.file_number;
     offset = r.offset;
   }
-  ExtentId(const int64_t eid) {
-    file_number = static_cast<int32_t>(eid >> 32);
-    offset = static_cast<int32_t>(eid);
+  ExtentId(const int64_t eid)
+  {
+    set(eid);
   }
 
   ExtentId(int32_t fn, int32_t off) : file_number(fn), offset(off) {}
@@ -72,6 +72,12 @@ struct ExtentId {
     int64_t lo = offset;
     int64_t value = hi << 32 | lo;
     return value;
+  }
+
+  inline void set(int64_t id)
+  {
+    file_number = static_cast<int32_t>(id >> 32);
+    offset = static_cast<int32_t>(id);
   }
 
   bool is_equal(const ExtentId &eid) const {

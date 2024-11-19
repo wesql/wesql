@@ -868,6 +868,7 @@ int ExtentWriter::write_footer()
 int ExtentWriter::write_extent()
 {
   int ret = Status::kOk;
+  IOExtent *extent = nullptr;
 
   if (UNLIKELY(!is_inited_)) {
     ret = Status::kNotInit;
@@ -876,17 +877,38 @@ int ExtentWriter::write_extent()
 #ifndef NDEBUG
     SE_LOG(INFO, "current extent is empty");
 #endif
-  } else if (FAILED(write_index_block())) {
-    SE_LOG(WARN, "fail to write index block", K(ret));
-  } else if (FAILED(write_footer())) {
-    SE_LOG(WARN, "fail to write footer", K(ret));
-  } else if (FAILED(flush_extent())) {
-    SE_LOG(WARN, "fail to flush extent", K(ret));
+  } else if (FAILED(ExtentSpaceManager::get_instance().allocate(table_space_id_,
+                                                                extent_space_type_,
+                                                                prefix_,
+                                                                extent))) {
+    SE_LOG(WARN, "fail to allocate writable extent", K(ret), K_(table_space_id), K_(extent_space_type), K_(prefix));
   } else {
-    SE_LOG(INFO, "success to write extent", K_(extent_info));
-
-    extent_info_.reset();
-    buf_.reuse();
+    extent_info_.table_space_id_ = table_space_id_;
+    extent_info_.extent_space_type_ = extent_space_type_;
+    extent_info_.extent_id_ = extent->get_extent_id();
+    footer_.set_extent_id(extent_info_.extent_id_);
+    if (FAILED(write_index_block())) {
+      SE_LOG(WARN, "fail to write index block", K(ret));
+    } else if (FAILED(write_footer())) {
+      SE_LOG(WARN, "fail to write footer", K(ret));
+    } else {
+      ExtentMeta extent_meta(ExtentMeta::F_NORMAL_EXTENT, extent_info_, table_schema_, prefix_);
+      if (FAILED(write_extent_meta(extent_meta, false /*is_large_object_extent*/))) {
+        SE_LOG(WARN, "fail to write extent meta", K(ret), K(extent_meta));
+      } else {
+        // Migrate the flagged blocks.This is a best-effort task and should not affect
+        // the normal data persistence process.
+        migrate_block_cache(extent);
+        writed_extent_infos_.push_back(extent_info_);
+        if (FAILED(submit_write_extent_request(extent, Slice(buf_.data(), MAX_EXTENT_SIZE)))) {
+          SE_LOG(WARN, "fail to submit write extent request", K(ret), K(extent_meta));
+        } else {
+          extent_info_.reset();
+          buf_.reuse();
+          SE_LOG(INFO, "success to write extent", K(extent_meta));
+        }
+      }
+    }
   }
 
   return ret;
@@ -1003,8 +1025,10 @@ int ExtentWriter::convert_to_large_object_value(const Slice &value, LargeObject 
              ? storage::MAX_EXTENT_SIZE : (compressed_value.size() - offset);
       memcpy(value_buf, compressed_value.data() + offset, size);
 
-      if (FAILED(storage::ExtentSpaceManager::get_instance()
-                     .allocate(table_space_id_, extent_space_type_, prefix_, extent))) {
+      if (FAILED(storage::ExtentSpaceManager::get_instance().allocate(table_space_id_,
+                                                                      extent_space_type_,
+                                                                      prefix_,
+                                                                      extent))) {
         SE_LOG(WARN, "fail to allocate writable extent", K(ret));
       } else if (FAILED(build_large_object_extent_meta(Slice(large_object.key_),
                                                        extent->get_extent_id(),
@@ -1014,6 +1038,7 @@ int ExtentWriter::convert_to_large_object_value(const Slice &value, LargeObject 
       } else if (FAILED(write_extent_meta(extent_meta, true /*is_large_object_extent*/))) {
         SE_LOG(WARN, "fail to write large object extent meta", K(ret), K(extent_meta));
       } else {
+        extent->set_large_object_extent();
         large_object.value_.extents_.push_back(extent->get_extent_id());
         offset += size;
         extent_meta.reset();

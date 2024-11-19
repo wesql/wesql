@@ -85,10 +85,13 @@ int LargeValue::convert_to_normal_format(const Slice &large_object_value, Slice 
       curr_read_buf = data_buf_ + i * storage::MAX_EXTENT_SIZE;
       if (FAILED(storage::ExtentSpaceManager::get_instance().get_readable_extent(extents_[i], extent))) {
         SE_LOG(WARN, "fail to get large object readable extent", K(ret), "extent_id", extents_[i]);
-      } else if (FAILED(extent->read(nullptr, 0, storage::MAX_EXTENT_SIZE, curr_read_buf, dummy_read_result))) {
-        SE_LOG(WARN, "fail to read large object extent", K(ret), K(i), "extent_id", extents_[i]);
+      } else {
+        extent->set_large_object_extent();
+        if (FAILED(extent->read(nullptr, 0, storage::MAX_EXTENT_SIZE, curr_read_buf, dummy_read_result))) {
+          SE_LOG(WARN, "fail to read large object extent", K(ret), K(i), "extent_id", extents_[i]);
+        }
+        DELETE_OBJECT(ModId::kIOExtent, extent);
       }
-      DELETE_OBJECT(ModId::kIOExtent, extent);
     }
 
     // Uncompress large value if need.

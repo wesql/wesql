@@ -144,8 +144,8 @@ DBOptions::DBOptions(const Options &options)
 {}
 
 const char *persistent_cache_mode_names[kMaxPersistentCacheMode + 1] = {
-    "read_through",
     "read_write_through",
+    "read_through",
     nullptr
 };
 

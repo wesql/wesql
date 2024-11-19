@@ -110,7 +110,7 @@ void HotbackupTest::replay_sst_files(const std::string &backup_dir,
     }
     FileIOExtent writable_extent;
     ASSERT_EQ(Status::kOk, writable_extent.init(extent_id, extent_id.id(), fd));
-    ASSERT_EQ(Status::kOk, writable_extent.write(Slice(extent_buf, storage::MAX_EXTENT_SIZE)));
+    ASSERT_EQ(Status::kOk, writable_extent.write(Slice(extent_buf, storage::MAX_EXTENT_SIZE), 0));
     SE_LOG(INFO, "replay extent", K(extent_id));
   }
   for (auto &iter : fds_map) {

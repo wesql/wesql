@@ -36,11 +36,19 @@ namespace storage
 IOExtent::IOExtent()
     : is_inited_(false),
       extent_id_(),
-      unique_id_(0)
+      unique_id_(0),
+      is_large_object_extent_(false)
 {}
 
 IOExtent::~IOExtent() {}
 
+void IOExtent::reset()
+{
+  is_inited_ = false;
+  extent_id_.reset();
+  unique_id_ = 0;
+  is_large_object_extent_ = false;
+}
 
 int64_t IOExtent::get_unique_id(char *id, const int64_t max_size) const
 {
@@ -74,24 +82,32 @@ int FileIOExtent::init(const ExtentId &extent_id, int64_t unique_id, int fd)
   return ret;
 }
 
-int FileIOExtent::write(const common::Slice &data)
+void FileIOExtent::reset()
+{
+  IOExtent::reset();
+  fd_ = -1;
+}
+
+int FileIOExtent::write(const common::Slice &data, int64_t offset)
 {
   int ret = Status::kOk;
 
   if (UNLIKELY(!is_inited_)) {
     ret = Status::kNotInit;
     SE_LOG(WARN, "FileIOExtent has not been inited", K(ret));
-  } else if (UNLIKELY(data.empty()) || UNLIKELY(data.size() > storage::MAX_EXTENT_SIZE)) {
+  } else if (UNLIKELY(data.empty()) || UNLIKELY(offset < 0) ||
+             UNLIKELY((offset + data.size()) > storage::MAX_EXTENT_SIZE)) {
     ret = Status::kInvalidArgument;
-    SE_LOG(WARN, "invalid argument", K(ret), K(data), "size", data.size());
-  } else if (UNLIKELY(!DIOHelper::is_aligned(data.size()))) {
+    SE_LOG(WARN, "invalid argument", K(ret), K(offset), K(data), "size", data.size());
+  } else if (UNLIKELY(!DIOHelper::is_aligned(get_base_offset() + offset)) ||
+             UNLIKELY(!DIOHelper::is_aligned(data.size()))) {
     ret = Status::kErrorUnexpected;
-    SE_LOG(WARN, "unexpected error, the writing data is not aligned", K(ret), "size", data.size());
+    SE_LOG(WARN, "unexpected error, the writing data is not aligned", K(ret), K(offset), "size", data.size());
   } else if (DIOHelper::is_aligned(reinterpret_cast<std::uintptr_t>(data.data()))) {
-    if (FAILED(direct_write(fd_, get_base_offset(), data.data(), data.size()))) {
-      SE_LOG(WARN, "fail to write file", K(ret), K_(extent_id), K_(fd), "size", data.size());
+    if (FAILED(direct_write(fd_, get_base_offset() + offset, data.data(), data.size()))) {
+      SE_LOG(WARN, "fail to direct write file", K(ret), K_(extent_id), K_(fd), "size", data.size());
     }
-  } else if (FAILED(align_to_direct_write(fd_, get_base_offset(), data.data(), data.size()))) {
+  } else if (FAILED(align_to_direct_write(fd_, get_base_offset() + offset, data.data(), data.size()))) {
     SE_LOG(WARN, "fail to align to direct write", K(ret));
   }
 
@@ -179,7 +195,7 @@ int FileIOExtent::align_to_direct_write(int fd, int64_t offset, const char *buf,
     SE_LOG(WARN, "fail to allocate memory for aligned buffer", K(ret), K(size));
   } else {
     memcpy(aligned_buf, buf, size);
-    if (FAILED(direct_write(fd_, get_base_offset(), aligned_buf, size))) {
+    if (FAILED(direct_write(fd, offset, aligned_buf, size))) {
       SE_LOG(WARN, "fail to write file", K(ret), K_(extent_id), K_(fd), K(size));
     }
   }
@@ -393,16 +409,26 @@ int ObjectIOExtent::init(const ExtentId &extent_id,
   return ret;
 }
 
-int ObjectIOExtent::write(const Slice &data)
+void ObjectIOExtent::reset()
+{
+  IOExtent::reset();
+  object_store_ = nullptr;
+  bucket_.clear();
+  prefix_.clear();
+}
+
+// ObjectIOExtent only allows writes starting from the beginning of the extent.
+int ObjectIOExtent::write(const Slice &data, int64_t offset)
 {
   int ret = Status::kOk;
 
   if (UNLIKELY(!is_inited_)) {
     ret = Status::kNotInit;
     SE_LOG(WARN, "ObjectIOExtent has not been inited", K(ret));
-  } else if (UNLIKELY(data.empty()) || UNLIKELY(data.size() > storage::MAX_EXTENT_SIZE)) {
+  } else if (UNLIKELY(data.empty()) || UNLIKELY(0 != offset) ||
+             UNLIKELY(data.size() > storage::MAX_EXTENT_SIZE)) {
     ret = Status::kInvalidArgument;
-    SE_LOG(WARN, "invalid argument", K(ret), K(data), "size", data.size());
+    SE_LOG(WARN, "invalid argument", K(ret), K(offset), K(data), "size", data.size());
   } else if (FAILED(write_object(data.data(), data.size()))) {
     SE_LOG(WARN, "fail to write object", K(ret), K_(bucket));
   } else {
@@ -489,7 +515,7 @@ int ObjectIOExtent::fill_aio_info(AIOHandle *aio_handle, int64_t offset, int64_t
   } else if (UNLIKELY((offset + size) > storage::MAX_EXTENT_SIZE)) {
     ret = Status::kOverLimit;
     SE_LOG(WARN, "the read range is overflow", K(ret), K(offset), K(size));
-  } else if (!PersistentCache::get_instance().is_enabled()) {
+  } else if (!PersistentCache::get_instance().is_enabled() || is_large_object_extent()) {
     ret = Status::kNoSpace;
   } else if (IS_NOTNULL(aio_handle->aio_req_->handle_)) {
     ret = Status::kErrorUnexpected;
@@ -503,7 +529,7 @@ int ObjectIOExtent::fill_aio_info(AIOHandle *aio_handle, int64_t offset, int64_t
     ret = Status::kErrorUnexpected;
     SE_LOG(WARN, "the cache info must not be nullptr", K(ret), K_(extent_id));
   } else {
-    aio_info.fd_ = cache_info->get_fd();
+    aio_info.fd_ = cache_info->get_cache_file()->get_fd();
     aio_info.offset_ = cache_info->get_offset() + offset;
     aio_info.size_ = size;
   }
@@ -514,7 +540,6 @@ int ObjectIOExtent::fill_aio_info(AIOHandle *aio_handle, int64_t offset, int64_t
 int ObjectIOExtent::write_object(const char *data, int64_t data_size)
 {
   int ret = Status::kOk;
-  int tmp_ret = Status::kOk;
   // bool forbid_overwrite = true;
   bool forbid_overwrite = false;
   ::objstore::Status object_status;
@@ -538,11 +563,16 @@ int ObjectIOExtent::write_object(const char *data, int64_t data_size)
     SE_LOG(WARN, "io error, failed to put obj", K(ret), KE((object_status.error_code())), K(std::string(object_status.error_message())),
         K_(extent_id), K_(bucket), K(object_id), K(data_size), K_(bucket));
   } else {
-    // A failure in writing to the persistent cache does not affect the extent write operation.
-    if (PersistentCache::get_instance().use_read_write_through_mode()) {
-      if (Status::kOk != (tmp_ret = PersistentCache::get_instance().insert(extent_id_, Slice(data, data_size), nullptr))) {
-        if (Status::kNoSpace != tmp_ret) {
-          SE_LOG(WARN, "fail to write extent data to persistent cache", K(tmp_ret), K_(extent_id));
+    if (PersistentCache::get_instance().is_enabled() && !is_large_object_extent()) {
+      if (FAILED(PersistentCache::get_instance().insert(extent_id_,
+                                            Slice(data, data_size),
+                                            true /*write_process*/,
+                                            nullptr /*handle*/))) {
+        if (Status::kNoSpace != ret) {
+          SE_LOG(WARN, "fail to write extent data to persistent cache", K(ret), K_(extent_id));
+        } else {
+          // Treat a full persistent cache as a normal condition and overwrite the ret here.
+          ret = Status::kOk;
         }
       } else {
 #ifndef NDEBUG
@@ -634,7 +664,7 @@ int ObjectIOExtent::read_object(int64_t offset, int64_t size, char *buf, common:
   std::string object_id = prefix_ + std::to_string(assemble_objid_by_fdfn(extent_id_.file_number, extent_id_.offset));
   std::string body;
 
-  if (PersistentCache::get_instance().is_enabled()) {
+  if (PersistentCache::get_instance().is_enabled() && !is_large_object_extent()) {
     object_status = object_store_->get_object(bucket_, object_id, 0, MAX_EXTENT_SIZE, body);
     if (UNLIKELY(!object_status.is_succ())) {
       ret = Status::kObjStoreError;
@@ -647,7 +677,10 @@ int ObjectIOExtent::read_object(int64_t offset, int64_t size, char *buf, common:
       memcpy(buf, body.data() + offset, size);
       result.assign(buf, size);
 
-      if (FAILED(PersistentCache::get_instance().insert(extent_id_, Slice(body.data(), body.size()), nullptr))) {
+      if (FAILED(PersistentCache::get_instance().insert(extent_id_,
+                                                        Slice(body.data(), body.size()),
+                                                        false /*write_process*/,
+                                                        nullptr /*handle*/))) {
         if (Status::kNoSpace != ret) {
           SE_LOG(WARN, "fail to insert into persistent cache", K(ret), K_(extent_id));
         } else {
@@ -694,10 +727,15 @@ int ObjectIOExtent::load_extent(cache::Cache::Handle **handle)
       } else if (UNLIKELY(MAX_EXTENT_SIZE != body.size())) {
         ret = Status::kCorruption;
         SE_LOG(WARN, "the data is corrupted", K(ret), "size", body.size());
-      } else if (FAILED(PersistentCache::get_instance().insert(extent_id_, Slice(body.data(), body.size()), handle))) {
+      } else if (FAILED(PersistentCache::get_instance().insert(extent_id_,
+                                                               Slice(body.data(), body.size()),
+                                                               false /*write_process*/,
+                                                               handle))) {
         if (Status::kNoSpace != ret) {
           SE_LOG(WARN, "fail to insert into persistent cache", K(ret), K_(extent_id), K(object_id));
         }
+      } else {
+        SE_LOG(DEBUG, "success to load extent", K_(extent_id), KP(*handle));
       }
     }
   }
@@ -765,7 +803,7 @@ int WriteExtentJob::execute()
     ret = Status::kNotInit;
     SE_LOG(WARN, "IOExtentJob should be inited", K(ret));
   } else {
-    if (FAILED(extent_->write(Slice(data_, data_size_)))) {
+    if (FAILED(extent_->write(Slice(data_, data_size_), 0))) {
       SE_LOG(WARN, "fail to write extent data", K(ret), "extent_id", extent_->get_extent_id());
     } else {
 #ifndef  NDEBUG

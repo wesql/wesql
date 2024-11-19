@@ -281,7 +281,19 @@ class Env {
   virtual common::Status UnlockFile(FileLock* lock) = 0;
 
   // Priority for scheduling job in thread pool
-  enum Priority {STATS, LOW, HIGH, SHRINK_EXTENT_SPACE, RECYCLE_EXTENT, FILTER, MASTER, WRITE_IO_THREAD, TOTAL };
+  enum Priority
+  {
+    STATS,
+    LOW,
+    HIGH,
+    SHRINK_EXTENT_SPACE,
+    RECYCLE_EXTENT,
+    FILTER,
+    MASTER,
+    WRITE_IO_THREAD,
+    RECOVER_PERSISTENT_CACHE,
+    TOTAL
+  };
 
   // Priority for requesting bytes in rate limiter scheduler
   enum IOPriority { IO_LOW = 0, IO_HIGH = 1, IO_TOTAL = 2 };
@@ -352,6 +364,7 @@ class Env {
   // default number: 1
   virtual void SetBackgroundThreads(int number, Priority pri = LOW) = 0;
 
+  virtual void WaitForJobsAndJoinAllThreads(Priority pri) = 0;
   // Enlarge number of background worker threads of a specific thread pool
   // for this environment if it is smaller than specified. 'LOW' is the default
   // pool.
@@ -967,6 +980,9 @@ class EnvWrapper : public Env {
     return target_->SetBackgroundThreads(num, pri);
   }
 
+  void WaitForJobsAndJoinAllThreads(Priority pri) override {
+    return target_->WaitForJobsAndJoinAllThreads(pri);
+  }
   void IncBackgroundThreadsIfNeeded(int num, Priority pri) override {
     return target_->IncBackgroundThreadsIfNeeded(num, pri);
   }

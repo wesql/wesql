@@ -26,11 +26,13 @@ namespace table
 struct Footer
 {
   static const int64_t FOOTER_VERSION = 1;
+  // TODO (Zhao Dongsheng): 4KB?
   static const int64_t MAX_FOOTER_SIZE = 1024; // 1KB
   static const int64_t FOOTER_MAGIC_NUMBER = 0x437623A5C90E8F1A;
 
   int64_t magic_numer_;
   int8_t checksum_type_;
+  storage::ExtentId extent_id_;
   BlockHandle index_block_handle_;
 
   Footer();
@@ -40,13 +42,15 @@ struct Footer
 
   void reset();
   bool is_valid() const;
-  void set_checksum_type(const int8_t checksum_type) { checksum_type_ = checksum_type; }
-  void set_index_block_handle(const BlockHandle &handle) { index_block_handle_ = handle; }
-  BlockHandle get_index_block_handle() const { return index_block_handle_; }
+  inline void set_checksum_type(const int8_t checksum_type) { checksum_type_ = checksum_type; }
+  inline void set_extent_id(const storage::ExtentId &extent_id) { extent_id_ = extent_id; }
+  inline storage::ExtentId get_extent_id() const { return extent_id_; }
+  inline void set_index_block_handle(const BlockHandle &handle) { index_block_handle_ = handle; }
+  inline BlockHandle get_index_block_handle() const { return index_block_handle_; }
   static int64_t get_max_serialize_size() { return MAX_FOOTER_SIZE; }
 
+  DECLARE_SERIALIZATION()
   DECLARE_TO_STRING()
-  DECLARE_COMPACTIPLE_SERIALIZATION(FOOTER_VERSION)
 };
 
 struct ExtentInfo

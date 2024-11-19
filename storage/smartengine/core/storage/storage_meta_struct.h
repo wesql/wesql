@@ -100,7 +100,7 @@ public:
   int64_t get_deep_copy_size() const;
   inline void ref() { ++refs_; }
   inline bool unref() { return --refs_ <= 0 ? true : false; }
-  inline bool is_largest_object_extent() { return attr_ & F_LARGE_OBJECT_EXTENT; }
+  inline bool is_large_object_extent() { return attr_ & F_LARGE_OBJECT_EXTENT; }
   inline bool is_normal_extent() { return attr_ & F_NORMAL_EXTENT; }
   DECLARE_TO_STRING()
   DECLARE_COMPACTIPLE_SERIALIZATION(EXTENT_META_VERSION)

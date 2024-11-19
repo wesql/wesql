@@ -26,6 +26,7 @@ namespace smartengine
 using namespace common;
 using namespace db;
 using namespace memory;
+using namespace table;
 using namespace util;
 
 namespace cache
@@ -35,10 +36,34 @@ class PersistentCacheTest : public testing::Test
 public:
   PersistentCacheTest()
   {
-    file_path_ = test::TmpDir(Env::Default()) + test_dir;
+    file_dir_ = test::TmpDir(Env::Default()) + test_dir;
+    file_path_ = file_dir_ + "/" + PersistentCacheFile::get_file_name();
+  }
+
+  int remove_cache_file()
+  {
+    return Env::Default()->DeleteFile(file_path_).code();
+  }
+
+  void generate_extent_data(ExtentId data_extent_id, std::string &extent_data)
+  {
+    int ret = Status::kOk;
+    Footer footer;
+    std::string data; 
+    int64_t pos = storage::MAX_EXTENT_SIZE - Footer::get_max_serialize_size();
+    char *buf = reinterpret_cast<char *>(base_malloc(storage::MAX_EXTENT_SIZE));
+
+    footer.set_extent_id(data_extent_id);
+    data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE / 2); 
+    memcpy(buf, data.data(), data.size());
+    ret = footer.serialize(buf, storage::MAX_EXTENT_SIZE, pos);
+    ASSERT_EQ(Status::kOk, ret);
+    extent_data.assign(buf, storage::MAX_EXTENT_SIZE);
   }
 
 public:
+  static const int32_t PERSISTENT_FILE_NUMBER = (INT32_MAX - 1);
+  std::string file_dir_;
   std::string file_path_;
 };
  
@@ -46,26 +71,211 @@ TEST_F(PersistentCacheTest, persistent_cache_file_open)
 {
   int ret = Status::kOk;
   PersistentCacheFile cache_file;
+  int64_t need_recover_extent_count = 0;
 
   // invalid argument
-  ret = cache_file.open(nullptr, file_path_, 0);
+  ret = cache_file.open(nullptr, file_path_, 0, need_recover_extent_count);
   ASSERT_EQ(Status::kInvalidArgument, ret);
-  ret = cache_file.open(Env::Default(), std::string(), 0);
+  ret = cache_file.open(Env::Default(), std::string(), 0, need_recover_extent_count);
   ASSERT_EQ(Status::kInvalidArgument, ret);
-  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE + 1);
+  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE - 1, need_recover_extent_count);
+  ASSERT_EQ(Status::kInvalidArgument, ret);
+  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE + 1, need_recover_extent_count);
   ASSERT_EQ(Status::kInvalidArgument, ret);
 
   // success open
-  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE);
+  ret = cache_file.open(Env::Default(), file_path_, 2 * storage::MAX_EXTENT_SIZE, need_recover_extent_count);
   ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(0, need_recover_extent_count);
 
   // repeat open
-  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE);
+  ret = cache_file.open(Env::Default(), file_path_, 2 * storage::MAX_EXTENT_SIZE, need_recover_extent_count);
   ASSERT_EQ(Status::kInitTwice, ret);
 
-  // close and reopen
+  // close and reopen with same cache size(2 * storage::MAX_EXTENT_SIZE)
   cache_file.close();
-  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE);
+  ret = cache_file.open(Env::Default(), file_path_, 2 * storage::MAX_EXTENT_SIZE, need_recover_extent_count);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(2, need_recover_extent_count);
+
+  // close and reopen with larger cache size(4 * storage::MAX_EXTENT_SIZE)
+  cache_file.close();
+  ret = cache_file.open(Env::Default(), file_path_, 4 * storage::MAX_EXTENT_SIZE, need_recover_extent_count);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(2, need_recover_extent_count);
+
+  // close and reopen with smaller cache size(storage::MAX_EXTENT_SIZE)
+  cache_file.close();
+  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE, need_recover_extent_count);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(1, need_recover_extent_count);
+
+  // close and remove the cache file
+  cache_file.close();
+  ret = remove_cache_file();
+  ASSERT_EQ(Status::kOk, ret);
+}
+
+TEST_F(PersistentCacheTest, persistent_cache_file_alloc)
+{
+  int ret = Status::kOk;
+  PersistentCacheFile cache_file;
+  PersistentCacheInfo cache_info;
+  ExtentId data_extent_id;
+  int64_t need_recover_extent_count = 0;
+
+  // not open
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kNotInit, ret);
+
+  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 3, need_recover_extent_count);
+  ASSERT_EQ(Status::kOk, ret);
+
+  for (int64_t i = 0; i < 3; ++i) {
+    data_extent_id.offset = i;
+    ret = cache_file.alloc(data_extent_id, cache_info);
+    ASSERT_EQ(Status::kOk, ret);
+    ASSERT_EQ(i, cache_info.data_extent_id_.offset);
+    ASSERT_EQ(i, cache_info.cache_extent_id_.offset);
+  }
+
+  // no space
+  data_extent_id.offset = 4;
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kNoSpace, ret);
+
+  // re-alloc for data extent 1
+  data_extent_id.file_number = 0;
+  data_extent_id.offset = 1;
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kNoSpace, ret);
+  // recycle it and re-alloc
+  cache_info.cache_file_ = &cache_file;
+  cache_info.data_extent_id_.file_number = 0;
+  cache_info.data_extent_id_.offset = 1;
+  cache_info.cache_extent_id_.file_number = INT32_MAX - 1;
+  cache_info.cache_extent_id_.offset = 1;
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  cache_info.reset();
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(1, cache_info.data_extent_id_.offset);
+  ASSERT_EQ(1, cache_info.cache_extent_id_.offset);
+
+  // recycle cache extent 1 which is occupied by data extent 1,
+  // but not erase it, and re-alloc again for data extent 3.
+  cache_info.cache_file_ = &cache_file;
+  cache_info.data_extent_id_.file_number = 0;
+  cache_info.data_extent_id_.offset = 1;
+  cache_info.cache_extent_id_.file_number = PERSISTENT_FILE_NUMBER;
+  cache_info.cache_extent_id_.offset = 1;
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  data_extent_id.file_number = 0;
+  data_extent_id.offset = 3;
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(3, cache_info.data_extent_id_.offset);
+  ASSERT_EQ(1, cache_info.cache_extent_id_.offset);
+  // the stored_status_ of data extent id 1 has been erase by previous alloc for data extent id 3
+  // , and it should be succeed in follow alloc for data extent id
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  data_extent_id.file_number = 0;
+  data_extent_id.offset = 1;
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(1, cache_info.data_extent_id_.offset);
+  ASSERT_EQ(1, cache_info.cache_extent_id_.offset);
+  // recycle and re-alloc for data extent 1
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  cache_info.reset();
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(1, cache_info.data_extent_id_.offset);
+  ASSERT_EQ(1, cache_info.cache_extent_id_.offset);
+
+  cache_file.close();
+  ret = remove_cache_file();
+  ASSERT_EQ(Status::kOk, ret);
+}
+
+TEST_F(PersistentCacheTest, persistent_cache_file_recycle)
+{
+  int ret = Status::kOk;
+  PersistentCacheFile cache_file;
+  PersistentCacheInfo cache_info;
+  int64_t need_recover_extent_count = 0;
+  ExtentId data_extent_id;
+
+  // not init
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kNotInit, ret);
+
+  // open cache file
+  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 3, need_recover_extent_count);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(0, need_recover_extent_count);
+
+  // invalid argument
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kInvalidArgument, ret);
+
+  // alloc
+  for (int64_t i = 0; i < 3; ++i) {
+    data_extent_id.offset = i;
+    ret = cache_file.alloc(data_extent_id, cache_info);
+    ASSERT_EQ(Status::kOk, ret);
+    ASSERT_TRUE(cache_info.is_valid());
+    ASSERT_EQ(i, cache_info.data_extent_id_.offset);
+    ASSERT_EQ(i, cache_info.cache_extent_id_.offset);
+  }
+
+  // no space
+  data_extent_id.offset = 3;
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kNoSpace, ret);
+
+  // recycle extents
+  cache_info.cache_file_ = &cache_file;
+  cache_info.data_extent_id_.file_number = 0;
+  cache_info.data_extent_id_.offset = 0;
+  cache_info.cache_extent_id_.file_number = INT32_MAX - 1;
+  cache_info.cache_extent_id_.offset = 0;
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  cache_info.data_extent_id_.offset = 1;
+  cache_info.cache_extent_id_.offset = 1;
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  // repeat recycle same extent
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kErrorUnexpected, ret);
+  // recycle not exist extent
+  cache_info.cache_extent_id_.offset = 10;
+  ret = cache_file.recycle(cache_info);
+  ASSERT_EQ(Status::kErrorUnexpected, ret);
+
+  // continue write
+  for (int64_t i = 0; i < 2; ++i) {
+    data_extent_id.offset = i;
+    ret = cache_file.alloc(data_extent_id, cache_info);
+    ASSERT_EQ(Status::kOk, ret);
+    ASSERT_TRUE(cache_info.is_valid());
+    ASSERT_EQ(i, cache_info.cache_extent_id_.offset);
+    ASSERT_EQ(i, cache_info.cache_extent_id_.offset);
+  } 
+
+  // exhausted again
+  data_extent_id.offset = 3;
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kNoSpace, ret); 
+
+  cache_file.close();
+  ret = remove_cache_file();
+  ASSERT_EQ(Status::kOk, ret);
 }
 
 TEST_F(PersistentCacheTest, persistent_cache_file_write)
@@ -73,15 +283,18 @@ TEST_F(PersistentCacheTest, persistent_cache_file_write)
   int ret = Status::kOk;
   PersistentCacheFile cache_file;
   PersistentCacheInfo cache_info;
+  ExtentId data_extent_id;
   std::string data;
+  int64_t need_recover_extent_count = 0;
 
   // not init
   ret = cache_file.write(Slice(), cache_info);
   ASSERT_EQ(Status::kNotInit, ret);
 
   // open cache file
-  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 2);
+  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 2, need_recover_extent_count);
   ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(0, need_recover_extent_count);
 
   // invalid argument
   ret = cache_file.write(Slice(), cache_info);
@@ -90,15 +303,19 @@ TEST_F(PersistentCacheTest, persistent_cache_file_write)
   // success to write data
   data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE);
   for (int64_t i = 0; i < 2; ++i) {
+    data_extent_id.offset = i;
+    ret = cache_file.alloc(data_extent_id, cache_info);
+    ASSERT_EQ(Status::kOk, ret);
     ret = cache_file.write(Slice(data.data(), storage::MAX_EXTENT_SIZE), cache_info);
     ASSERT_EQ(Status::kOk, ret);
     ASSERT_TRUE(cache_info.is_valid());
-    ASSERT_EQ(i, cache_info.extent_id_.offset);
+    ASSERT_EQ(i, cache_info.data_extent_id_.offset);
+    ASSERT_EQ(i, cache_info.cache_extent_id_.offset);
   }
 
-  // no space
-  ret = cache_file.write(Slice(data.data(), storage::MAX_EXTENT_SIZE), cache_info);
-  ASSERT_EQ(Status::kNoSpace, ret);
+  cache_file.close();
+  ret = remove_cache_file();
+  ASSERT_EQ(Status::kOk, ret);
 }
 
 TEST_F(PersistentCacheTest, persistent_cache_file_read)
@@ -110,21 +327,24 @@ TEST_F(PersistentCacheTest, persistent_cache_file_read)
   Slice result;
   char *buf = reinterpret_cast<char *>(base_malloc(storage::MAX_EXTENT_SIZE)); 
   ASSERT_TRUE(nullptr != buf);
+  int64_t need_recover_extent_count = 0;
+  ExtentId data_extent_id;
 
   // not open
   ret = cache_file.read(cache_info, nullptr, 0, 0, nullptr, result);
   ASSERT_EQ(Status::kNotInit, ret);
 
   // open cache file
-  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 2); 
+  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 2, need_recover_extent_count); 
   ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(0, need_recover_extent_count);
 
   // invalid argument
   ret = cache_file.read(cache_info, nullptr, 0, 10, buf, result);
   ASSERT_EQ(Status::kInvalidArgument, ret);
   // mock valid cache info
   cache_info.cache_file_ = reinterpret_cast<PersistentCacheFile *>(1);
-  cache_info.extent_id_.offset = 0;
+  cache_info.cache_extent_id_.offset = 0;
   ret = cache_file.read(cache_info, nullptr, -1, 10, buf, result);
   ASSERT_EQ(Status::kInvalidArgument, ret);
   ret = cache_file.read(cache_info, nullptr, 0, 0, buf, result);
@@ -134,86 +354,49 @@ TEST_F(PersistentCacheTest, persistent_cache_file_read)
   ret = cache_file.read(cache_info, nullptr, 0, 10, buf, result);
 
   // exceed capacity
-  cache_info.extent_id_.offset = 10;
+  cache_info.cache_extent_id_.offset = 10;
   ret = cache_file.read(cache_info, nullptr, 0, 10, buf, result);
   ASSERT_EQ(Status::kIOError, ret);
 
-  // read unused extent
-  cache_info.extent_id_.offset = 0;
-  ret = cache_file.read(cache_info, nullptr, 0, 10, buf, result);
-  ASSERT_EQ(Status::kErrorUnexpected, ret);
-
   // write data
   data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE);
+  data_extent_id.offset = 1;
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kOk, ret);
   ret = cache_file.write(Slice(data.data(), data.size()), cache_info);
   ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(1, cache_info.data_extent_id_.offset);
+  ASSERT_EQ(0, cache_info.cache_extent_id_.offset);
 
   // read range[10, 110]
   ret = cache_file.read(cache_info, nullptr, 10, 100, buf, result);
   ASSERT_EQ(Status::kOk, ret);
   ASSERT_TRUE(0 == memcmp(data.data() + 10, result.data(), 100));
-}
 
-TEST_F(PersistentCacheTest, persistent_cache_file_recycle)
-{
-  int ret = Status::kOk;
-  PersistentCacheFile cache_file;
-  PersistentCacheInfo cache_info;
-  std::string data;
-
-  // not init
+  // write the same data extent id(0, 1), it will proactively erased previous data.
   ret = cache_file.recycle(cache_info);
-  ASSERT_EQ(Status::kNotInit, ret);
-
-  // open cache file
-  ret = cache_file.open(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 3);
   ASSERT_EQ(Status::kOk, ret);
-
-  // invalid argument
-  ret = cache_file.recycle(cache_info);
-  ASSERT_EQ(Status::kInvalidArgument, ret);
-
-  // write data
-  data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE);
-  for (int64_t i = 0; i < 3; ++i) {
-    ret = cache_file.write(Slice(data.data(), storage::MAX_EXTENT_SIZE), cache_info);
-    ASSERT_EQ(Status::kOk, ret);
-    ASSERT_TRUE(cache_info.is_valid());
-    ASSERT_EQ(i, cache_info.extent_id_.offset);
+  ret = cache_file.alloc(data_extent_id, cache_info);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_EQ(1, cache_info.data_extent_id_.offset);
+  ASSERT_EQ(0, cache_info.cache_extent_id_.offset);
+  // The previous data has been erased.
+  ret = cache_file.read(cache_info, nullptr, storage::MAX_EXTENT_SIZE - 1024 * 4, 1024 * 4, buf, result);
+  ASSERT_EQ(Status::kOk, ret);
+  for (int64_t i = 0; i < 1024 * 4; ++i) {
+    ASSERT_EQ('\0', result.data()[i]);
   }
-
-  // no space
-  ret = cache_file.write(Slice(data.data(), storage::MAX_EXTENT_SIZE), cache_info);
-  ASSERT_EQ(Status::kNoSpace, ret);
-
-  // recycle extents
-  cache_info.cache_file_ = &cache_file;
-  cache_info.extent_id_.file_number = INT32_MAX - 1;
-  cache_info.extent_id_.offset = 0;
-  ret = cache_file.recycle(cache_info);
+  ret = cache_file.write(Slice(data.data(), data.size()), cache_info);
   ASSERT_EQ(Status::kOk, ret);
-  cache_info.extent_id_.offset = 1;
-  ret = cache_file.recycle(cache_info);
+
+  // read range[100, 200]
+  ret = cache_file.read(cache_info, nullptr, 100, 100, buf, result);
   ASSERT_EQ(Status::kOk, ret);
-  // repeat recycle same extent
-  ret = cache_file.recycle(cache_info);
-  ASSERT_EQ(Status::kErrorUnexpected, ret);
-  // recycle not exist extent
-  cache_info.extent_id_.offset = 10;
-  ret = cache_file.recycle(cache_info);
-  ASSERT_EQ(Status::kErrorUnexpected, ret);
+  ASSERT_TRUE(0 == memcmp(data.data() + 100, result.data(), 100));
 
-  // continue write
-  for (int64_t i = 0; i < 2; ++i) {
-    ret = cache_file.write(Slice(data.data(), storage::MAX_EXTENT_SIZE), cache_info);
-    ASSERT_EQ(Status::kOk, ret);
-    ASSERT_TRUE(cache_info.is_valid());
-    ASSERT_EQ(i, cache_info.extent_id_.offset);
-  } 
-
-  // exhausted again
-  ret = cache_file.write(Slice(data.data(), storage::MAX_EXTENT_SIZE), cache_info);
-  ASSERT_EQ(Status::kNoSpace, ret); 
+  cache_file.close();
+  ret = remove_cache_file();
+  ASSERT_EQ(Status::kOk, ret);
 }
 
 TEST_F(PersistentCacheTest, persistent_cache_init)
@@ -221,22 +404,47 @@ TEST_F(PersistentCacheTest, persistent_cache_init)
   int ret = Status::kOk;
   
   // invalid argument
-  ret = PersistentCache::get_instance().init(nullptr, file_path_, 0, kReadWriteThrough);
+  ret = PersistentCache::get_instance().init(nullptr, file_dir_, 0, 1, kReadWriteThrough);
   ASSERT_EQ(Status::kInvalidArgument, ret);
-  ret = PersistentCache::get_instance().init(Env::Default(), std::string(), 0, kReadWriteThrough);
+  ret = PersistentCache::get_instance().init(Env::Default(), std::string(), 0, 1, kReadWriteThrough);
   ASSERT_EQ(Status::kInvalidArgument, ret);
-  ret = PersistentCache::get_instance().init(Env::Default(), file_path_, -1, kReadWriteThrough);
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, -1, 1, kReadWriteThrough);
   ASSERT_EQ(Status::kInvalidArgument, ret);
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, 0, 0, kReadWriteThrough);
+  ASSERT_EQ(Status::kInvalidArgument, ret);
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, 0, 1, (PersistentCacheMode)(2));
 
   // disable persistent cache
-  ret = PersistentCache::get_instance().init(Env::Default(), file_path_, 0, kReadWriteThrough);
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, 0, 1, kReadWriteThrough);
   ASSERT_EQ(Status::kOk, ret);
   ASSERT_FALSE(PersistentCache::get_instance().is_enabled());
 
   // enable persistent cache
-  ret = PersistentCache::get_instance().init(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 3, kReadWriteThrough);
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, storage::MAX_EXTENT_SIZE * 3, 1, kReadWriteThrough);
   ASSERT_EQ(Status::kOk, ret);
   ASSERT_TRUE(PersistentCache::get_instance().is_enabled());
+
+  // recover persistent cache
+  PersistentCache::get_instance().destroy();
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, storage::MAX_EXTENT_SIZE * 3, 1, kReadWriteThrough);
+  ASSERT_EQ(Status::kOk, ret);
+
+  // insert one extent
+  std::string data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE);
+  ExtentId data_extent_id;
+  data_extent_id.offset = 1;
+  ret = PersistentCache::get_instance().insert(data_extent_id, Slice(data.data(), data.size()), true, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
+
+  // disable persistent cache after enable persistent cache
+  ret = Env::Default()->FileExists(file_path_).code();
+  ASSERT_EQ(Status::kOk, ret);
+  PersistentCache::get_instance().destroy();
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, 0, 1, kReadWriteThrough);
+  ASSERT_EQ(Status::kOk, ret);
+  ASSERT_FALSE(PersistentCache::get_instance().is_enabled());
+  ret = Env::Default()->FileExists(file_path_).code();
+  ASSERT_EQ(Status::kNotFound, ret);
 
   // rollback status
   PersistentCache::get_instance().destroy();
@@ -249,35 +457,35 @@ TEST_F(PersistentCacheTest, persistent_cache_insert)
   std::vector<cache::Cache::Handle *> handles;
   std::string data;
   std::vector<std::string> datas;
-  storage::ExtentId extent_id(0, 1);
+  storage::ExtentId data_extent_id(0, 1);
 
   // not init
-  ret = PersistentCache::get_instance().insert(extent_id, Slice(data.data(), data.size()), nullptr);
+  ret = PersistentCache::get_instance().insert(data_extent_id, Slice(data.data(), data.size()), true, nullptr);
   ASSERT_EQ(Status::kNotInit, ret);
 
   // init persistent cache
-  ret = PersistentCache::get_instance().init(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 3, kReadWriteThrough);
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, storage::MAX_EXTENT_SIZE * 3, 1, kReadWriteThrough);
   ASSERT_EQ(Status::kOk, ret);
 
   // full fill the persistent cache and acquire the handle
   for (int64_t i = 0; i < 3; ++i) {
     handle = nullptr;
     data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE);
-    extent_id.offset = i;
-    ret = PersistentCache::get_instance().insert(extent_id, Slice(data.data(), data.size()), &handle);
+    data_extent_id.offset = i;
+    ret = PersistentCache::get_instance().insert(data_extent_id, Slice(data.data(), data.size()), true, &handle);
     ASSERT_EQ(Status::kOk, ret);
     handles.push_back(handle);
     datas.push_back(data); 
   }
 
   // no space
-  extent_id.offset = 3;
-  ret = PersistentCache::get_instance().insert(extent_id, Slice(data.data(), data.size()), &handle);
+  data_extent_id.offset = 3;
+  ret = PersistentCache::get_instance().insert(data_extent_id, Slice(data.data(), data.size()), true, &handle);
   ASSERT_EQ(Status::kNoSpace,ret);
 
   // release one handle and re-insert
   PersistentCache::get_instance().release_handle(handles[0]);
-  ret = PersistentCache::get_instance().insert(extent_id, Slice(data.data(), data.size()), nullptr);
+  ret = PersistentCache::get_instance().insert(data_extent_id, Slice(data.data(), data.size()), true, nullptr);
   ASSERT_EQ(Status::kOk, ret);
 
   // release left handles
@@ -286,6 +494,19 @@ TEST_F(PersistentCacheTest, persistent_cache_insert)
 
   // rollback status
   PersistentCache::get_instance().destroy();
+
+  // recover the persistent cache with same cache size.
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, 3 * storage::MAX_EXTENT_SIZE, 1, kReadWriteThrough);
+  ASSERT_EQ(Status::kOk, ret);
+
+  // the persistent cache is empty after recover, because the extent footer is invalid.
+  data_extent_id.offset = 4;
+  ret = PersistentCache::get_instance().insert(data_extent_id, Slice(data.data(), data.size()), true, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
+
+  PersistentCache::get_instance().destroy();
+  ret = remove_cache_file();
+  ASSERT_EQ(Status::kOk, ret);
 }
 
 TEST_F(PersistentCacheTest, persistent_cache_read_from_handle)
@@ -295,7 +516,7 @@ TEST_F(PersistentCacheTest, persistent_cache_read_from_handle)
   std::vector<cache::Cache::Handle *> handles;
   std::string data;
   std::vector<std::string> datas;
-  storage::ExtentId extent_id(0, 1);
+  storage::ExtentId data_extent_id(0, 1);
   Slice result;
   char *buf = reinterpret_cast<char *>(base_malloc(storage::MAX_EXTENT_SIZE));
 
@@ -304,7 +525,7 @@ TEST_F(PersistentCacheTest, persistent_cache_read_from_handle)
   ASSERT_EQ(Status::kNotInit, ret);
 
   // init persistent cache
-  ret = PersistentCache::get_instance().init(Env::Default(), file_path_, storage::MAX_EXTENT_SIZE * 3, kReadWriteThrough);
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, storage::MAX_EXTENT_SIZE * 3, 1, kReadWriteThrough);
   ASSERT_EQ(Status::kOk, ret);
 
   // invalid argument
@@ -338,8 +559,8 @@ TEST_F(PersistentCacheTest, persistent_cache_read_from_handle)
   for (int64_t i = 0; i < 3; ++i) {
     handle = nullptr;
     data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE);
-    extent_id.offset = i;
-    ret = PersistentCache::get_instance().insert(extent_id, Slice(data.data(), data.size()), &handle);
+    data_extent_id.offset = i;
+    ret = PersistentCache::get_instance().insert(data_extent_id, Slice(data.data(), data.size()), true, &handle);
     ASSERT_EQ(Status::kOk, ret);
     handles.push_back(handle);
     datas.push_back(data); 
@@ -361,6 +582,8 @@ TEST_F(PersistentCacheTest, persistent_cache_read_from_handle)
 
   // rollback status
   PersistentCache::get_instance().destroy();
+  ret = remove_cache_file();
+  ASSERT_EQ(Status::kOk, ret);
 }
 
 TEST_F(PersistentCacheTest, persistent_cache_lookup_and_evict)
@@ -370,27 +593,27 @@ TEST_F(PersistentCacheTest, persistent_cache_lookup_and_evict)
   std::vector<cache::Cache::Handle *> handles;
   std::string data;
   std::vector<std::string> datas;
-  storage::ExtentId extent_id(0, 1);
+  storage::ExtentId data_extent_id(0, 1);
   Slice result;
   char *buf = reinterpret_cast<char *>(base_malloc(storage::MAX_EXTENT_SIZE)); 
 
   // not init
-  ret = PersistentCache::get_instance().lookup(extent_id, handle);
+  ret = PersistentCache::get_instance().lookup(data_extent_id, handle);
   ASSERT_EQ(Status::kNotInit, ret);
-  ret = PersistentCache::get_instance().evict(extent_id);
+  ret = PersistentCache::get_instance().evict(data_extent_id);
   ASSERT_EQ(Status::kNotInit, ret);
 
   // init persistent cache
   // make cache size enough to contain three extent
   int64_t cache_size = (1 << 8) * storage::MAX_EXTENT_SIZE;
-  ret = PersistentCache::get_instance().init(Env::Default(), file_path_, cache_size, kReadWriteThrough);
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, cache_size, 1, kReadWriteThrough);
   ASSERT_EQ(Status::kOk, ret);
 
   // prepare data
   for (int64_t i = 0; i < 3; ++i) {
     data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE);
-    extent_id.offset = i;
-    ret = PersistentCache::get_instance().insert(extent_id, Slice(data.data(), data.size()), nullptr);
+    data_extent_id.offset = i;
+    ret = PersistentCache::get_instance().insert(data_extent_id, Slice(data.data(), data.size()), true, nullptr);
     ASSERT_EQ(Status::kOk, ret);
     datas.push_back(data); 
   } 
@@ -399,8 +622,8 @@ TEST_F(PersistentCacheTest, persistent_cache_lookup_and_evict)
   for (int64_t i = 0; i < 3; ++i) {
     handle = nullptr;
     data = datas[i];
-    extent_id.offset = i;
-    ret = PersistentCache::get_instance().lookup(extent_id, handle);
+    data_extent_id.offset = i;
+    ret = PersistentCache::get_instance().lookup(data_extent_id, handle);
     ASSERT_EQ(Status::kOk, ret);
     ASSERT_TRUE(nullptr != handle);
     ret = PersistentCache::get_instance().read_from_handle(handle, nullptr, 10, 200, buf, result);
@@ -410,16 +633,105 @@ TEST_F(PersistentCacheTest, persistent_cache_lookup_and_evict)
   }
 
   // cache miss
-  extent_id.offset = 4;
-  ret = PersistentCache::get_instance().lookup(extent_id, handle);
+  data_extent_id.offset = 4;
+  ret = PersistentCache::get_instance().lookup(data_extent_id, handle);
   ASSERT_EQ(Status::kNotFound, ret);
 
   // evict extent [0, 1]
-  extent_id.offset = 1;
-  ret = PersistentCache::get_instance().evict(extent_id);
+  data_extent_id.offset = 1;
+  ret = PersistentCache::get_instance().evict(data_extent_id);
   ASSERT_EQ(Status::kOk, ret);
-  ret = PersistentCache::get_instance().lookup(extent_id, handle);
+  ret = PersistentCache::get_instance().lookup(data_extent_id, handle);
   ASSERT_EQ(Status::kNotFound, ret);
+
+  // rollback status
+  PersistentCache::get_instance().destroy();
+  ret = remove_cache_file();
+  ASSERT_EQ(Status::kOk, ret);
+}
+
+TEST_F(PersistentCacheTest, persistent_cache_recover)
+{
+  int ret = Status::kOk;
+  PersistentCacheInfo *cache_info = nullptr;
+  cache::Cache::Handle *handle = nullptr;
+  std::vector<std::string> extent_datas;
+  std::vector<cache::Cache::Handle *> handles;
+  storage::ExtentId data_extent_id;
+  char *buf = reinterpret_cast<char *>(base_malloc(storage::MAX_EXTENT_SIZE));
+  Slice result;
+
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, 8 * storage::MAX_EXTENT_SIZE, 2, kReadWriteThrough);
+  ASSERT_EQ(Status::kOk, ret);
+
+  // prepare data. insert one corrupted extent at last.
+  std::string extent_data;
+  for (int64_t i = 0; i < 8; ++i) {
+    handle = nullptr;
+    data_extent_id.offset = i;
+    if (7 == i) {
+      extent_data = test::RandomStringGenerator::generate(storage::MAX_EXTENT_SIZE);
+    } else {
+      generate_extent_data(data_extent_id, extent_data);
+    }
+    ret = PersistentCache::get_instance().insert(data_extent_id, Slice(extent_data.data(), extent_data.size()), true, &handle);
+    ASSERT_EQ(Status::kOk, ret);
+    cache_info = PersistentCache::get_instance().get_cache_info_from_handle(handle);
+    ASSERT_EQ(i, cache_info->data_extent_id_.offset);
+    ASSERT_EQ(i, cache_info->cache_extent_id_.offset);
+    handles.push_back(handle);
+    extent_datas.push_back(extent_data);
+  }
+
+  // check data
+  int64_t offset = 0;
+  int64_t size = 0;
+  for (int64_t i = 0; i < 8; ++i) {
+    handle = handles[i];
+    extent_data = extent_datas[i];
+    offset = i * 10;
+    size = i + 100;
+    ret = PersistentCache::get_instance().read_from_handle(handle, nullptr, offset, size, buf, result);
+    ASSERT_EQ(Status::kOk, ret);
+    ASSERT_EQ(0, memcmp(extent_data.data() + offset, result.data(), size));
+    PersistentCache::get_instance().release_handle(handle);
+  }
+
+  // recover the persistent cache with same cache size
+  PersistentCache::get_instance().destroy();
+  ret = PersistentCache::get_instance().init(Env::Default(), file_dir_, 8 * storage::MAX_EXTENT_SIZE, 1, kReadWriteThrough);
+  ASSERT_EQ(Status::kOk, ret);
+
+  // check data
+  for (int64_t i = 0; i < 8; ++i) {
+    handle = nullptr;
+    extent_data = extent_datas[i];
+    data_extent_id.offset = i;
+    // wait until recover finished.
+    do {
+      ret = PersistentCache::get_instance().lookup(data_extent_id, handle);
+    } while (0 == i && Status::kNotFound == ret);
+
+    if (7 == i) {
+      ASSERT_EQ(Status::kNotFound, ret);
+    } else {
+      ret = PersistentCache::get_instance().read_from_handle(handle, nullptr, 0, storage::MAX_EXTENT_SIZE, buf, result);
+      ASSERT_EQ(Status::kOk, ret);
+      cache_info = PersistentCache::get_instance().get_cache_info_from_handle(handle);
+      ASSERT_EQ(i, cache_info->data_extent_id_.offset);
+      ASSERT_EQ(i, cache_info->cache_extent_id_.offset);
+      ASSERT_EQ(0, memcmp(extent_data.data(), result.data(), storage::MAX_EXTENT_SIZE));
+    }
+  }
+
+  if (IS_NOTNULL(buf)) {
+    base_free(buf);
+  }
+
+  // rollback status
+  PersistentCache::get_instance().destroy();
+  ret = remove_cache_file();
+  ASSERT_EQ(Status::kOk, ret);
 }
 
 } // namespace cache

@@ -79,7 +79,7 @@ void ImmutableDBOptions::Dump() const {
   __SE_LOG(INFO, "                              Options.row_cache: %p", row_cache.get());
   __SE_LOG(INFO, "            Options.avoid_flush_during_recovery: %d", avoid_flush_during_recovery);
   __SE_LOG(INFO, "                       Options.table_cache_size: %d", table_cache_size);
-  __SE_LOG(INFO, "                   Options.persistent_cache_dir: %s", persistent_cache_dir);
+  __SE_LOG(INFO, "                   Options.persistent_cache_dir: %s", persistent_cache_dir.c_str());
   __SE_LOG(INFO, "                  Options.persistent_cache_size: %d", persistent_cache_size);
   __SE_LOG(INFO, "                  Options.persistent_cache_mode: %s", persistent_cache_mode_names[persistent_cache_mode]);
   __SE_LOG(INFO, " .                   Options.parallel_flush_log: %d", parallel_flush_log);
