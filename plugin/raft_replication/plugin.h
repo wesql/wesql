@@ -37,7 +37,10 @@ bool plugin_is_consensus_replication_running();
 // Plugin public methods
 int plugin_consensus_replication_init(MYSQL_PLUGIN plugin_info);
 int plugin_consensus_replication_deinit(void *p);
-int plugin_consensus_replication_stop(char **error_message = nullptr);
+int plugin_consensus_replication_stop();
+
+int start_consensus_replication();
+void stop_consensus_replication();
 
 bool acquire_transaction_control_services();
 bool release_transaction_control_services();

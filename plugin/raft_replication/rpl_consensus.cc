@@ -119,16 +119,20 @@ void rpl_consensus_set_ready() {
 bool rpl_consensus_is_ready() { return rpl_consensus_ready; }
 
 void rpl_consensus_shutdown() {
-  if (rpl_consensus_inited && consensus_ptr && !consensus_ptr->isShutdown())
+  if (rpl_consensus_inited && !consensus_ptr->isShutdown()) {
     consensus_ptr->shutdown();
+  }
 }
 
 void rpl_consensus_cleanup() {
   if (consensus_ptr) delete consensus_ptr;
+  rpl_consensus_inited = false;
   consensus_ptr = nullptr;
 }
 
-bool rpl_consensus_is_shutdown() { return consensus_ptr->isShutdown(); }
+bool rpl_consensus_is_shutdown() {
+  return (!rpl_consensus_inited || consensus_ptr->isShutdown());
+}
 
 bool rpl_consensus_is_leader() {
   return (consensus_ptr->getState() == alisql::Paxos::LEADER);

@@ -469,12 +469,18 @@ int ConsensusLogManager::truncate_log(uint64 consensus_index) {
   uint64 start_index = 0;
   my_off_t offset;
   std::string file_name;
+  bool use_new_created_thd = false;
   DBUG_TRACE;
 
   LogPluginErr(SYSTEM_LEVEL, ER_CONSENSUS_LOG_MANAGER_LOG_OPS, "truncate",
                consensus_index);
 
   prefetch_manager->stop_prefetch_threads();
+
+  if (current_thd == nullptr) {
+    use_new_created_thd = true;
+    current_thd = create_internal_thd();
+  }
 
   mysql_rwlock_rdlock(consensus_state_process.get_consensuslog_status_lock());
   mysql_rwlock_wrlock(&LOCK_consensuslog_truncate);
@@ -528,6 +534,11 @@ int ConsensusLogManager::truncate_log(uint64 consensus_index) {
   mysql_rwlock_unlock(&LOCK_consensuslog_truncate);
   mysql_rwlock_unlock(consensus_state_process.get_consensuslog_status_lock());
 
+  if (use_new_created_thd) {
+    destroy_internal_thd(current_thd);
+    current_thd = nullptr;
+  }
+
   if (error) abort();
 
   prefetch_manager->start_prefetch_threads();
@@ -539,9 +550,15 @@ int ConsensusLogManager::purge_log(uint64 consensus_index) {
   std::string file_name;
   uint64 start_index;
   uint64 purge_index = 0;
+  bool use_new_created_thd = false;
   DBUG_TRACE;
 
   if (consensus_index == 0) return 0;
+
+  if (current_thd == nullptr) {
+    use_new_created_thd = true;
+    current_thd = create_internal_thd();
+  }
 
   mysql_rwlock_rdlock(consensus_state_process.get_consensuslog_status_lock());
 
@@ -617,6 +634,11 @@ int ConsensusLogManager::purge_log(uint64 consensus_index) {
   }
 
   mysql_rwlock_unlock(consensus_state_process.get_consensuslog_status_lock());
+
+  if (use_new_created_thd) {
+    destroy_internal_thd(current_thd);
+    current_thd = nullptr;
+  }
   return error;
 }
 

@@ -194,24 +194,52 @@ err:
   return error;
 }
 
-int plugin_consensus_replication_stop(char **) {
+int start_consensus_replication() {
+  if (opt_initialize) return 0;
+
+  /* Init replica construct for consensus channel */
+  if (init_consensus_replica()) return -1;
+
+  if (consensus_state_process.start_consensus_state_change_thread()) return -1;
+
+  /* Start consensus service */
+  if (consensus_state_process.init_service()) return -1;
+
+  if (consensus_log_manager.start_consensus_commit_advance_thread()) return -1;
+
+  return 0;
+}
+void stop_consensus_replication() {
+  if (opt_initialize) return;
+
+  /* Stop consensus commit advance */
+  consensus_log_manager.stop_consensus_commit_advance_thread();
+  /* Stop consensus state change */
+  consensus_state_process.stop_consensus_state_change_thread();
+  /* Stop consensus relica */
+  if (!opt_cluster_log_type_instance) end_consensus_replica();
+  /* Stop consensus service */
+  rpl_consensus_shutdown();
+  rpl_consensus_cleanup();
+}
+
+int plugin_consensus_replication_stop() {
   DBUG_TRACE;
 
   Checkable_rwlock::Guard g(*lv.plugin_running_lock,
                             Checkable_rwlock::WRITE_LOCK);
 
-  if (!plugin_is_consensus_replication_running()) {
-    return 0;
-  }
+  if (!plugin_is_consensus_replication_running()) return 0;
+
+  if (!opt_initialize && !rpl_consensus_is_shutdown())
+    stop_consensus_replication();
 
   lv.plugin_stop_lock->wrlock();
   LogPluginErr(INFORMATION_LEVEL, ER_CONSENSUS_RPL_IS_STOPPING);
 
   lv.consensus_replication_running = false;
 
-  if (!opt_initialize) {
-    finalize_registry_handler();
-  }
+  if (!opt_initialize) finalize_registry_handler();
 
   lv.plugin_stop_lock->unlock();
   LogPluginErr(SYSTEM_LEVEL, ER_CONSENSUS_RPL_IS_STOPPED);

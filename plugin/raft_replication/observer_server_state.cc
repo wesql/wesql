@@ -61,23 +61,10 @@ int consensus_replication_after_recovery(Server_state_param *) {
   /* If the plugin is not running, return failed. */
   if (!plugin_is_consensus_replication_running()) return 1;
 
+  if (start_consensus_replication()) return 1;
+
   if (!opt_initialize) {
-    /* Init replica construct for consensus channel */
-    if (init_consensus_replica()) return -1;
-
-    if (consensus_state_process.start_consensus_state_change_thread())
-      return -1;
-
-    /* Start consensus service */
-    if (consensus_state_process.init_service()) return -1;
-
-    if (consensus_log_manager.start_consensus_commit_advance_thread())
-      return -1;
-
-    /* Start consensus apply threads */
-    if (!opt_cluster_log_type_instance && start_consensus_replica()) return -1;
-
-    // purge logs after start applier thread
+    // purge logs after start consensus replication
     MYSQL_BIN_LOG *log =
         &consensus_state_process.get_relay_log_info()->relay_log;
     if (DBUG_EVALUATE_IF("expire_logs_always_at_start", false, true))
@@ -96,6 +83,9 @@ int consensus_replication_before_handle_connection(Server_state_param *) {
 
   /* If the plugin is not running, return failed. */
   if (!plugin_is_consensus_replication_running()) return 1;
+
+  /* Start consensus apply threads */
+  if (!opt_cluster_log_type_instance && start_consensus_replica()) return -1;
 
   if (!opt_initialize) rpl_consensus_set_ready();
 
@@ -116,22 +106,12 @@ int consensus_replication_after_server_shutdown(Server_state_param *) {
   /* If the plugin is not running, return failed. */
   if (!plugin_is_consensus_replication_running()) return 1;
 
-  if (!opt_initialize) {
-    /* Stop consensus commit advance */
-    consensus_log_manager.stop_consensus_commit_advance_thread();
-    /* Stop consensus state change */
-    consensus_state_process.stop_consensus_state_change_thread();
-    /* Stop consensus relica */
-    if (!opt_cluster_log_type_instance) end_consensus_replica();
-    /* Stop consensus service */
-    rpl_consensus_shutdown();
-    rpl_consensus_cleanup();
-  }
+  stop_consensus_replication();
 
-  /* Close mysql_bin_log after shutdown */
+  /* Close mysql_bin_log after stop consensus replication service */
   consensus_state_process.get_binlog()->close(LOG_CLOSE_INDEX,
-                                            true /*need_lock_log=true*/,
-                                            true /*need_lock_index=true*/);
+                                              true /*need_lock_log=true*/,
+                                              true /*need_lock_index=true*/);
 
   return 0;
 }
