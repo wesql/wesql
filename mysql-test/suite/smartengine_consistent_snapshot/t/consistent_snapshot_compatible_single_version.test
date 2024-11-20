@@ -1,0 +1,132 @@
+#
+# Test for consistent snapshot recovery from object store
+#
+--let $source_port= `SELECT @@port`
+
+--echo #########
+--echo # SETUP Single-Version Snapshot Database #
+--echo #########
+
+let MYSQLD_BUCKET = $MYSQL_TMP_DIR/objectstore_bucket_new/;
+let $new_port = query_get_value("select $source_port+888 as c1", c1, 1);
+let MYSQLD_DATADIR = $MYSQL_TMP_DIR/snapshot_test;
+let MYSQLD_ERROR_START_LOG = $MYSQLTEST_VARDIR/log/snapshot_start.err;
+let $cluster_info= '127.0.0.1:19981@1';
+
+--echo # Copy and unzip the single-version snapshot datadir.
+--copy_file $MYSQLTEST_VARDIR/std_data/consistent_snapshot_single_version.zip $MYSQL_TMP_DIR/consistent_snapshot_single_version.zip
+--file_exists $MYSQL_TMP_DIR/consistent_snapshot_single_version.zip
+
+--echo # Create local_bucket
+--mkdir $MYSQLD_BUCKET
+--echo # recovery single_version snapshot bucket
+--exec unzip -qo $MYSQL_TMP_DIR/consistent_snapshot_single_version.zip -d $MYSQLD_BUCKET
+
+--echo # Recover database using single-version snapshot
+--echo # Create an empty data directory...
+--mkdir $MYSQLD_DATADIR
+
+let $MYSQLD_EXTRA_ARGS = --port=$new_port --socket=$MYSQLD_DATADIR/snapshot_test.sock --console --skip-ssl --gtid_mode=ON --enforce_gtid_consistency=ON --log-bin=master-bin --objectstore-region=$MYSQL_TMP_DIR --objectstore-bucket=objectstore_bucket_new --snapshot_archive_expire_auto_purge=false --log-error-verbosity=3 --datadir=$MYSQLD_DATADIR;
+--exec $MYSQLD --no-defaults $MYSQLD_ARGS $MYSQLD_EXTRA_ARGS --raft-replication-force-change-meta=ON --raft-replication-cluster-info=$cluster_info --log-error=$MYSQLD_ERROR_START_LOG 2>&1 &
+
+--echo # Wait for new_node accept connection
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+--let $mysql_errno= 9999
+--let $wait_counter= 300
+while ($mysql_errno)
+{
+  connect (new_node,127.0.0.1,root,,test,$new_port);
+  if ($mysql_errno == 1045){
+    --let mysql_errno=0
+  }
+  if ($mysql_errname == ER_SECURE_TRANSPORT_REQUIRED){
+    --let mysql_errno=0
+  }
+  if ($mysql_errno){
+    --sleep 0.1
+    --dec $wait_counter
+    if (!$wait_counter){
+      --die Server failed to connect new node
+    }
+  }
+}
+--enable_result_log
+--enable_query_log
+--enable_abort_on_error
+
+--echo # Connection new node
+--connection new_node
+
+--echo # Wait for Leader
+let $wait_condition= select role='Leader' from information_schema.wesql_cluster_local;
+let $wait_timeout= 600;
+--source include/wait_condition.inc
+
+use test;
+select count(*) from t1;
+
+INSERT INTO t1 values(1,'abcd');
+INSERT INTO t1 values(2,'abcd');
+INSERT INTO t1 values(3,'abcd');
+INSERT INTO t1 values(4,'abcd');
+
+--echo # Force snapshot1
+SELECT SNAPSHOT_ARCHIVE_PERSISTENT_FORCE();
+let $wait_condition= SELECT count(*) = 3 FROM INFORMATION_SCHEMA.SNAPSHOT_PERSISTENT_SNAPSHOT_INDEX;
+--source include/wait_condition_or_abort.inc
+
+INSERT INTO t1 values(1,'abcd');
+INSERT INTO t1 values(2,'abcd');
+INSERT INTO t1 values(3,'abcd');
+INSERT INTO t1 values(4,'abcd');
+
+--echo # Force snapshot2
+SELECT SNAPSHOT_ARCHIVE_PERSISTENT_FORCE();
+let $wait_condition= SELECT count(*) = 4 FROM INFORMATION_SCHEMA.SNAPSHOT_PERSISTENT_SNAPSHOT_INDEX;
+--source include/wait_condition_or_abort.inc
+
+INSERT INTO t1 values(1,'abcd');
+INSERT INTO t1 values(2,'abcd');
+INSERT INTO t1 values(3,'abcd');
+INSERT INTO t1 values(4,'abcd');
+select count(*) from t1;
+
+--echo # Wait for all binlog persistent
+let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
+let $wait_timeout= 600;
+--source include/wait_condition_or_abort.inc
+
+--echo # Crash
+set debug = 'd, crash_commit_before_log';
+--error 2013
+INSERT INTO t1 values(5, 'abcd');
+
+--echo # Force rmdir datadir
+--force-rmdir $MYSQLD_DATADIR
+--echo # Create an empty data directory...
+--mkdir $MYSQLD_DATADIR
+
+--echo # Recover database using multi-version
+--exec $MYSQLD --no-defaults $MYSQLD_ARGS $MYSQLD_EXTRA_ARGS --raft-replication-force-change-meta=ON --raft-replication-cluster-info=$cluster_info --log-error=$MYSQLD_ERROR_START_LOG 2>&1 &
+
+--echo # Wait for new_node accept connection
+--connection new_node
+--enable_reconnect
+--source include/wait_until_connected_again.inc
+
+use test;
+select count(*) from t1;
+
+--echo # Shutdown new node
+--shutdown_server 0
+
+--echo # Cleanup new node
+--force-rmdir $MYSQLD_DATADIR
+#--remove_file $MYSQLD_ERROR_START_LOG
+--force-rmdir $MYSQL_TMP_DIR/objectstore_bucket_new/
+--remove_file $MYSQL_TMP_DIR/consistent_snapshot_single_version.zip
+
+--connection default
+--echo # Cleanup

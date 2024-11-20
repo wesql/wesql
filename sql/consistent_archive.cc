@@ -1,5 +1,5 @@
 /*
-  Portions Copyright (c) 2024, ApeCloud Inc Holding Limited 
+  Portions Copyright (c) 2024, ApeCloud Inc Holding Limited
   Portions Copyright (c) 2009, 2023, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -132,6 +132,8 @@ static int convert_str_to_datetime(const char *str, ulong &my_time);
 static size_t convert_datetime_to_str(char *str, time_t ts);
 static const char *convert_archive_progress_to_str(
     Consistent_snapshot_archive_progress archive_progress);
+static int check_archive_file_version_type(std::string &archive_file_name);
+static uint64_t extract_term_from_index_file(const char *index_file_name);
 /**
  * @brief Creates a consistent archive object and starts the consistent snapshot
  * archive thread.
@@ -390,6 +392,7 @@ Consistent_archive::Consistent_archive()
   m_crash_safe_mysql_clone_index_file_name[0] = '\0';
   m_purge_mysql_clone_index_file_name[0] = '\0';
   m_mysql_clone_next_index_number = 0;
+  m_opened_innodb_index_term = 0;
 
   m_binlog_file[0] = '\0';
   m_mysql_binlog_file_previous_snapshot[0] = '\0';
@@ -402,6 +405,7 @@ Consistent_archive::Consistent_archive()
   m_se_backup_name[0] = '\0';
   m_se_backup_keyid[0] = '\0';
   m_se_backup_next_index_number = 0;
+  m_opened_se_index_term = 0;
 
   m_consistent_snapshot_local_time[0] = '\0';
   m_consistent_snapshot_index_file_name[0] = '\0';
@@ -414,6 +418,7 @@ Consistent_archive::Consistent_archive()
   m_se_backup_duration = 0;
   m_se_archive_duration = 0;
   m_wait_binlog_archive_duration = 0;
+  m_opened_snapshot_index_term = 0;
 }
 
 void Consistent_archive::init_pthread_object() {
@@ -530,7 +535,16 @@ static bool is_number(const char *str, uint64_t *res, bool allow_wildcards) {
   return true; /* Number ok */
 }
 
-// init new mysql archive dir name
+/**
+ * @brief Generate a new name for innodb archive file.
+ * The naming multi-version format is innodb_{term}_{index_number}
+ * or old single-version format like innodb_{index_number}.
+ * The number sequence is auto-incremented and maintained in
+ * m_mysql_clone_next_index_number. On first call
+ * (m_mysql_clone_next_index_number = 0), it scans the index file to find the
+ * last used number.
+ * @return 0 on success, non-zero on error
+ */
 int Consistent_archive::generate_innodb_new_name() {
   DBUG_TRACE;
   DBUG_PRINT("info", ("generate_innodb_new_name"));
@@ -538,48 +552,90 @@ int Consistent_archive::generate_innodb_new_name() {
   int error = 0;
   uint64_t number = 0;
   bool need_lock = false;
+  std::string err_msg;
 
   if (m_mysql_clone_next_index_number == 0) {
     need_lock = true;
     mysql_mutex_lock(&m_mysql_innodb_clone_index_lock);
     // init new innodb index number from mysql clone index file.
     error = find_line_from_index(&log_info, NullS, ARCHIVE_MYSQL_INNODB);
+    // If the file is empty, the starting number is set to 1.
+    // Otherwise, the next index number is incremented from the last found
+    // number.
     if (error == 0) {
+      // For the last entry in the file, it determines the numerical part by
+      // stripping file extensions (like .tar or .tar.gz) and extracting the
+      // numeric suffix using is_number.
       std::string last_entry{};
       do {
         last_entry.assign(log_info.log_file_name);
       } while (!(
           error = find_next_line_from_index(&log_info, ARCHIVE_MYSQL_INNODB)));
       if (error != LOG_INFO_EOF) {
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+               "find innodb archive index file failed");
         goto err;
       }
+      err_msg.assign("last innodb archive file");
+      err_msg.append(last_entry);
       size_t idx = last_entry.find(".");
       std::string entry{last_entry};
-      // Get rid of ".tar" or ".tar.gz" extension
+      // Get rid of ".tar" or ".tar.gz" extension ,if format like
+      // innodb_000010_000125.tar.gz or old format like innodb_000125.tar.gz
       if (idx != std::string::npos) {
         entry = last_entry.substr(0, idx);
       } else if (entry.back() == FN_LIBCHAR) {
+        // Get rid of last '/', if format like innodb_000010_000125/
+        // or old format like innodb_000125/
         entry = entry.substr(0, entry.length() - 1);
+      } else {
+        err_msg.append(" invalid");
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+               err_msg.c_str());
+        error = LOG_INFO_INVALID;
+        goto err;
       }
-      is_number(entry.c_str() + dirname_length(entry.c_str()) +
-                    strlen(CONSISTENT_INNODB_ARCHIVE_BASENAME),
-                &number, false);
+      // innodb_{term}_{index_number} or old format like innodb_{index_number}.
+      std::string last_index_basename;
+      last_index_basename.assign(entry.c_str() + dirname_length(entry.c_str()));
+      size_t last_underscore = last_index_basename.find_last_of('_');
+      if (last_underscore == std::string::npos) {
+        err_msg.append(" invalid");
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+               err_msg.c_str());
+        error = LOG_INFO_INVALID;
+        goto err;
+      }
+      // Extract the part after the last underscore
+      std::string last_index_number =
+          last_index_basename.substr(last_underscore + 1);
+      if (!is_number(last_index_number.c_str(), &number, false)) {
+        err_msg.append(" invalid");
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+               err_msg.c_str());
+        error = LOG_INFO_INVALID;
+        goto err;
+      }
       error = 0;
       m_mysql_clone_next_index_number = number;
       m_mysql_clone_next_index_number++;
     } else if (error == LOG_INFO_EOF) {
-      // log index file is empty.
+      // log index file is empty, the starting number is set to 1.
       m_mysql_clone_next_index_number = 1;
       error = 0;
     } else {
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+             "find innodb archive index file failed");
       goto err;
     }
   } else {
     m_mysql_clone_next_index_number++;
     error = 0;
   }
-  sprintf(m_mysql_clone_name, "%s%06llu", CONSISTENT_INNODB_ARCHIVE_BASENAME,
-          (ulonglong)m_mysql_clone_next_index_number);
+  snprintf(m_mysql_clone_name, sizeof(m_mysql_clone_name) - 1,
+           CONSISTENT_INNODB_ARCHIVE_FORMAT,
+           static_cast<my_off_t>(m_consensus_term),
+           static_cast<my_off_t>(m_mysql_clone_next_index_number));
 err:
   if (need_lock) {
     mysql_mutex_unlock(&m_mysql_innodb_clone_index_lock);
@@ -587,6 +643,12 @@ err:
   return error;
 }
 
+/**
+ * @brief Generate a new name for smartengine archive file.
+ * The naming format is smartengine_{term}_{index_number}
+ * or old format like smartengine_{index_number}
+ * @return int
+ */
 int Consistent_archive::generate_se_new_name() {
   DBUG_TRACE;
   DBUG_PRINT("info", ("generate_se_new_name"));
@@ -594,6 +656,7 @@ int Consistent_archive::generate_se_new_name() {
   int error = 1;
   uint64_t number = 0;
   bool need_lock = false;
+  std::string err_msg;
 
   if (m_se_backup_next_index_number == 0) {
     need_lock = true;
@@ -606,36 +669,71 @@ int Consistent_archive::generate_se_new_name() {
         last_entry.assign(log_info.log_file_name);
       } while (!(error = find_next_line_from_index(&log_info, ARCHIVE_SE)));
       if (error != LOG_INFO_EOF) {
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+               "find smartengine archive index file failed");
         goto err;
       }
+      err_msg.assign("last smartengine archive file");
+      err_msg.append(last_entry);
       size_t idx = last_entry.find(".");
       std::string entry{last_entry};
-      // Get rid of ".tar" or ".tar.gz" extension
+      // Get rid of ".tar" or ".tar.gz" extension,
+      // if new format like smartengine_000125_000010.tar.gz or
+      // old format like smartengine_000010.tar.gz
       if (idx != std::string::npos) {
         entry = last_entry.substr(0, idx);
       } else if (entry.back() == FN_LIBCHAR) {
-        // Get rid of last '/'
+        // Get rid of last '/', if format like smartengine_000125_000010/
+        // or old format like smartengine_000010/
         entry = entry.substr(0, entry.length() - 1);
+      } else {
+        err_msg.append(" invalid");
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+               err_msg.c_str());
+        error = LOG_INFO_INVALID;
+        goto err;
       }
-      is_number(entry.c_str() + dirname_length(entry.c_str()) +
-                    strlen(CONSISTENT_SE_ARCHIVE_BASENAME),
-                &number, false);
+      // innodb_{term}_{index_number} or old format like innodb_{index_number}.
+      std::string last_index_basename;
+      last_index_basename.assign(entry.c_str() + dirname_length(entry.c_str()));
+      size_t last_underscore = last_index_basename.find_last_of('_');
+      if (last_underscore == std::string::npos) {
+        err_msg.append(" invalid");
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+               err_msg.c_str());
+        error = LOG_INFO_INVALID;
+        goto err;
+      }
+      // Extract the part after the last underscore
+      std::string last_index_number =
+          last_index_basename.substr(last_underscore + 1);
+      if (!is_number(last_index_number.c_str(), &number, false)) {
+        err_msg.append(" invalid");
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+               err_msg.c_str());
+        error = LOG_INFO_INVALID;
+        goto err;
+      }
+      error = 0;
       m_se_backup_next_index_number = number;
       m_se_backup_next_index_number++;
-      error = 0;
     } else if (error == LOG_INFO_EOF) {
       // log index file is empty.
       m_se_backup_next_index_number = 1;
       error = 0;
     } else {
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG,
+             "find smartengine archive index file failed");
       goto err;
     }
   } else {
     m_se_backup_next_index_number++;
     error = 0;
   }
-  sprintf(m_se_backup_name, "%s%06llu", CONSISTENT_SE_ARCHIVE_BASENAME,
-          (ulonglong)m_se_backup_next_index_number);
+  snprintf(m_se_backup_name, sizeof(m_se_backup_name) - 1,
+           CONSISTENT_SE_ARCHIVE_FORMAT,
+           static_cast<my_off_t>(m_consensus_term),
+           static_cast<my_off_t>(m_se_backup_next_index_number));
 err:
   if (need_lock) {
     mysql_mutex_unlock(&m_se_backup_index_lock);
@@ -705,6 +803,8 @@ void Consistent_archive::run() {
     strmake(convert_dirname(m_se_temp_backup_dir, m_se_temp_backup_dir, NullS),
             STRING_WITH_LEN(MYSQL_SE_TMP_BACKUP_DIR));
     convert_dirname(m_se_temp_backup_dir, m_se_temp_backup_dir, NullS);
+    // Free new Item_***.
+    m_thd->free_items();
   }
 
   mysql_mutex_lock(&m_run_lock);
@@ -857,9 +957,6 @@ void Consistent_archive::run() {
     mysql_mutex_lock(&m_consistent_index_lock);
     close_index_file(ARCHIVE_SNAPSHOT_FILE);
     mysql_mutex_unlock(&m_consistent_index_lock);
-
-    // Free new Item_***.
-    m_thd->free_items();
   }
 
 error:
@@ -874,8 +971,7 @@ error:
   mysql_mutex_unlock(&m_consistent_index_lock);
 
   LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG, "thread end");
-  // Free new Item_***.
-  m_thd->free_items();
+  m_thd->clear_error();
   m_thd->release_resources();
   my_thread_end();
   mysql_mutex_lock(&m_run_lock);
@@ -1119,10 +1215,6 @@ bool Consistent_archive::archive_consistent_snapshot() {
 
 err:
   archive_consistent_snapshot_cleanup(ret);
-  MYSQL_END_STATEMENT(thd->m_statement_psi, thd->get_stmt_da());
-  thd->m_statement_psi = nullptr;
-  thd->m_digest = nullptr;
-  thd->free_items();
   return ret;
 }
 
@@ -1285,50 +1377,6 @@ bool Consistent_archive::achive_mysql_innodb() {
                   FN_REFLEN - strlen(m_mysql_clone_name)),
           m_mysql_clone_name, strlen(m_mysql_clone_name));
 
-  /*
-  List<set_var_base> tmp_var_list;
-  // set global clone_block_ddl = off, held backup lock already.
-  System_variable_tracker block_ddl_var_tracker =
-      System_variable_tracker::make_tracker("clone_block_ddl");
-  // Free item by m_thd->free_items()
-  Item *value = new (thd->mem_root)
-      Item_string("off", strlen("off"), &my_charset_utf8mb4_bin);
-  set_var *block_ddl_var =
-      new (thd->mem_root) set_var(OPT_GLOBAL, block_ddl_var_tracker, value);
-  tmp_var_list.push_back(block_ddl_var);
-
-  // set global clone_autotune_concurrency=off
-  System_variable_tracker autotune_var_tracker =
-      System_variable_tracker::make_tracker("clone_autotune_concurrency");
-  value = new (thd->mem_root)
-      Item_string("off", strlen("off"), &my_charset_utf8mb4_bin);
-  set_var *autotune_var =
-      new (thd->mem_root) set_var(OPT_GLOBAL, autotune_var_tracker, value);
-  tmp_var_list.push_back(autotune_var);
-
-  // set global clone_max_concurrency=1
-  System_variable_tracker concurrency_var_tracker =
-      System_variable_tracker::make_tracker("clone_max_concurrency");
-  value = new (thd->mem_root) Item_int(1);
-  set_var *concurrency_var =
-      new (thd->mem_root) set_var(OPT_GLOBAL, concurrency_var_tracker, value);
-  tmp_var_list.push_back(concurrency_var);
-
-  LEX *saved_lex = thd->lex, temp_lex;
-  LEX *lex = &temp_lex;
-  thd->lex = lex;
-  lex_start(thd);
-  if (sql_set_variables(thd, &tmp_var_list, false)) {
-    if (thd->is_error())
-      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_INNODB_LOG,
-             thd->get_stmt_da()->message_text());
-    thd->lex = saved_lex;
-    return true;
-  }
-  lex->cleanup(true);
-  lex_end(thd->lex);
-  thd->lex = saved_lex;
-  */
   Clone_handler *clone = clone_plugin_lock(thd, &plugin);
   if (clone == nullptr) {
     LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_INNODB_LOG,
@@ -1343,6 +1391,11 @@ bool Consistent_archive::achive_mysql_innodb() {
   // clone mysql innodb data to local dir.
   auto err = clone->clone_local(thd, m_mysql_innodb_clone_dir);
   clone_plugin_unlock(thd, plugin);
+#ifdef HAVE_PSI_STATEMENT_INTERFACE
+  MYSQL_END_STATEMENT(thd->m_statement_psi, thd->get_stmt_da());
+  thd->m_statement_psi = nullptr;
+  thd->m_digest = nullptr;
+#endif
   if (err != 0) {
     err_msg.append(" failed");
     LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_INNODB_LOG,
@@ -1696,9 +1749,9 @@ bool Consistent_archive::archive_smartengine_wals_and_metas() {
     se_snapshot_meta_dir.assign(m_se_backup_keyid);
     se_snapshot_meta_dir.append(CONSISTENT_SE_ARCHIVE_META_SUBDIR);
     se_snapshot_meta_dir.append(FN_DIRSEP);
-    ss = snapshot_objstore->put_object(
-        std::string_view(opt_objstore_bucket),
-        std::string_view(se_snapshot_meta_dir), std::string_view(""));
+    ss = snapshot_objstore->put_object(std::string_view(opt_objstore_bucket),
+                                       std::string_view(se_snapshot_meta_dir),
+                                       std::string_view(""));
     if (!ss.is_succ()) {
       err_msg.assign(
           "persistent smartengine archive meta dir to object store failed: ");
@@ -1710,14 +1763,14 @@ bool Consistent_archive::archive_smartengine_wals_and_metas() {
              err_msg.c_str());
       return true;
     }
-    
+
     std::string se_snapshot_wal_dir;
     se_snapshot_wal_dir.assign(m_se_backup_keyid);
     se_snapshot_wal_dir.append(CONSISTENT_SE_ARCHIVE_WAL_SUBDIR);
     se_snapshot_wal_dir.append(FN_DIRSEP);
-    ss = snapshot_objstore->put_object(
-        std::string_view(opt_objstore_bucket),
-        std::string_view(se_snapshot_wal_dir), std::string_view(""));
+    ss = snapshot_objstore->put_object(std::string_view(opt_objstore_bucket),
+                                       std::string_view(se_snapshot_wal_dir),
+                                       std::string_view(""));
     if (!ss.is_succ()) {
       err_msg.assign(
           "persistent smartengine archive wal dir to object store failed: ");
@@ -2118,6 +2171,90 @@ int Consistent_archive::show_consistent_snapshot_task_info(
 }
 
 /**
+ * @brief Get the last persistent index file.
+ * The persisted index file is based on multiple versions of the
+ * consensus term, so the index file with the highest consensus term
+ * should be obtained as the initial one.
+ * @param last_binlog_index
+ * @return int
+ * @note Ensuring compatibility with both multi-version (snapshot.000001.index)
+ * and single-version (snapshot.index) formats.
+ */
+int Consistent_archive::fetch_last_persistent_index_file(
+    std::string &last_index, Archive_type arch_type) {
+  std::vector<objstore::ObjectMeta> objects;
+  bool finished = false;
+  std::string start_after;
+  std::string index_prefix;
+  std::string old_index_keyid;
+  std::string err_msg;
+
+  if (arch_type == ARCHIVE_MYSQL_INNODB) {
+    index_prefix.assign(m_archive_dir);
+    index_prefix.append(CONSISTENT_INNODB_INDEX_FILE_BASENAME);
+    old_index_keyid.assign(m_archive_dir);
+    old_index_keyid.append(CONSISTENT_INNODB_ARCHIVE_INDEX_FILE);
+  } else if (arch_type == ARCHIVE_SE) {
+    index_prefix.assign(m_archive_dir);
+    index_prefix.append(CONSISTENT_SE_INDEX_FILE_BASENAME);
+    old_index_keyid.assign(m_archive_dir);
+    old_index_keyid.append(CONSISTENT_SE_ARCHIVE_INDEX_FILE);
+  } else {
+    assert(arch_type == ARCHIVE_SNAPSHOT_FILE);
+    index_prefix.assign(m_archive_dir);
+    index_prefix.append(CONSISTENT_SNAPSHOT_INDEX_FILE_BASENAME);
+    old_index_keyid.assign(m_archive_dir);
+    old_index_keyid.append(CONSISTENT_SNAPSHOT_INDEX_FILE);
+  }
+  /*
+   snapshot.000001.index
+   snapshot.000002.index
+   snapshot.000003.index
+   snapshot.index
+   If exists multi-version index file, should get the latest one multi-version
+   index file snapshot.000003.index. Otherwis, get snapshot.index. If exists
+   snapshot.index, should locate the last one in list. If only the
+   single-version file (snapshot.index) exists, it is selected instead..
+  */
+  do {
+    std::vector<objstore::ObjectMeta> tmp_objects;
+    objstore::Status ss = snapshot_objstore->list_object(
+        std::string_view(opt_objstore_bucket), index_prefix, false, start_after,
+        finished, tmp_objects);
+    if (!ss.is_succ()) {
+      err_msg.assign("list persistent index file failed: ");
+      err_msg.append(index_prefix);
+      err_msg.append(" error=");
+      err_msg.append(ss.error_message());
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      return 1;
+    }
+    objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
+  } while (finished == false);
+  // if no persistent binlog.index, return.
+  if (objects.empty()) {
+    err_msg.assign("no persistent index file found: ");
+    err_msg.append(index_prefix);
+    LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+    return 0;
+  }
+  // Initially, the last_index is assigned to the key of the last object in the
+  // objects vector
+  last_index.assign((objects.back()).key);
+  // If the last file is the single-version file (snapshot.index), and there are
+  // other files available, it skips this file and assigns last_index to the
+  // second-last object in the list. This ensures compatibility by preferring
+  // multi-version files when available.
+  if (old_index_keyid.compare(objects.back().key) == 0 && objects.size() > 1) {
+    last_index.assign((objects.end() - 2)->key);
+  }
+  err_msg.assign("fetch last persistent index file: ");
+  err_msg.append(last_index);
+  LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+  return 0;
+}
+
+/**
   Open a (new) crash safe index file.
 
   @note
@@ -2266,6 +2403,8 @@ int Consistent_archive::move_crash_safe_index_file_to_index_file(
   PSI_file_key *index_file_key;
   PSI_file_key *index_file_cache_key;
   std::string index_keyid;
+  char index_keyid_mv_suffix[FN_REFLEN + 1] = {0};
+  uint64_t *index_term;
   bool fault_injection_put_se_index = false,
        fault_injection_put_innodb_index = false,
        fault_injection_put_consistent_index = false;
@@ -2282,8 +2421,12 @@ int Consistent_archive::move_crash_safe_index_file_to_index_file(
     index_file_name = m_mysql_clone_index_file_name;
     index_file_key = &PSI_consistent_archive_mysql_log_index_key;
     index_file_cache_key = &PSI_consistent_archive_mysql_log_index_cache_key;
+    snprintf(index_keyid_mv_suffix, FN_REFLEN,
+             CONSISTENT_INNODB_ARCHIVE_INDEX_FILE_FORMAT,
+             static_cast<my_off_t>(m_consensus_term));
     index_keyid.assign(m_archive_dir);
-    index_keyid.append(CONSISTENT_INNODB_ARCHIVE_INDEX_FILE);
+    index_keyid.append(index_keyid_mv_suffix);
+    index_term = &m_opened_innodb_index_term;
     DBUG_EXECUTE_IF("fault_injection_put_innodb_index_to_objstore",
                     { fault_injection_put_innodb_index = true; });
     DBUG_EXECUTE_IF("fault_injection_delete_innodb_index_file",
@@ -2297,8 +2440,12 @@ int Consistent_archive::move_crash_safe_index_file_to_index_file(
     index_file_name = m_se_backup_index_file_name;
     index_file_key = &PSI_consistent_archive_se_log_index_key;
     index_file_cache_key = &PSI_consistent_archive_se_log_index_cache_key;
+    snprintf(index_keyid_mv_suffix, FN_REFLEN,
+             CONSISTENT_SE_ARCHIVE_INDEX_FILE_FORMAT,
+             static_cast<my_off_t>(m_consensus_term));
     index_keyid.assign(m_archive_dir);
-    index_keyid.append(CONSISTENT_SE_ARCHIVE_INDEX_FILE);
+    index_keyid.append(index_keyid_mv_suffix);
+    index_term = &m_opened_se_index_term;
     DBUG_EXECUTE_IF("fault_injection_put_se_index_to_objstore",
                     { fault_injection_put_se_index = true; });
     DBUG_EXECUTE_IF("fault_injection_delete_se_index_file",
@@ -2314,8 +2461,12 @@ int Consistent_archive::move_crash_safe_index_file_to_index_file(
     index_file_name = m_consistent_snapshot_index_file_name;
     index_file_key = &PSI_consistent_snapshot_file_key;
     index_file_cache_key = &PSI_consistent_snapshot_file_cache_key;
+    snprintf(index_keyid_mv_suffix, FN_REFLEN,
+             CONSISTENT_SNAPSHOT_INDEX_FILE_FORMAT,
+             static_cast<my_off_t>(m_consensus_term));
     index_keyid.assign(m_archive_dir);
-    index_keyid.append(CONSISTENT_SNAPSHOT_INDEX_FILE);
+    index_keyid.append(index_keyid_mv_suffix);
+    index_term = &m_opened_snapshot_index_term;
     DBUG_EXECUTE_IF("fault_injection_put_consistent_index_to_objstore",
                     { fault_injection_put_consistent_index = true; });
     DBUG_EXECUTE_IF("fault_injection_delete_consistent_index_file",
@@ -2426,6 +2577,7 @@ int Consistent_archive::move_crash_safe_index_file_to_index_file(
     if (fd >= 0) mysql_file_close(fd, MYF(0));
     goto err;
   }
+  *index_term = extract_term_from_index_file(index_keyid.c_str());
 
 err:
   return error;
@@ -2544,6 +2696,8 @@ bool Consistent_archive::open_index_file(const char *index_file_name_arg,
   PSI_file_key *index_file_cache_key;
   mysql_mutex_t *index_lock;
   std::string err_msg{};
+  std::string index_obj_keyid;
+  uint64_t *index_term;
 
   if (arch_type == ARCHIVE_MYSQL_INNODB) {
     crash_safe_index_file_name = m_crash_safe_mysql_clone_index_file_name;
@@ -2552,6 +2706,7 @@ bool Consistent_archive::open_index_file(const char *index_file_name_arg,
     index_file_key = &PSI_consistent_archive_mysql_log_index_key;
     index_file_cache_key = &PSI_consistent_archive_mysql_log_index_cache_key;
     index_lock = &m_mysql_innodb_clone_index_lock;
+    index_term = &m_opened_innodb_index_term;
   } else if (arch_type == ARCHIVE_SE) {
     crash_safe_index_file_name = m_crash_safe_se_backup_index_file_name;
     index_file = &m_se_backup_index_file;
@@ -2559,6 +2714,7 @@ bool Consistent_archive::open_index_file(const char *index_file_name_arg,
     index_file_key = &PSI_consistent_archive_se_log_index_key;
     index_file_cache_key = &PSI_consistent_archive_se_log_index_cache_key;
     index_lock = &m_se_backup_index_lock;
+    index_term = &m_opened_se_index_term;
   } else {
     assert(arch_type == ARCHIVE_SNAPSHOT_FILE);
     crash_safe_index_file_name =
@@ -2568,6 +2724,7 @@ bool Consistent_archive::open_index_file(const char *index_file_name_arg,
     index_file_key = &PSI_consistent_snapshot_file_key;
     index_file_cache_key = &PSI_consistent_snapshot_file_cache_key;
     index_lock = &m_consistent_index_lock;
+    index_term = &m_opened_snapshot_index_term;
   }
 
   if (need_lock) {
@@ -2612,33 +2769,60 @@ bool Consistent_archive::open_index_file(const char *index_file_name_arg,
   }
 
   // Check if the index file exists in s3, if so, download it to local.
+  if (fetch_last_persistent_index_file(index_obj_keyid, arch_type)) {
+    error = true;
+    goto end;
+  }
+
+  // Check if the index file exists in s3, if so, download it to local.
   // And rename it to index_file_name.
-  if (snapshot_objstore != nullptr) {
+  if (!index_obj_keyid.empty()) {
+    // 0 if snapshot.index
+    *index_term = extract_term_from_index_file(index_obj_keyid.c_str());
+
     std::string index_file_name_str;
     index_file_name_str.assign(crash_safe_index_file_name);
-    std::string index_keyid;
-    index_keyid.assign(m_archive_dir);
-    index_keyid.append(index_file_name_arg);
     auto status = snapshot_objstore->get_object_to_file(
-        std::string_view(opt_objstore_bucket), index_keyid,
+        std::string_view(opt_objstore_bucket), index_obj_keyid,
         index_file_name_str);
-    // If the index file exists in s3, download it to local.
-    if (status.is_succ()) {
-      if (my_chmod(
-              crash_safe_index_file_name,
-              USER_READ | USER_WRITE | GROUP_READ | GROUP_WRITE | OTHERS_READ,
-              MYF(0))) {
-        err_msg.append(" failed to chmod: ");
-        err_msg.append(crash_safe_index_file_name);
-        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
-        error = true;
-        goto end;
-      }
-      if (my_rename(crash_safe_index_file_name, index_file_name, MYF(MY_WME))) {
-        error = true;
-        goto end;
-      }
+    if (!status.is_succ()) {
+      err_msg.assign("get last persistent index failed");
+      err_msg.append(index_obj_keyid);
+      err_msg.append(" error=");
+      err_msg.append(status.error_message());
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      error = true;
+      goto end;
     }
+
+    if (my_chmod(
+            crash_safe_index_file_name,
+            USER_READ | USER_WRITE | GROUP_READ | GROUP_WRITE | OTHERS_READ,
+            MYF(0))) {
+      err_msg.assign(" failed to chmod ");
+      err_msg.append(crash_safe_index_file_name);
+      err_msg.append(" errno=");
+      err_msg.append(std::to_string(my_errno()));
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      error = true;
+      goto end;
+    }
+    if (my_rename(crash_safe_index_file_name, index_file_name, MYF(MY_WME))) {
+      err_msg.assign(" failed to rename ");
+      err_msg.append(crash_safe_index_file_name);
+      err_msg.append(" to");
+      err_msg.append(index_file_name);
+      err_msg.append(" errno=");
+      err_msg.append(std::to_string(my_errno()));
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      error = true;
+      goto end;
+    }
+    err_msg.assign("get last persistent index file key=");
+    err_msg.append(index_obj_keyid);
+    err_msg.append(" to ");
+    err_msg.append(index_file_name);
+    LogErr(INFORMATION_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
   }
 
   if ((index_file_nr = mysql_file_open(*index_file_key, index_file_name,
@@ -2702,19 +2886,24 @@ void Consistent_archive::close_index_file(Archive_type arch_type) {
   DBUG_PRINT("info", ("close_index_file"));
   IO_CACHE *index_file;
   char *index_file_name;
+  uint64_t *index_term;
 
   if (arch_type == ARCHIVE_MYSQL_INNODB) {
     index_file = &m_mysql_clone_index_file;
     index_file_name = m_mysql_clone_index_file_name;
+    index_term = &m_opened_innodb_index_term;
   } else if (arch_type == ARCHIVE_SE) {
     index_file = &m_se_backup_index_file;
     index_file_name = m_se_backup_index_file_name;
+    index_term = &m_opened_se_index_term;
   } else {
     assert(arch_type == ARCHIVE_SNAPSHOT_FILE);
     index_file = &m_consistent_snapshot_index_file;
     index_file_name = m_consistent_snapshot_index_file_name;
+    index_term = &m_opened_snapshot_index_term;
   }
 
+  *index_term = 0;
   if (my_b_inited(index_file)) {
     std::string err_msg;
     end_io_cache(index_file);
@@ -2741,13 +2930,13 @@ static int compare_log_name(const char *log_1, const char *log_2) {
 /**
  * @brief Remove the trailing '/', remove the trailing extension, and then
  * compare.
- *
- * @param log_1 innodb_archive_00001.tar
- *              or innodb_archive_00001.tar.gz
- *              or innodb_archive_00001
- * @param log_2 innodb_archive_00001.tar
- *              or innodb_archive_00001.tar.gz
- *              or innodb_archive_00001/
+ * @param log_1
+ * single-version innodb_000012.tar or innodb_000012.tar.gz or innodb_000012/
+ * multi-version innodb_000001_000012.tar or innodb_000001_00012.tar.gz or
+ * @param log_2
+ * single-version innodb_000012.tar or innodb_000012.tar.gz or innodb_000012/
+ * multi-version innodb_000001_000012.tar or innodb_000001_00012.tar.gz or
+ * innodb_000001_00012/
  * @return int
  */
 static int compare_log_name_without_ext(const char *log_1, const char *log_2) {
@@ -2762,19 +2951,70 @@ static int compare_log_name_without_ext(const char *log_1, const char *log_2) {
   if (log_2_basename.back() == FN_LIBCHAR) {
     log_2_basename = log_2_basename.substr(0, log_2_basename.length() - 1);
   }
-  // Get rid of extension
+  // Get rid of extension .gz or .tar.gz
   size_t idx1 = log_1_basename.find(".");
   std::string log_1_without_ext{log_1_basename};
   if (idx1 != std::string::npos) {
     log_1_without_ext = log_1_basename.substr(0, idx1);
   }
+  // Get rid of extension .tar or .tar.gz
   size_t idx2 = log_2_basename.find(".");
   std::string log_2_without_ext{log_2_basename};
   if (idx2 != std::string::npos) {
     log_2_without_ext = log_2_basename.substr(0, idx2);
   }
+  // innodb_000001_000012 or innodb_000012
+  // note: multi-version archive file > single-version archive file
+  // innodb_{term}_{index} > innodb_{index}
+  if (check_archive_file_version_type(log_1_without_ext) ==
+      check_archive_file_version_type(log_2_without_ext)) {
+    return log_1_without_ext.compare(log_2_without_ext);
+  }
+  return check_archive_file_version_type(log_1_without_ext) >
+                 check_archive_file_version_type(log_2_without_ext)
+             ? 1
+             : -1;
+}
 
-  return log_1_without_ext.compare(log_2_without_ext);
+/**
+ * @brief Check if the archive file is a single-version or multi-version.
+ * Single-version: innodb_000001.tar or innodb_000001.tar.gz or
+ * innodb_000001/
+ * Multi-version: innodb_000001_000012.tar or
+ * innodb_000001_000012.tar.gz or innodb_000001_000012/
+ * @param archive_file_name
+ * @return int, -1 for error, 0 for single-version, 1 for multi-version.
+ */
+static int check_archive_file_version_type(std::string &archive_file_name) {
+  DBUG_TRACE;
+  DBUG_PRINT("info", ("check_archive_file_version_type"));
+
+  std::string basename;
+  basename.assign(archive_file_name.c_str() +
+                  dirname_length(archive_file_name.c_str()));
+  // Get rid of last '/'
+  if (basename.back() == FN_LIBCHAR) {
+    basename = basename.substr(0, basename.length() - 1);
+  } else {
+    // Get rid of extension .tar.gz or .gz
+    size_t idx1 = basename.find(".");
+    if (idx1 != std::string::npos) {
+      basename = basename.substr(0, idx1);
+    }
+  }
+  // innodb_000001_000012 or innodb_000012
+  size_t first_underscore = basename.find('_');
+  if (first_underscore == std::string::npos) {
+    return -1;
+  }
+  basename = basename.substr(first_underscore + 1);
+  size_t second_underscore = basename.find('_');
+  // single-version archive file innodb_000012
+  if (second_underscore == std::string::npos) {
+    return 0;
+  }
+  // multi-version archive_file innodb_000001_000012
+  return 1;
 }
 
 /**
@@ -3113,13 +3353,16 @@ std::tuple<int, std::string> Consistent_archive::purge_consistent_snapshot(
            err_msg.c_str());
     return std::make_tuple(error, err_msg);
   }
-
+  // First, purge snapshot from snapshot.index.
   error = remove_line_from_index(&linfo, ARCHIVE_SNAPSHOT_FILE);
   if (error) {
     mysql_mutex_unlock(&m_consistent_index_lock);
     err_msg.assign("failed to remove snapshot from snapshot.index");
     goto err;
   }
+  // purge snapshot index file
+  purge_archive_index_garbage(m_opened_snapshot_index_term,
+                              ARCHIVE_SNAPSHOT_FILE);
   mysql_mutex_unlock(&m_consistent_index_lock);
 
   mysql_mutex_lock(&m_mysql_innodb_clone_index_lock);
@@ -3138,7 +3381,7 @@ std::tuple<int, std::string> Consistent_archive::purge_consistent_snapshot(
   error = purge_archive(purge_se_end_name.c_str(), ARCHIVE_SE);
   if (error) {
     mysql_mutex_unlock(&m_se_backup_index_lock);
-    err_msg.assign("failed to purge mysql innodb persistent file: ");
+    err_msg.assign("failed to purge smartengine persistent file: ");
     err_msg.append(purge_se_end_name);
     goto err;
   }
@@ -3174,6 +3417,10 @@ std::tuple<int, std::string> Consistent_archive::purge_consistent_snapshot(
   LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_PURGE_LOG, err_msg.c_str());
   return std::make_tuple(error, err_msg);
 err:
+  // TODO: Directly clean up those garbage snapshot index file.
+  // Because snapshot index is multi-versioned, older versions are not
+  // needed, when new version is created, the old version is garbage.
+
   LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_PURGE_LOG, err_msg.c_str());
   return std::make_tuple(error, err_msg);
 }
@@ -3197,7 +3444,8 @@ int Consistent_archive::purge_archive(const char *match_name,
   }
 
   if ((error = find_line_from_index(&log_info, match_name, arch_type))) {
-    err_msg.assign("Failed to find_line_from_index");
+    err_msg.assign("Failed to find_line_from_index ");
+    err_msg.append(match_name);
     LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_PURGE_LOG, err_msg.c_str());
     goto err;
   }
@@ -3207,19 +3455,14 @@ int Consistent_archive::purge_archive(const char *match_name,
     LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_PURGE_LOG, err_msg.c_str());
     goto err;
   }
-
-  /*
-    File name exists in index file; delete until we find this file
-    or a file that is used.
-  */
+  // From the first entry to match_name, record all index entries that need to
+  // be purged in the local purge.index file.
   if ((error = find_line_from_index(&log_info, NullS, arch_type))) {
-    err_msg.assign("Failed to find_line_from_index");
+    err_msg.assign("Failed to find_line_from_index from nulls");
     LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_PURGE_LOG, err_msg.c_str());
     goto err;
   }
-  // Record all binlog index entries that need to be purged in the local
-  // purge.index file.
-  while (compare_log_name_without_ext(match_name, log_info.log_file_name)) {
+  while (compare_log_name_without_ext(match_name, log_info.log_file_name) > 0) {
     if ((error =
              register_purge_index_entry(log_info.log_file_name, arch_type))) {
       err_msg.assign("Failed to register_purge_index_entry");
@@ -3250,7 +3493,7 @@ err:
   // Allow purge failures; archive files that
   // were not deleted are treated as garbage
 
-  /* Read each entry  and delete the file. */
+  /* Read each entry  and delete the archive file. */
   if (!error && (error_index = purge_index_entry(arch_type))) {
     error_purge = 1;
     err_msg.assign("Failed to purge_index_entry");
@@ -3283,6 +3526,8 @@ int Consistent_archive::purge_archive_garbage(const char *dirty_end_archive,
   std::string err_msg;
   std::string start_after;
   std::string archive_prefix;
+  uint64_t *index_term;
+
   err_msg.assign(
       "clean up those garbage archive files that do not exist in the index: "
       "before ");
@@ -3292,15 +3537,22 @@ int Consistent_archive::purge_archive_garbage(const char *dirty_end_archive,
   archive_prefix.assign(m_archive_dir);
   if (arch_type == ARCHIVE_MYSQL_INNODB) {
     archive_prefix.append(CONSISTENT_INNODB_ARCHIVE_BASENAME);
+    index_term = &m_opened_innodb_index_term;
   } else if (arch_type == ARCHIVE_SE) {
     archive_prefix.append(CONSISTENT_SE_ARCHIVE_BASENAME);
+    index_term = &m_opened_se_index_term;
   }
+  // cleanup the garbage innodb or smartengine index file.
+  purge_archive_index_garbage(*index_term, arch_type);
+
   std::vector<objstore::ObjectMeta> objects;
   do {
     std::vector<objstore::ObjectMeta> tmp_objects;
     // Only return the files and directories at the first-level directory.
-    // innodb_archive_000001.tar or innodb_archive_000001.tar.gz
-    // or innodb_archive_000001/
+    // Single-version format: innodb_000001.tar or
+    // innodb_000001.tar.gz or innodb_000001/
+    // Multi-version format: innodb_000001_000012.tar or
+    // innodb_000001_000012.tar.gz or innodb_000001_000012/
     objstore::Status ss = snapshot_objstore->list_object(
         std::string_view(opt_objstore_bucket), archive_prefix, false,
         start_after, finished, tmp_objects);
@@ -3356,6 +3608,115 @@ int Consistent_archive::purge_archive_garbage(const char *dirty_end_archive,
   }
   return error;
 }
+
+/**
+ * @brief purge the smaller than term index file.
+ *
+ * @param end_term
+ * @return int
+ */
+int Consistent_archive::purge_archive_index_garbage(uint64_t end_term,
+                                                    Archive_type arch_type) {
+  std::vector<objstore::ObjectMeta> objects;
+  bool finished = false;
+  std::string start_after;
+  std::string index_prefix;
+  std::string old_index_keyid;
+  std::string err_msg;
+
+  if (end_term == 0) {
+    return 0;
+  }
+  if (arch_type == ARCHIVE_MYSQL_INNODB) {
+    index_prefix.assign(m_archive_dir);
+    index_prefix.append(CONSISTENT_INNODB_INDEX_FILE_BASENAME);
+    old_index_keyid.assign(m_archive_dir);
+    old_index_keyid.append(CONSISTENT_INNODB_ARCHIVE_INDEX_FILE);
+  } else if (arch_type == ARCHIVE_SE) {
+    index_prefix.assign(m_archive_dir);
+    index_prefix.append(CONSISTENT_SE_INDEX_FILE_BASENAME);
+    old_index_keyid.assign(m_archive_dir);
+    old_index_keyid.append(CONSISTENT_SE_ARCHIVE_INDEX_FILE);
+  } else {
+    assert(arch_type == ARCHIVE_SNAPSHOT_FILE);
+    index_prefix.assign(m_archive_dir);
+    index_prefix.append(CONSISTENT_SNAPSHOT_INDEX_FILE_BASENAME);
+    old_index_keyid.assign(m_archive_dir);
+    old_index_keyid.append(CONSISTENT_SNAPSHOT_INDEX_FILE);
+  }
+  /*
+   snapshot.000001.index
+   snapshot.000002.index
+   snapshot.000003.index
+   snapshot.index
+  */
+  do {
+    std::vector<objstore::ObjectMeta> tmp_objects;
+    objstore::Status ss = snapshot_objstore->list_object(
+        std::string_view(opt_objstore_bucket), index_prefix, false, start_after,
+        finished, tmp_objects);
+    if (!ss.is_succ()) {
+      err_msg.assign("list persistent index file failed: ");
+      err_msg.append(index_prefix);
+      err_msg.append(" error=");
+      err_msg.append(ss.error_message());
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      return 1;
+    }
+    objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
+  } while (finished == false);
+  // if no persistent binlog.index, return.
+  if (objects.size() < 2) {
+    err_msg.assign("no purge persistent index file.");
+    return 0;
+  }
+  // Cleanup snapshot.index if exists.
+  if (old_index_keyid.compare(objects.back().key) == 0) {
+    err_msg.assign("delete garbage index from object store: ");
+    err_msg.append(objects.back().key);
+    LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+    objstore::Status ss = snapshot_objstore->delete_object(
+        std::string_view(opt_objstore_bucket), objects.back().key);
+    if (!ss.is_succ()) {
+      err_msg.append(" error=");
+      err_msg.append(ss.error_message());
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      // Continue cleaning up other index even if an error
+      // occurs.
+    }
+    objects.erase(objects.end() - 1);
+  }
+
+  // snapshot.{term}.index
+  for (const auto &object : objects) {
+    // extract term from snapshot.{term}.index
+    uint64_t consensus_term = extract_term_from_index_file(object.key.c_str());
+    if (consensus_term == 0) {
+      err_msg.assign("invalid index key: ");
+      err_msg.append(object.key);
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+    }
+
+    // If the term of the index file is smaller than the end_term,
+    // delete the index file from the object store.
+    if (end_term > consensus_term) {
+      err_msg.assign("delete garbage index from object store: ");
+      err_msg.append(object.key);
+      LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      objstore::Status ss = snapshot_objstore->delete_object(
+          std::string_view(opt_objstore_bucket), object.key);
+      if (!ss.is_succ()) {
+        err_msg.append(" error=");
+        err_msg.append(ss.error_message());
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+        // Continue cleaning up other binlog.index even if an error
+        // occurs.
+      }
+    }
+  }
+  return 0;
+}
+
 int Consistent_archive::set_purge_index_file_name(const char *base_file_name,
                                                   Archive_type arch_type) {
   int error = 0;
@@ -3754,6 +4115,31 @@ int Consistent_archive::show_se_backup_snapshot(
   }
   plugin_unlock(nullptr, plugin);
   return false;
+}
+
+/**
+ * @brief Extract the term value from the index file name.
+ * Format like snapshot.000001.index
+ */
+static uint64_t extract_term_from_index_file(const char *index_file_name) {
+  DBUG_TRACE;
+  DBUG_PRINT("info", ("extract_term_from_index_file"));
+  uint64_t term = 0;
+  size_t first_dot = 0;
+  size_t second_dot = 0;
+  std::string index_file;
+  index_file.assign(index_file_name);
+  first_dot = index_file.find('.');
+  if (first_dot == std::string::npos) {
+    return term;
+  }
+  second_dot = index_file.find('.', first_dot + 1);
+  if (second_dot == std::string::npos) {
+    return term;
+  }
+  std::string term_str = index_file.substr(first_dot + 1, second_dot);
+  term = std::stoull(term_str);
+  return term;
 }
 
 /**

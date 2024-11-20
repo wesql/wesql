@@ -1,0 +1,54 @@
+#########
+# SETUP Single-Version Snapshot Database #
+#########
+# Copy and unzip the single-version snapshot datadir.
+# Create local_bucket
+# recovery single_version snapshot bucket
+# Recover database using single-version snapshot
+# Create an empty data directory...
+# Wait for new_node accept connection
+# Connection new node
+# Wait for Leader
+use test;
+select count(*) from t1;
+count(*)
+808
+INSERT INTO t1 values(1,'abcd');
+INSERT INTO t1 values(2,'abcd');
+INSERT INTO t1 values(3,'abcd');
+INSERT INTO t1 values(4,'abcd');
+# Force snapshot1
+SELECT SNAPSHOT_ARCHIVE_PERSISTENT_FORCE();
+SNAPSHOT_ARCHIVE_PERSISTENT_FORCE()
+
+INSERT INTO t1 values(1,'abcd');
+INSERT INTO t1 values(2,'abcd');
+INSERT INTO t1 values(3,'abcd');
+INSERT INTO t1 values(4,'abcd');
+# Force snapshot2
+SELECT SNAPSHOT_ARCHIVE_PERSISTENT_FORCE();
+SNAPSHOT_ARCHIVE_PERSISTENT_FORCE()
+
+INSERT INTO t1 values(1,'abcd');
+INSERT INTO t1 values(2,'abcd');
+INSERT INTO t1 values(3,'abcd');
+INSERT INTO t1 values(4,'abcd');
+select count(*) from t1;
+count(*)
+820
+# Wait for all binlog persistent
+# Crash
+set debug = 'd, crash_commit_before_log';
+INSERT INTO t1 values(5, 'abcd');
+ERROR HY000: Lost connection to MySQL server during query
+# Force rmdir datadir
+# Create an empty data directory...
+# Recover database using multi-version
+# Wait for new_node accept connection
+use test;
+select count(*) from t1;
+count(*)
+820
+# Shutdown new node
+# Cleanup new node
+# Cleanup

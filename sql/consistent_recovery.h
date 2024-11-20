@@ -1,5 +1,5 @@
 /*
-  Portions Copyright (c) 2024, ApeCloud Inc Holding Limited 
+  Portions Copyright (c) 2024, ApeCloud Inc Holding Limited
   Portions Copyright (c) 2009, 2023, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -82,18 +82,18 @@ class Consistent_recovery {
   int consistent_snapshot_consensus_recovery_finish();
 
  private:
+  int init_objstore_in_initialize();
+  int init_objstore_in_recovery();
+  int init_consistent_snapshot_recovery_context();
   int open_binlog_index_file(IO_CACHE *index_file, const char *index_file_name,
                              enum cache_type type);
   int add_line_to_index_file(IO_CACHE *index_file, const char *log_name);
   int close_binlog_index_file(IO_CACHE *index_file);
-  int truncate_binlogs_from_objstore(const char *log_file_name_arg,
-                                     my_off_t log_pos);
   int merge_slice_to_binlog_file(const char *to_binlog_file,
                                  std::string mysql_binlog_name,
                                  my_off_t &mysql_binlog_end_pos);
-  int truncate_binlog_slice_from_objstore(const char *log_file_name_arg,
-                                          my_off_t log_pos, bool &has_truncated);
-
+  int fetch_last_persistent_snapshot_index_file(std::string &last_index);
+  int fetch_last_persistent_binlog_index_file(std::string &last_binlog_index);
   enum Consistent_recovery_state {
     CONSISTENT_RECOVERY_STATE_NONE = 0,
     CONSISTENT_RECOVERY_STATE_SNAPSHOT_FILE = 1,
@@ -120,10 +120,11 @@ class Consistent_recovery {
   // Binlog file required for recovering consistent snapshot to a consistent
   // state
   char m_binlog_file[FN_REFLEN + 1];
-  // End binlog position for recovering the consistent snapshot to a consistent state
-  // Only used when consensus replication is disabled.
+  // End binlog position for recovering the consistent snapshot to a consistent
+  // state Only used when consensus replication is disabled.
   uint64_t m_mysql_binlog_pos;
-  // End consensus index for recovering the consistent snapshot to a consistent state
+  // End consensus index for recovering the consistent snapshot to a consistent
+  // state
   uint64_t m_consensus_index;
   uint64_t m_se_snapshot_id;
   char m_mysql_binlog_end_file[FN_REFLEN + 1];

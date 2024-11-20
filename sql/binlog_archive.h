@@ -1,5 +1,5 @@
 /*
-  Portions Copyright (c) 2024, ApeCloud Inc Holding Limited 
+  Portions Copyright (c) 2024, ApeCloud Inc Holding Limited
   Portions Copyright (c) 2009, 2023, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -45,7 +45,15 @@
 #define BINLOG_ARCHIVE_SLICE_LOCAL_SUFFIX ".slice"
 #define BINLOG_ARCHIVE_NUMBER_EXT "%06llu"
 #define BINLOG_ARCHIVE_SLICE_POSITION_EXT "%010llu"
-#define BINLOG_ARCHIVE_CONSENSUS_TERM_EXT "%020llu"
+#define BINLOG_ARCHIVE_TERM_EXT "%010llu"
+#define BINLOG_ARCHIVE_INDEX_FILE_FORMAT                     \
+  BINLOG_ARCHIVE_INDEX_FILE_BASENAME BINLOG_ARCHIVE_TERM_EXT \
+      BINLOG_ARCHIVE_INDEX_FILE_SUFFIX
+#define BINLOG_ARCHIVE_FILE_FORMAT \
+  BINLOG_ARCHIVE_BASENAME BINLOG_ARCHIVE_NUMBER_EXT
+#define BINLOG_ARCHIVE_SLICE_FILE_FORMAT \
+  "%s"                                   \
+  "." BINLOG_ARCHIVE_TERM_EXT "." BINLOG_ARCHIVE_SLICE_POSITION_EXT
 
 class THD;
 
@@ -251,7 +259,8 @@ class Binlog_archive_worker {
     return atomic_binlog_archive_worker_waiting.load(std::memory_order_acquire);
   }
   void set_binlog_archive_worker_waiting(bool waiting) {
-    atomic_binlog_archive_worker_waiting.store(waiting, std::memory_order_release);
+    atomic_binlog_archive_worker_waiting.store(waiting,
+                                               std::memory_order_release);
   }
 
  private:
@@ -544,6 +553,8 @@ class Binlog_archive {
   mysql_mutex_t m_index_lock;
   char m_index_local_file_name[FN_REFLEN];
   char m_index_file_name[FN_REFLEN];
+  uint64_t m_opened_index_term; // the term of the opened index file
+  int fetch_last_persistent_index_file(std::string &last_index_file);
   bool open_index_file();
   void close_index_file();
   int add_log_to_index(const uchar *log_name, size_t log_name_len);

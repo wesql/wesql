@@ -1,5 +1,5 @@
 /*
-  Portions Copyright (c) 2024, ApeCloud Inc Holding Limited 
+  Portions Copyright (c) 2024, ApeCloud Inc Holding Limited
   Portions Copyright (c) 2009, 2023, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -39,16 +39,34 @@
 #define CONSISTENT_TAR_GZ_SUFFIX ".tar.gz"
 #define CONSISTENT_TAR_GZ_SUFFIX_LEN 7
 #define CONSISTENT_SNAPSHOT_INDEX_FILE "snapshot.index"
-#define CONSISTENT_SNAPSHOT_INDEX_FILE_LEN (sizeof(CONSISTENT_SNAPSHOT_INDEX_FILE) - 1)
+#define CONSISTENT_SNAPSHOT_INDEX_FILE_BASENAME "snapshot."
+#define CONSISTENT_SNAPSHOT_INDEX_FILE_SUFFIX ".index"
 #define CONSISTENT_INNODB_ARCHIVE_INDEX_FILE "innodb.index"
-#define CONSISTENT_INNODB_ARCHIVE_INDEX_FILE_LEN (sizeof(CONSISTENT_INNODB_ARCHIVE_INDEX_FILE) - 1)
+#define CONSISTENT_INNODB_INDEX_FILE_BASENAME "innodb."
 #define CONSISTENT_INNODB_ARCHIVE_BASENAME "innodb_"
 #define CONSISTENT_INNODB_ARCHIVE_REDO_SUBDIR "#innodb_redo"
 #define CONSISTENT_SE_ARCHIVE_INDEX_FILE "smartengine.index"
-#define CONSISTENT_SE_ARCHIVE_INDEX_FILE_LEN (sizeof(CONSISTENT_SE_ARCHIVE_INDEX_FILE) - 1)
+#define CONSISTENT_SE_INDEX_FILE_BASENAME "smartengine."
 #define CONSISTENT_SE_ARCHIVE_BASENAME "smartengine_"
 #define CONSISTENT_SE_ARCHIVE_WAL_SUBDIR "wal"
 #define CONSISTENT_SE_ARCHIVE_META_SUBDIR "meta"
+#define CONSISTENT_SNAPSHOT_TERM_EXT "%010llu"
+#define CONSISTENT_SNAPSHOT_NUMBER_EXT "%06llu"
+#define CONSISTENT_INNODB_ARCHIVE_INDEX_FILE_FORMAT                  \
+  CONSISTENT_INNODB_INDEX_FILE_BASENAME CONSISTENT_SNAPSHOT_TERM_EXT \
+      CONSISTENT_SNAPSHOT_INDEX_FILE_SUFFIX
+#define CONSISTENT_SE_ARCHIVE_INDEX_FILE_FORMAT                  \
+  CONSISTENT_SE_INDEX_FILE_BASENAME CONSISTENT_SNAPSHOT_TERM_EXT \
+      CONSISTENT_SNAPSHOT_INDEX_FILE_SUFFIX
+#define CONSISTENT_SNAPSHOT_INDEX_FILE_FORMAT                          \
+  CONSISTENT_SNAPSHOT_INDEX_FILE_BASENAME CONSISTENT_SNAPSHOT_TERM_EXT \
+      CONSISTENT_SNAPSHOT_INDEX_FILE_SUFFIX
+#define CONSISTENT_INNODB_ARCHIVE_FORMAT                          \
+  CONSISTENT_INNODB_ARCHIVE_BASENAME CONSISTENT_SNAPSHOT_TERM_EXT \
+      "_" CONSISTENT_SNAPSHOT_NUMBER_EXT
+#define CONSISTENT_SE_ARCHIVE_FORMAT                          \
+  CONSISTENT_SE_ARCHIVE_BASENAME CONSISTENT_SNAPSHOT_TERM_EXT \
+      "_" CONSISTENT_SNAPSHOT_NUMBER_EXT
 #define MYSQL_SE_DATA_FILE_SUFFIX ".sst"
 #define MYSQL_SE_DATA_FILE_SUFFIX_LEN 4
 #define MYSQL_SE_WAL_FILE_SUFFIX ".wal"
@@ -185,6 +203,8 @@ class Consistent_archive {
                                   bool &abort);
   bool mysql_binlog_has_updated();
   // index file for every archive type.
+  int fetch_last_persistent_index_file(std::string &last_index,
+                                       Archive_type arch_type);
   bool open_index_file(const char *index_file_name_arg, const char *log_name,
                        Archive_type arch_type, bool need_lock = false);
   void close_index_file(Archive_type arch_type);
@@ -212,6 +232,8 @@ class Consistent_archive {
   IO_CACHE m_mysql_clone_index_file;
   IO_CACHE m_crash_safe_mysql_clone_index_file;
   IO_CACHE m_purge_mysql_clone_index_file;
+  uint64_t
+      m_opened_innodb_index_term;  // the term of the opened innodb index file
   char m_mysql_clone_index_file_name[FN_REFLEN + 1];
   char m_purge_mysql_clone_index_file_name[FN_REFLEN];
   char m_crash_safe_mysql_clone_index_file_name[FN_REFLEN];
@@ -239,6 +261,7 @@ class Consistent_archive {
   IO_CACHE m_se_backup_index_file;
   IO_CACHE m_crash_safe_se_backup_index_file;
   IO_CACHE m_purge_se_backup_index_file;
+  uint64_t m_opened_se_index_term;  // the term of the opened se index file
   char m_se_backup_index_file_name[FN_REFLEN + 1];
   char m_crash_safe_se_backup_index_file_name[FN_REFLEN];
   char m_purge_se_backup_index_file_name[FN_REFLEN];
@@ -257,10 +280,12 @@ class Consistent_archive {
   IO_CACHE m_consistent_snapshot_index_file;
   char m_crash_safe_consistent_snapshot_index_file_name[FN_REFLEN];
   IO_CACHE m_crash_safe_consistent_snapshot_index_file;
-
+  uint64_t m_opened_snapshot_index_term;  // the term of the opened snapshot
+                                          // index file
   int purge_archive(const char *match_name, Archive_type arch_type);
   int purge_archive_garbage(const char *dirty_end_archive,
                             Archive_type arch_type);
+  int purge_archive_index_garbage(uint64_t end_term, Archive_type arch_type);
   int set_purge_index_file_name(const char *base_file_name,
                                 Archive_type arch_type);
   int open_purge_index_file(bool destroy, Archive_type arch_type);

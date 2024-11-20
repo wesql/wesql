@@ -1,0 +1,2 @@
+--initialize=--objectstore-region=$MYSQL_TMP_DIR
+--initialize=--objectstore-bucket=objectstore_bucket

@@ -55,7 +55,7 @@ INSERT INTO t1 SELECT * FROM t1;
 --let $snapshot_created_ts = `SELECT CREATED_TS FROM INFORMATION_SCHEMA.SNAPSHOT_PERSISTENT_SNAPSHOT_INDEX LIMIT 1 OFFSET 2`
 --let $assert_text= Purge consistent snapshot.
 --let purge_res = `SELECT SNAPSHOT_ARCHIVE_PERSISTENT_PURGE('$snapshot_created_ts');`
---let $assert_cond= INSTR("$purge_res","Purge snapshot successfully") > 0
+--let $assert_cond= INSTR("$purge_res","purge snapshot successfully") > 0
 --source include/assert.inc
 
 --let $assert_text= Check results after purge.
@@ -65,7 +65,7 @@ INSERT INTO t1 SELECT * FROM t1;
 --echo # Purge all persistent snapshot
 --let $assert_text= Purge consistent snapshot.
 --let purge_res = `SELECT SNAPSHOT_ARCHIVE_PERSISTENT_PURGE('all');`
---let $assert_cond= INSTR("$purge_res","Purge snapshot successfully") > 0
+--let $assert_cond= INSTR("$purge_res","purge snapshot successfully") > 0
 --source include/assert.inc
 
 --let $assert_text= Keep the last consistent snapshot.
