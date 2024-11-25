@@ -131,7 +131,7 @@ void rpl_consensus_cleanup() {
 }
 
 bool rpl_consensus_is_shutdown() {
-  return (!rpl_consensus_inited || consensus_ptr->isShutdown());
+  return (!consensus_ptr || consensus_ptr->isShutdown());
 }
 
 bool rpl_consensus_is_leader() {

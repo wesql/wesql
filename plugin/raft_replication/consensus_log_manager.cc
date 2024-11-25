@@ -800,10 +800,13 @@ static void *run_consensus_commit_position_advance(void *arg) {
   thd->store_globals();
 
   std::atomic<bool> *is_running = reinterpret_cast<std::atomic<bool> *>(arg);
+  struct timespec abstime;
 
   mysql_mutex_lock(&LOCK_server_started);
-  while (!mysqld_server_started && (*is_running))
-    mysql_cond_wait(&COND_server_started, &LOCK_server_started);
+  while (!mysqld_server_started && (*is_running)) {
+    set_timespec_nsec(&abstime, 100 * 1000 * 1000);  // 100ms
+    mysql_cond_timedwait(&COND_server_started, &LOCK_server_started, &abstime);
+  }
   mysql_mutex_unlock(&LOCK_server_started);
 
   LogPluginErr(SYSTEM_LEVEL, ER_CONSENSUS_THREAD_STARTED,
