@@ -27,6 +27,7 @@ set(LOCAL_ALIYUN_OSS_SDK_DIR "${PROJECT_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${O
 set(ALIYUN_OSS_SDK_LIB_DIR "${CMAKE_BINARY_DIR}/lib")
 set(ALIYUN_OSS_SDK_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}/sdk/include")
 SET(OBJSTORE_OSS_LIBRARIES "alibabacloud-oss-cpp-sdk")
+set(OBJSTORE_OSS_TARGET "cpp-sdk")
 
 IF(NOT EXISTS ${LOCAL_ALIYUN_OSS_SDK_ZIP})
   MESSAGE(FATAL_ERROR "${LOCAL_ALIYUN_OSS_SDK_ZIP} not found")

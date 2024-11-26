@@ -2405,10 +2405,10 @@ index e8e9d2dbb69..80e2088759b 100644
  --let $wait_condition= SELECT COUNT(*) = 0 FROM information_schema.events
  --source include/wait_condition.inc
 diff --git a/mysys/CMakeLists.txt b/mysys/CMakeLists.txt
-index 31030c67445..f9efe43230a 100644
+index 31030c67445..e24768b9b3f 100644
 --- a/mysys/CMakeLists.txt
 +++ b/mysys/CMakeLists.txt
-@@ -26,6 +26,35 @@ SET(MY_TIME_SOURCES my_time.cc my_systime.cc)
+@@ -26,6 +26,37 @@ SET(MY_TIME_SOURCES my_time.cc my_systime.cc)
  
  ADD_CONVENIENCE_LIBRARY(mytime ${MY_TIME_SOURCES})
  
@@ -2428,6 +2428,7 @@ index 31030c67445..f9efe43230a 100644
 +    ${OBJSTORE_OSS_LIBRARIES}
 +    ${OBJSTORE_PLATFORM_DEPS}
 +    )
++  add_dependencies(myobjstore_objlib ${OBJSTORE_OSS_TARGET})
 +ENDIF()
 +TARGET_LINK_LIBRARIES(myobjstore
 +  PRIVATE
@@ -2436,6 +2437,7 @@ index 31030c67445..f9efe43230a 100644
 +  ${OBJSTORE_PLATFORM_DEPS}
 +  "stdc++fs"
 +  )
++add_dependencies(myobjstore ${OBJSTORE_OSS_TARGET})
 +
 +# shut up the compile warning when encountering aws-sdk-cpp header files.
 +SET_SOURCE_FILES_PROPERTIES(${MY_OBJSTORE_SOURCES} PROPERTIES COMPILE_FLAGS
@@ -2444,7 +2446,7 @@ index 31030c67445..f9efe43230a 100644
  SET(MYSYS_SOURCES
    array.cc
    charset.cc
-@@ -184,6 +213,7 @@ ENDIF()
+@@ -184,6 +215,7 @@ ENDIF()
  ADD_CONVENIENCE_LIBRARY(mysys ${MYSYS_SOURCES}
    LINK_LIBRARIES
    mytime
