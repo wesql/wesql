@@ -48,6 +48,8 @@ jobs:
           extra_dir="${{ github.workspace }}/extra"
           mkdir -pv ${extra_dir}
           cp /home/mysql/boost_1_77_0.tar.bz2 ${extra_dir}
+          sudo mkdir -pv /usr/local/mysql
+          sudo chown -R mysql:mysql /usr/local/mysql
 
       - name: cmake
         run: |
@@ -127,6 +129,8 @@ jobs:
           extra_dir="${{ github.workspace }}/extra"
           mkdir -pv ${extra_dir}
           cp /home/mysql/boost_1_77_0.tar.bz2 ${extra_dir}
+          sudo mkdir -pv /usr/local/mysql
+          sudo chown -R mysql:mysql /usr/local/mysql
 
       - name: cmake
         run: |
