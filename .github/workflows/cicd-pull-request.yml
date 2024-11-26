@@ -50,6 +50,9 @@ jobs:
           cp /home/mysql/boost_1_77_0.tar.bz2 ${extra_dir}
           sudo mkdir -pv /usr/local/mysql
           sudo chown -R mysql:mysql /usr/local/mysql
+          
+          sudo cpan App::cpanminus
+          sudo cpanm Memoize
 
       - name: cmake
         run: |
@@ -131,6 +134,9 @@ jobs:
           cp /home/mysql/boost_1_77_0.tar.bz2 ${extra_dir}
           sudo mkdir -pv /usr/local/mysql
           sudo chown -R mysql:mysql /usr/local/mysql
+          
+          sudo cpan App::cpanminus
+          sudo cpanm Memoize
 
       - name: cmake
         run: |
