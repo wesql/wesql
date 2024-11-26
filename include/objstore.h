@@ -133,6 +133,10 @@ class ObjectStore {
  public:
   virtual ~ObjectStore() = default;
 
+  inline static bool use_s3_sdk(const std::string_view &provider) {
+    return provider == "aws" || provider == "minio" || provider == "r2";
+  }
+
   virtual Status create_bucket(const std::string_view &bucket) = 0;
 
   virtual Status delete_bucket(const std::string_view &bucket) = 0;

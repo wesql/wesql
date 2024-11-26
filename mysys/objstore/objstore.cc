@@ -88,7 +88,7 @@ int rm_f(std::string_view path) {
 }
 
 void init_objstore_provider(const std::string_view &provider) {
-  if (provider == "aws" || provider == "minio") {
+  if (ObjectStore::use_s3_sdk(provider)) {
     init_aws_api();
   } else if (provider == "aliyun") {
     init_aliyun_api();
@@ -100,7 +100,7 @@ void init_objstore_provider(const std::string_view &provider) {
 void cleanup_objstore_provider(ObjectStore *objstore) {
   if (objstore != nullptr) {
     std::string_view provider = objstore->get_provider();
-    if (provider == "aws" || provider == "minio") {
+    if (ObjectStore::use_s3_sdk(provider)) {
       shutdown_aws_api();
     } else if (provider == "aliyun") {
       shutdown_aliyun_api();
@@ -306,7 +306,7 @@ ObjectStore *create_object_store(const std::string_view &provider,
                                  const std::string_view region,
                                  const std::string_view *endpoint,
                                  bool use_https, std::string &err_msg) {
-  if (provider == "aws" || provider == "minio") {
+  if (ObjectStore::use_s3_sdk(provider)) {
     return create_s3_objstore(region, endpoint, use_https, err_msg);
   } else if (provider == "aliyun") {
     return create_aliyun_oss_objstore(region, endpoint, err_msg);
@@ -321,7 +321,7 @@ ObjectStore *create_source_object_store(const std::string_view &provider,
                                         const std::string_view region,
                                         const std::string_view *endpoint,
                                         bool use_https, std::string &err_msg) {
-  if (provider == "aws" || provider == "minio") {
+  if (ObjectStore::use_s3_sdk(provider)) {
     return create_source_s3_objstore(region, endpoint, use_https, err_msg);
   } else if (provider == "aliyun") {
     return create_source_aliyun_oss_objstore(region, endpoint, err_msg);
@@ -336,7 +336,7 @@ ObjectStore *create_dest_object_store(const std::string_view &provider,
                                       const std::string_view region,
                                       const std::string_view *endpoint,
                                       bool use_https, std::string &err_msg) {
-  if (provider == "aws" || provider == "minio") {
+  if (ObjectStore::use_s3_sdk(provider)) {
     return create_dest_s3_objstore(region, endpoint, use_https, err_msg);
   } else if (provider == "aliyun") {
     return create_dest_aliyun_oss_objstore(region, endpoint, err_msg);
@@ -353,7 +353,7 @@ ObjectStore *create_object_store_for_test(const std::string_view &provider,
                                           bool use_https,
                                           const std::string_view bucket_dir,
                                           std::string &err_msg) {
-  if (provider == "aws" || provider == "minio") {
+  if (ObjectStore::use_s3_sdk(provider)) {
     return create_s3_objstore_for_test(region, endpoint, use_https, bucket_dir,
                                        err_msg);
   } else if (provider == "aliyun") {

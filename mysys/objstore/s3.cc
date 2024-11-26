@@ -26,7 +26,7 @@
 #include <aws/s3/model/DeleteObjectsRequest.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/HeadObjectRequest.h>
-#include <aws/s3/model/ListObjectsRequest.h>
+#include <aws/s3/model/ListObjectsV2Request.h>
 #include <aws/s3/model/PutObjectRequest.h>
 #include <errno.h>
 #include <cassert>
@@ -407,7 +407,7 @@ Status S3ObjectStore::list_object(const std::string_view &bucket,
                                   bool recursive, std::string &start_after,
                                   bool &finished,
                                   std::vector<ObjectMeta> &objects) {
-  Aws::S3::Model::ListObjectsRequest request;
+  Aws::S3::Model::ListObjectsV2Request request;
   Aws::String full_prefix;
   if (bucket_dir_.empty()) {
     full_prefix = prefix;
@@ -417,14 +417,14 @@ Status S3ObjectStore::list_object(const std::string_view &bucket,
   request.SetBucket(Aws::String(bucket));
   request.SetPrefix(full_prefix);
   if (!start_after.empty()) {
-    request.SetMarker(Aws::String(start_after));
+    request.SetContinuationToken(Aws::String(start_after));
   }
 
-  Aws::S3::Model::ListObjectsOutcome outcome;
+  Aws::S3::Model::ListObjectsV2Outcome outcome;
 
   int retry_times = retry_times_on_error_;
   while (true) {
-    outcome = s3_client_.ListObjects(request);
+    outcome = s3_client_.ListObjectsV2(request);
     if (!outcome.IsSuccess()) {
       const Aws::S3::S3Error &err = outcome.GetError();
       bool should_retry = err.ShouldRetry();
@@ -458,7 +458,7 @@ Status S3ObjectStore::list_object(const std::string_view &bucket,
     start_after = "";
   } else {
     if (!s3_objects.empty()) {
-      start_after = s3_objects.back().GetKey();
+      start_after = outcome.GetResult().GetNextContinuationToken();
     } else {
       Errors err_type = Errors::CLOUD_PROVIDER_UNRECOVERABLE_ERROR;
       return Status(err_type, 0,
