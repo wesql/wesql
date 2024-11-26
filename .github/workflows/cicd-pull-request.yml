@@ -2,6 +2,8 @@ name: CICD Pull Request
 
 on:
   pull_request:
+    paths-ignore:
+      - '.github/**'
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
