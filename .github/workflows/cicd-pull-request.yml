@@ -52,6 +52,7 @@ jobs:
           sudo chown -R mysql:mysql /usr/local/mysql
           
           sudo yum install -y perl-core
+          sudo yum install perl-App-cpanminus
           sudo cpan App::cpanminus
           sudo cpanm Memoize
 
@@ -137,6 +138,7 @@ jobs:
           sudo chown -R mysql:mysql /usr/local/mysql
           
           sudo yum install -y perl-core
+          sudo yum install perl-App-cpanminus
           sudo cpan App::cpanminus
           sudo cpanm Memoize
 
