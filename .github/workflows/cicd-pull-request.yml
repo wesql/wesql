@@ -51,6 +51,7 @@ jobs:
           sudo mkdir -pv /usr/local/mysql
           sudo chown -R mysql:mysql /usr/local/mysql
           
+          sudo yum install -y perl-core
           sudo cpan App::cpanminus
           sudo cpanm Memoize
 
@@ -135,6 +136,7 @@ jobs:
           sudo mkdir -pv /usr/local/mysql
           sudo chown -R mysql:mysql /usr/local/mysql
           
+          sudo yum install -y perl-core
           sudo cpan App::cpanminus
           sudo cpanm Memoize
 
