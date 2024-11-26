@@ -17,7 +17,7 @@ jobs:
     uses: ./.github/workflows/enable-self-runner.yml
     with:
       CLOUD_PROVIDER: "eks"
-      RUNNER_LABEL: "eks-oracle8-amd-runner"
+      RUNNER_LABEL: "eks-oraclelinux8-amd64-runner"
     secrets: inherit
 
   mtr-serverless:
@@ -25,42 +25,54 @@ jobs:
     outputs:
       runner-name: ${{ steps.get_runner_name.outputs.runner-name }}
     name: mtr serverless
-    runs-on: [self-hosted, eks-oracle8-amd-runner ]
+    runs-on: [self-hosted, eks-oraclelinux8-amd64-runner ]
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout MySQL Server Code
+        uses: actions/checkout@v4
+        with:
+          repository: mysql/mysql-server
+          ref: mysql-8.0.35
+
+      - name: Checkout Wesql Code
+        uses: actions/checkout@v4
+        with:
+          path: ./wesql
+
+      - name: Apply WeSQL Patches
+        run: |
+          cp -r ./wesql/* ./
+          git apply patches/mysql-server-8.0.35.patch
+
+      - name: copy boost_1_77_0
+        run: |
+          extra_dir="${{ github.workspace }}/extra"
+          mkdir -pv ${extra_dir}
+          cp /home/mysql/boost_1_77_0.tar.bz2 ${extra_dir}
+
       - name: cmake
         run: |
-          sudo yum install -y perl-core
-          sudo perl -MCPAN -e 'install IO::Pty'
-          sudo perl -MCPAN -e 'install IO::Tty'
-          sudo cpan Expect
-          cp /home/mysql/boost_1_77_0.tar.bz2 ${{ github.workspace }}/extra
-          sudo mkdir -pv /u01
-          sudo chown -R mysql:mysql /u01
-          sudo chown -R mysql:mysql ./
-          sudo yum install python3-devel python3-pip mysql-devel
-          sudo pip3 install mysqlclient
-          sudo ln -sfn /usr/bin/python3 /usr/bin/python
-          mkdir -pv bu
-          cd bu
+          mkdir -pv build && cd build
           cmake3 ../ -B ./ \
-            -DCMAKE_INSTALL_PREFIX="/u01/mysql" \
+            -DCMAKE_INSTALL_PREFIX="/usr/local/mysql" \
             -DWITH_SSL="system" \
-            -DCMAKE_BUILD_TYPE="Debug" \
-            -DWITH_WESQL_TEST=1   \
+            -DCMAKE_BUILD_TYPE="DEBUG" \
+            -DWITH_ROUTER=OFF \
             -DWITH_CLONE=1 \
-            -DDOWNLOAD_BOOST=1 \
-            -DWITH_BOOST="../extra/"
+            -DWITH_FAIL_POINT=ON   \
+            -DWITH_WESQL_TEST=1 \
+            -DDOWNLOAD_BOOST=1 -DWITH_BOOST="../extra/"
 
       - name: make install
         run: |
-          cd bu
-          make -j$(echo "$(nproc)") && make install
+          cd build
+          make -j$(echo "$(nproc)")
+          make install
+          echo "export PATH=/usr/local/mysql/bin:$PATH" >> ~/.bashrc && source ~/.bashrc
+          echo "export LD_LIBRARY_PATH=/usr/local/mysql/lib:$LD_LIBRARY_PATH" >> ~/.bashrc && source ~/.bashrc
 
       - name: run mtr on serverless
         run: |
-          cd bu
-          cd mysql-test
+          cd ./build/mysql-test
           CUR_DIR=`pwd`
           ./mysql-test-run.pl --suite=smartengine_consistent_snapshot  --nowarnings --retry=3  --parallel=6 --force --report-unstable-tests \
               --initialize="--serverless=true" \
@@ -76,7 +88,7 @@ jobs:
       - name: view logs of mtr serverless
         if: ${{ failure() }}
         run: |
-          for logfile in $( ls bu/mysql-test/var/*/log/*.err ); do
+          for logfile in $( ls build/mysql-test/var/*/log/*.err ); do
               echo "logfile:"$logfile
               cat $logfile
           done
@@ -92,49 +104,61 @@ jobs:
     outputs:
       runner-name: ${{ steps.get_runner_name.outputs.runner-name }}
     name: mtr normal-file
-    runs-on: [self-hosted, eks-oracle8-amd-runner ]
+    runs-on: [self-hosted, eks-oraclelinux8-amd64-runner ]
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout MySQL Server Code
+        uses: actions/checkout@v4
+        with:
+          repository: mysql/mysql-server
+          ref: mysql-8.0.35
+
+      - name: Checkout Wesql Code
+        uses: actions/checkout@v4
+        with:
+          path: ./wesql
+
+      - name: Apply WeSQL Patches
+        run: |
+          cp -r ./wesql/* ./
+          git apply patches/mysql-server-8.0.35.patch
+
+      - name: copy boost_1_77_0
+        run: |
+          extra_dir="${{ github.workspace }}/extra"
+          mkdir -pv ${extra_dir}
+          cp /home/mysql/boost_1_77_0.tar.bz2 ${extra_dir}
+
       - name: cmake
         run: |
-          sudo yum install -y perl-core
-          sudo perl -MCPAN -e 'install IO::Pty'
-          sudo perl -MCPAN -e 'install IO::Tty'
-          sudo cpan Expect
-          cp /home/mysql/boost_1_77_0.tar.bz2 ${{ github.workspace }}/extra
-          sudo mkdir -pv /u01
-          sudo chown -R mysql:mysql /u01
-          sudo chown -R mysql:mysql ./
-          sudo yum install python3-devel python3-pip mysql-devel
-          sudo pip3 install mysqlclient
-          sudo ln -sfn /usr/bin/python3 /usr/bin/python
-          mkdir -pv bu
-          cd bu
+          mkdir -pv build && cd build
           cmake3 ../ -B ./ \
-            -DCMAKE_INSTALL_PREFIX="/u01/mysql" \
+            -DCMAKE_INSTALL_PREFIX="/usr/local/mysql" \
             -DWITH_SSL="system" \
-            -DCMAKE_BUILD_TYPE="Debug" \
-            -DWITH_WESQL_TEST=1   \
+            -DCMAKE_BUILD_TYPE="DEBUG" \
+            -DWITH_ROUTER=OFF \
             -DWITH_CLONE=1 \
-            -DDOWNLOAD_BOOST=1 \
-            -DWITH_BOOST="../extra/"
+            -DWITH_FAIL_POINT=ON   \
+            -DWITH_WESQL_TEST=1 \
+            -DDOWNLOAD_BOOST=1 -DWITH_BOOST="../extra/"
 
       - name: make install
         run: |
-          cd bu
-          make -j$(echo "$(nproc)") && make install
+          cd build
+          make -j$(echo "$(nproc)")
+          make install
+          echo "export PATH=/usr/local/mysql/bin:$PATH" >> ~/.bashrc && source ~/.bashrc
+          echo "export LD_LIBRARY_PATH=/usr/local/mysql/lib:$LD_LIBRARY_PATH" >> ~/.bashrc && source ~/.bashrc
 
       - name: run mtr on normal file
         run: |
-          cd bu
-          cd mysql-test
+          cd ./build/mysql-test
           ./mysql-test-run.pl --suite=raft_replication  --nowarnings --retry=3  --parallel=6 --force --report-unstable-tests --initialize="--serverless=false"
           ./mysql-test-run.pl --suite=smartengine --nowarnings --retry=3  --parallel=6 --force --report-unstable-tests --initialize="--serverless=false"
 
       - name: view logs of mtr on normal file
         if: ${{ failure() }}
         run: |
-          for logfile in $( ls bu/mysql-test/var/*/log/*.err ); do
+          for logfile in $( ls build/mysql-test/var/*/log/*.err ); do
               echo "logfile:"$logfile
               cat $logfile
           done

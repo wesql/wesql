@@ -8,6 +8,10 @@ on:
   pull_request:
     branches: [ "8.0" ]
 
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
