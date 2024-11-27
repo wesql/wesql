@@ -129,7 +129,7 @@ int ExtentReader::get(const Slice &key, GetContext *get_context)
     while (SUCCED(ret) && !done && index_block_reader.valid()) {
       block_info.reset();
       may_exist = true;
-      if (FAILED(index_block_reader.get_value(block_info))) {
+      if (FAILED(index_block_reader.get_value(true /*only_critical_info*/, block_info))) {
         SE_LOG(WARN, "fail to get block index", K(ret));
       } else if (block_info.has_bloom_filter() &&
                  FAILED(check_in_bloom_filter(get_context->get_user_key(), block_info, may_exist))) {
@@ -423,7 +423,7 @@ int ExtentReader::approximate_key_offet(const Slice &key, int64_t &offset)
   } else {
     index_block_reader.seek(key);
     if (index_block_reader.valid()) {
-      if (FAILED(index_block_reader.get_value(block_info))) {
+      if (FAILED(index_block_reader.get_value(true /*only_critical_info*/, block_info))) {
         SE_LOG(WARN, "fail to get block stats", K(ret));
       } else {
         offset = block_info.get_handle().get_offset();

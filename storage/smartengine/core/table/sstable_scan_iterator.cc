@@ -325,7 +325,7 @@ int BlockPrefetchHelper::do_prefetch_data_block(const bool send_req_after_add)
   if (!index_block_iter_.Valid()) {
     ret = Status::kErrorUnexpected;
     SE_LOG(WARN, "the inde block iterator must be valid", K(ret));
-  } else if (FAILED(handle.block_info_.deserialize(index_block_iter_.value().data(), index_block_iter_.value().size(), pos))) {
+  } else if (FAILED(handle.block_info_.deserialize_critical_info(index_block_iter_.value().data(), index_block_iter_.value().size(), pos))) {
     SE_LOG(WARN, "fail to deserialize BlockInfo", K(ret));
   } else if (IS_NULL(extent_reader = index_extent_reader())) {
     ret = Status::kErrorUnexpected;

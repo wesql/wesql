@@ -92,18 +92,23 @@ int IndexBlockReader::get_key(Slice &key) const
   return Status::kOk;
 }
 
-int IndexBlockReader::get_value(BlockInfo &block_info) const
+int IndexBlockReader::get_value(bool only_critical_info, BlockInfo &block_info) const
 {
   assert(is_inited_);
   int ret = Status::kOk;
   Slice value = block_iter_.value();
   int64_t pos = 0;
 
-  if (FAILED(block_info.deserialize(value.data(), value.size(), pos))) {
-    SE_LOG(WARN, "fail to deserialize block index value", K(ret));
+  if (only_critical_info) {
+    if (FAILED(block_info.deserialize_critical_info(value.data(), value.size(), pos))) {
+      SE_LOG(WARN, "fail to fast deserialize block info", K(ret));
+    }
   } else {
-    se_assert(block_info.is_valid());
+    if (FAILED(block_info.deserialize(value.data(), value.size(), pos))) {
+      SE_LOG(WARN, "fail to deserialize block info", K(ret));
+    }
   }
+  se_assert(block_info.is_valid());
 
   return ret;
 }

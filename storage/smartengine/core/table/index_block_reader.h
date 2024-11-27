@@ -38,7 +38,7 @@ public:
   common::Slice key() const;
   common::Slice value() const;
   int get_key(common::Slice &key) const;
-  int get_value(BlockInfo &block_info) const;
+  int get_value(bool only_critical_info, BlockInfo &block_info) const;
   bool valid() const;
 
 private:

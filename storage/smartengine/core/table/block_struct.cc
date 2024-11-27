@@ -49,8 +49,6 @@ BlockHandle::BlockHandle(const BlockHandle &block_handle)
       compress_type_(block_handle.compress_type_)
 {}
 
-BlockHandle::~BlockHandle() {}
-
 BlockHandle &BlockHandle::operator=(const BlockHandle &block_handle)
 {
   offset_ = block_handle.offset_;
@@ -61,6 +59,8 @@ BlockHandle &BlockHandle::operator=(const BlockHandle &block_handle)
 
   return *this;
 }
+
+BlockHandle::~BlockHandle() {}
 
 void BlockHandle::reset()
 {
@@ -156,88 +156,69 @@ int64_t BlockHandle::get_serialize_size() const
 
 DEFINE_TO_STRING(BlockHandle, KV_(offset), KV_(size), KV_(raw_size), KV_(checksum), KVE_(compress_type))
 
-BlockInfo::BlockInfo()
+BlockInfo::ReadCriticalInfo::ReadCriticalInfo()
     : handle_(),
-      first_key_(),
-      row_count_(0),
-      delete_row_count_(0),
-      single_delete_row_count_(0),
-      smallest_seq_(common::kMaxSequenceNumber),
-      largest_seq_(0),
       attr_(0),
+      row_count_(0),
       per_key_bits_(0),
       probe_num_(0),
       bloom_filter_(),
       unit_infos_()
-{}
-
-BlockInfo::BlockInfo(const BlockInfo &block_info)
-    : handle_(block_info.handle_),
-      first_key_(block_info.first_key_),
-      row_count_(block_info.row_count_),
-      delete_row_count_(block_info.delete_row_count_),
-      single_delete_row_count_(block_info.single_delete_row_count_),
-      smallest_seq_(block_info.smallest_seq_),
-      largest_seq_(block_info.largest_seq_),
-      attr_(block_info.attr_),
-      per_key_bits_(block_info.per_key_bits_),
-      probe_num_(block_info.probe_num_),
-      bloom_filter_(block_info.bloom_filter_),
-      unit_infos_(block_info.unit_infos_)
-{}
-
-BlockInfo::~BlockInfo() {}
-
-BlockInfo &BlockInfo::operator=(const BlockInfo &block_info)
 {
-  handle_ = block_info.handle_;
-  first_key_ = block_info.first_key_;
-  row_count_ = block_info.row_count_;
-  delete_row_count_ = block_info.delete_row_count_;
-  single_delete_row_count_ = block_info.single_delete_row_count_;
-  smallest_seq_ = block_info.smallest_seq_;
-  largest_seq_ = block_info.largest_seq_;
-  attr_ = block_info.attr_;
-  per_key_bits_ = block_info.per_key_bits_;
-  probe_num_ = block_info.probe_num_;
-  bloom_filter_ = block_info.bloom_filter_;
-  unit_infos_ = block_info.unit_infos_;
+}
+
+// TODO(Zhao Dongsheng) : Is there any condition that requires a deep copy of the bloom-filter?
+BlockInfo::ReadCriticalInfo::ReadCriticalInfo(const ReadCriticalInfo &other)
+    : handle_(other.handle_),
+      attr_(other.attr_),
+      row_count_(other.row_count_),
+      per_key_bits_(other.per_key_bits_),
+      probe_num_(other.probe_num_),
+      bloom_filter_(other.bloom_filter_),
+      unit_infos_(other.unit_infos_)
+{
+}
+
+BlockInfo::ReadCriticalInfo &BlockInfo::ReadCriticalInfo::operator=(const BlockInfo::ReadCriticalInfo &other)
+{
+  handle_ = other.handle_;
+  attr_ = other.attr_;
+  row_count_ = other.row_count_;
+  per_key_bits_ = other.per_key_bits_;
+  probe_num_ = other.probe_num_;
+  bloom_filter_ = other.bloom_filter_;
+  unit_infos_ = other.unit_infos_;
 
   return *this;
 }
 
-void BlockInfo::reset()
+BlockInfo::ReadCriticalInfo::~ReadCriticalInfo() {}
+
+void BlockInfo::ReadCriticalInfo::reset()
 {
   handle_.reset();
-  first_key_.clear();
-  row_count_ = 0;
-  delete_row_count_ = 0;
-  single_delete_row_count_ = 0;
-  smallest_seq_ = common::kMaxSequenceNumber;
-  largest_seq_ = 0;
   attr_ = 0;
+  row_count_ = 0;
   per_key_bits_ = 0;
   probe_num_ = 0;
   bloom_filter_.clear();
   unit_infos_.clear();
 }
 
-bool BlockInfo::is_valid() const
+bool BlockInfo::ReadCriticalInfo::is_valid() const
 {
-  return handle_.is_valid() && !first_key_.empty() && row_count_ > 0 &&
-         delete_row_count_ >= 0 && single_delete_row_count_ >= 0 &&
-         (row_count_ >= (delete_row_count_ + single_delete_row_count_)) &&
-         (!has_bloom_filter() || (has_bloom_filter() && per_key_bits_ > 0 && probe_num_ > 0 && !bloom_filter_.empty())) &&
-         (!is_columnar_format() || (is_columnar_format() && !unit_infos_.empty()));
+  bool valid = handle_.is_valid() && row_count_ > 0;
+  if (valid && has_bloom_filter()) {
+    valid = (per_key_bits_ > 0 && probe_num_ > 0 && !bloom_filter_.empty());
+  }
+  if (valid && is_columnar_format()) {
+    valid = !unit_infos_.empty();
+  }
+
+  return valid;
 }
 
-void BlockInfo::set_bloom_filter(const Slice &bloom_filter)
-{
-  bloom_filter_ = bloom_filter;
-  set_has_bloom_filter();
-}
-
-int64_t BlockInfo::get_row_format_raw_size() const
+int64_t BlockInfo::ReadCriticalInfo::get_row_format_raw_size() const
 {
   int64_t raw_size = 0;
 
@@ -252,11 +233,11 @@ int64_t BlockInfo::get_row_format_raw_size() const
   return raw_size;
 }
 
-int BlockInfo::serialize(char *buf, int64_t buf_len, int64_t &pos) const
+int BlockInfo::ReadCriticalInfo::serialize(char *buf, int64_t buf_len, int64_t &pos) const
 {
   int ret = Status::kOk;
   int32_t header_size = get_serialize_size();
-  int32_t header_version = BLOCK_INFO_VERSION;
+  int32_t header_version = READ_CRITICAL_INFO_VERSION;
 
   if (IS_NULL(buf) || UNLIKELY(buf_len <= 0) || UNLIKELY(pos < 0) || UNLIKELY(pos >= buf_len)) {
     ret = Status::kInvalidArgument;
@@ -267,22 +248,12 @@ int BlockInfo::serialize(char *buf, int64_t buf_len, int64_t &pos) const
     SE_LOG(WARN, "fail to encode header version", K(ret), K(header_version));
   } else if (FAILED(handle_.serialize(buf, buf_len, pos))) {
     SE_LOG(WARN, "fail to serialize handle", K(ret), K_(handle));
-  } else if (FAILED(util::serialize(buf, buf_len, pos, first_key_))) {
-    SE_LOG(WARN, "fail to serialize first key", K(ret), K_(first_key));
-  } else if (FAILED(util::serialize(buf, buf_len, pos, row_count_))) {
-    SE_LOG(WARN, "fail to serialize row count", K(ret), K_(row_count));
-  } else if (FAILED(util::serialize(buf, buf_len, pos, delete_row_count_))) {
-    SE_LOG(WARN, "fail to serialize row count", K(ret), K_(delete_row_count));
-  } else if (FAILED(util::serialize(buf, buf_len, pos, single_delete_row_count_))) {
-    SE_LOG(WARN, "fail to serialize single delete row count", K(ret), K_(single_delete_row_count));
-  } else if (FAILED(util::serialize(buf, buf_len, pos, smallest_seq_))) {
-    SE_LOG(WARN, "fail to serialize smallest sequence", K(ret), K_(smallest_seq));
-  } else if (FAILED(util::serialize(buf, buf_len, pos, largest_seq_))) {
-    SE_LOG(WARN, "fail to serialize largest sequence", K(ret), K_(largest_seq));
   } else if (FAILED(util::serialize(buf, buf_len, pos, attr_))) {
     SE_LOG(WARN, "fail to serialize attr", K(ret), K_(attr));
+  } else if (FAILED(util::serialize(buf, buf_len, pos, row_count_))) {
+    SE_LOG(WARN, "fail to serialize row count", K(ret), K_(row_count));
   } else {
-    if (SUCCED(ret) && has_bloom_filter()) {
+    if (has_bloom_filter()) {
       if (FAILED(util::serialize(buf, buf_len, pos, per_key_bits_))) {
         SE_LOG(WARN, "fail to serialize per_key_bits", K(ret), K_(per_key_bits));
       } else if (FAILED(util::serialize(buf, buf_len, pos, probe_num_))) {
@@ -302,7 +273,7 @@ int BlockInfo::serialize(char *buf, int64_t buf_len, int64_t &pos) const
   return ret;
 }
 
-int BlockInfo::deserialize(const char *buf, int64_t buf_len, int64_t &pos)
+int BlockInfo::ReadCriticalInfo::deserialize(const char *buf, int64_t buf_len, int64_t &pos)
 {
   int ret = Status::kOk;
   int32_t header_size = 0;
@@ -317,22 +288,12 @@ int BlockInfo::deserialize(const char *buf, int64_t buf_len, int64_t &pos)
     SE_LOG(WARN, "fail to decode header version", K(ret));
   } else if (FAILED(handle_.deserialize(buf, buf_len, pos))) {
     SE_LOG(WARN, "fail to deserialize handle", K(ret));
-  } else if (FAILED(util::deserialize(buf, buf_len, pos, first_key_))) {
-    SE_LOG(WARN, "fail to deserialize first key", K(ret));
-  } else if (FAILED(util::deserialize(buf, buf_len, pos, row_count_))) {
-    SE_LOG(WARN, "fail to deserialize row count", K(ret));
-  } else if (FAILED(util::deserialize(buf, buf_len, pos, delete_row_count_))) {
-    SE_LOG(WARN, "fail to deserialize single delete row count", K(ret));
-  } else if (FAILED(util::deserialize(buf, buf_len, pos, single_delete_row_count_))) {
-    SE_LOG(WARN, "fail to deserialize single delete row count", K(ret));
-  } else if (FAILED(util::deserialize(buf, buf_len, pos, smallest_seq_))) {
-    SE_LOG(WARN, "fail to deserialize smallest sequence", K(ret));
-  } else if (FAILED(util::deserialize(buf, buf_len, pos, largest_seq_))) {
-    SE_LOG(WARN, "fail to deserialize largest sequence", K(ret));
   } else if (FAILED(util::deserialize(buf, buf_len, pos, attr_))) {
     SE_LOG(WARN, "fail to deserialize attr", K(ret));
+  } else if (FAILED(util::deserialize(buf, buf_len, pos, row_count_))) {
+    SE_LOG(WARN, "fail to deserialize row count", K(ret));
   } else {
-    if (SUCCED(ret) && has_bloom_filter()) {
+    if (has_bloom_filter()) {
       if (FAILED(util::deserialize(buf, buf_len, pos, per_key_bits_))) {
         SE_LOG(WARN, "fail to deserialize per key bits", K(ret));
       } else if (FAILED(util::deserialize(buf, buf_len, pos, probe_num_))) {
@@ -352,18 +313,13 @@ int BlockInfo::deserialize(const char *buf, int64_t buf_len, int64_t &pos)
   return ret;
 }
 
-int64_t BlockInfo::get_serialize_size() const
+int64_t BlockInfo::ReadCriticalInfo::get_serialize_size() const
 {
   // header size and header version
   int64_t size = sizeof(int32_t) + sizeof(int32_t);
-  size += handle_.get_serialize_size(); // handle_
-  size += util::get_serialize_size(first_key_);
-  size += util::get_serialize_size(row_count_);
-  size += util::get_serialize_size(delete_row_count_);
-  size += util::get_serialize_size(single_delete_row_count_);
-  size += util::get_serialize_size(smallest_seq_);
-  size += util::get_serialize_size(largest_seq_);
+  size += handle_.get_serialize_size();
   size += util::get_serialize_size(attr_);
+  size += util::get_serialize_size(row_count_);
   if (has_bloom_filter()) {
     size += util::get_serialize_size(per_key_bits_);
     size += util::get_serialize_size(probe_num_);
@@ -376,9 +332,163 @@ int64_t BlockInfo::get_serialize_size() const
   return size;
 }
 
-DEFINE_TO_STRING(BlockInfo, KV_(handle), KV_(first_key), KV_(handle), KV_(row_count),
-    KV_(delete_row_count), KV_(single_delete_row_count), KV_(smallest_seq), KV_(per_key_bits),
-    KV_(attr), KV_(probe_num), KV_(bloom_filter), KV_(largest_seq), K_(unit_infos))
+BlockInfo::BlockInfo()
+    : only_critical_info_(false),
+      critical_info_(),
+      first_key_(),
+      delete_row_count_(0),
+      single_delete_row_count_(0),
+      smallest_seq_(common::kMaxSequenceNumber),
+      largest_seq_(0)
+{}
+
+BlockInfo::BlockInfo(const BlockInfo &block_info)
+    : only_critical_info_(block_info.only_critical_info_),
+      critical_info_(block_info.critical_info_),
+      first_key_(block_info.first_key_),
+      delete_row_count_(block_info.delete_row_count_),
+      single_delete_row_count_(block_info.single_delete_row_count_),
+      smallest_seq_(block_info.smallest_seq_),
+      largest_seq_(block_info.largest_seq_)
+{}
+
+BlockInfo::~BlockInfo() {}
+
+BlockInfo &BlockInfo::operator=(const BlockInfo &block_info)
+{
+  only_critical_info_ = block_info.only_critical_info_;
+  critical_info_ = block_info.critical_info_;
+  first_key_ = block_info.first_key_;
+  delete_row_count_ = block_info.delete_row_count_;
+  single_delete_row_count_ = block_info.single_delete_row_count_;
+  smallest_seq_ = block_info.smallest_seq_;
+  largest_seq_ = block_info.largest_seq_;
+
+  return *this;
+}
+
+void BlockInfo::reset()
+{
+  only_critical_info_ = false;
+  critical_info_.reset();
+  first_key_.clear();
+  delete_row_count_ = 0;
+  single_delete_row_count_ = 0;
+  smallest_seq_ = common::kMaxSequenceNumber;
+  largest_seq_ = 0;
+}
+
+bool BlockInfo::is_valid() const
+{
+  bool valid = critical_info_.is_valid();
+
+  if (valid && !only_critical_info_) {
+    valid = !first_key_.empty() && delete_row_count_ >= 0 &&
+            single_delete_row_count_ >= 0 &&
+            (critical_info_.get_row_count() >= (delete_row_count_ + single_delete_row_count_));
+  }
+
+  return valid;
+}
+
+int BlockInfo::deserialize_critical_info(const char *buf, int64_t buf_len, int64_t &pos)
+{
+  int ret = Status::kOk;
+  int32_t header_size = 0;
+  int32_t header_version = 0;
+
+  if (IS_NULL(buf) || UNLIKELY(buf_len <= 0) || UNLIKELY(pos < 0) || UNLIKELY(pos >= buf_len)) {
+    ret = Status::kInvalidArgument;
+    SE_LOG(WARN, "invalid argument", K(ret), KP(buf), K(buf_len), K(pos));
+  } else if (FAILED(util::decode_fixed_int32(buf, buf_len, pos, header_size))) {
+    SE_LOG(WARN, "fail to decode header size", K(ret));
+  } else if (FAILED(util::decode_fixed_int32(buf, buf_len, pos, header_version))) {
+    SE_LOG(WARN, "fail to decode header version", K(ret));
+  } else if (FAILED(critical_info_.deserialize(buf, buf_len, pos))) {
+    SE_LOG(WARN, "fail to deserialize handle", K(ret));
+  } else {
+    only_critical_info_ = true;
+  }
+
+  return ret;
+}
+
+int BlockInfo::serialize(char *buf, int64_t buf_len, int64_t &pos) const
+{
+  int ret = Status::kOk;
+  int32_t header_size = get_serialize_size();
+  int32_t header_version = BLOCK_INFO_VERSION;
+
+  if (IS_NULL(buf) || UNLIKELY(buf_len <= 0) || UNLIKELY(pos < 0) || UNLIKELY(pos >= buf_len)) {
+    ret = Status::kInvalidArgument;
+    SE_LOG(WARN, "invalid argument", K(ret), KP(buf), K(buf_len), K(pos));
+  } else if (FAILED(util::encode_fixed_int32(buf, buf_len, pos, header_size))) {
+    SE_LOG(WARN, "fail to encode header size", K(ret), K(header_size));
+  } else if (FAILED(util::encode_fixed_int32(buf, buf_len, pos, header_version))) {
+    SE_LOG(WARN, "fail to encode header version", K(ret), K(header_version));
+  } else if (FAILED(critical_info_.serialize(buf, buf_len, pos))) {
+    SE_LOG(WARN, "fail to serialize critical info", K(ret), K_(critical_info));
+  } else if (FAILED(util::serialize(buf, buf_len, pos, first_key_))) {
+    SE_LOG(WARN, "fail to serialize first key", K(ret), K_(first_key));
+  } else if (FAILED(util::serialize(buf, buf_len, pos, delete_row_count_))) {
+    SE_LOG(WARN, "fail to serialize row count", K(ret), K_(delete_row_count));
+  } else if (FAILED(util::serialize(buf, buf_len, pos, single_delete_row_count_))) {
+    SE_LOG(WARN, "fail to serialize single delete row count", K(ret), K_(single_delete_row_count));
+  } else if (FAILED(util::serialize(buf, buf_len, pos, smallest_seq_))) {
+    SE_LOG(WARN, "fail to serialize smallest sequence", K(ret), K_(smallest_seq));
+  } else if (FAILED(util::serialize(buf, buf_len, pos, largest_seq_))) {
+    SE_LOG(WARN, "fail to serialize largest sequence", K(ret), K_(largest_seq));
+  }
+
+  return ret;
+}
+
+int BlockInfo::deserialize(const char *buf, int64_t buf_len, int64_t &pos)
+{
+  int ret = Status::kOk;
+  int32_t header_size = 0;
+  int32_t header_version = 0;
+
+  if (IS_NULL(buf) || UNLIKELY(buf_len <= 0) || UNLIKELY(pos < 0) || UNLIKELY(pos >= buf_len)) {
+    ret = Status::kInvalidArgument;
+    SE_LOG(WARN, "invalid argument", K(ret), KP(buf), K(buf_len), K(pos));
+  } else if (FAILED(util::decode_fixed_int32(buf, buf_len, pos, header_size))) {
+    SE_LOG(WARN, "fail to decode header size", K(ret));
+  } else if (FAILED(util::decode_fixed_int32(buf, buf_len, pos, header_version))) {
+    SE_LOG(WARN, "fail to decode header version", K(ret));
+  } else if (FAILED(critical_info_.deserialize(buf, buf_len, pos))) {
+    SE_LOG(WARN, "fail to deserialize handle", K(ret));
+  } else if (FAILED(util::deserialize(buf, buf_len, pos, first_key_))) {
+    SE_LOG(WARN, "fail to deserialize first key", K(ret));
+  } else if (FAILED(util::deserialize(buf, buf_len, pos, delete_row_count_))) {
+    SE_LOG(WARN, "fail to deserialize single delete row count", K(ret));
+  } else if (FAILED(util::deserialize(buf, buf_len, pos, single_delete_row_count_))) {
+    SE_LOG(WARN, "fail to deserialize single delete row count", K(ret));
+  } else if (FAILED(util::deserialize(buf, buf_len, pos, smallest_seq_))) {
+    SE_LOG(WARN, "fail to deserialize smallest sequence", K(ret));
+  } else if (FAILED(util::deserialize(buf, buf_len, pos, largest_seq_))) {
+    SE_LOG(WARN, "fail to deserialize largest sequence", K(ret));
+  }
+
+  return ret;
+}
+
+int64_t BlockInfo::get_serialize_size() const
+{
+  // header size and header version
+  int64_t size = sizeof(int32_t) + sizeof(int32_t);
+  size += critical_info_.get_serialize_size(); // handle_
+  size += util::get_serialize_size(first_key_);
+  size += util::get_serialize_size(delete_row_count_);
+  size += util::get_serialize_size(single_delete_row_count_);
+  size += util::get_serialize_size(smallest_seq_);
+  size += util::get_serialize_size(largest_seq_);
+
+  return size;
+}
+
+DEFINE_TO_STRING(BlockInfo, KV_(critical_info), KV_(first_key), KV_(delete_row_count),
+    KV_(single_delete_row_count), KV_(smallest_seq), KV_(largest_seq))
 
 } // namespace table
 } // namespace smartengine

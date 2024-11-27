@@ -108,7 +108,7 @@ int ExtentDumper::dump_index_block(RowBlock *index_block)
       BlockInfo block_info;
       if (FAILED(index_block_reader.get_key(internal_key))) {
         SE_LOG(WARN, "fail to get index key", K(ret));
-      } else if (FAILED(index_block_reader.get_value(block_info))) {
+      } else if (FAILED(index_block_reader.get_value(false , block_info))) {
         SE_LOG(WARN, "fail to get block stats", K(ret));
       } else if (!ParseInternalKey(internal_key, &parsed_internal_key)) {
         ret = Status::kCorruption;
@@ -155,7 +155,7 @@ int ExtentDumper::dump_all_data_block(RowBlock *index_block)
     while (SUCCED(ret) && index_block_reader.valid()) {
       if (FAILED(index_block_reader.get_key(last_key))) {
         SE_LOG(WARN, "fail to get index key", K(ret));
-      } else if (FAILED(index_block_reader.get_value(block_info))) {
+      } else if (FAILED(index_block_reader.get_value(false, block_info))) {
         SE_LOG(WARN, "fail to get block stats", K(ret));
       } else {
         Slice first_key(block_info.get_first_key());
@@ -260,7 +260,7 @@ int ExtentDumper::summry(const Footer &footer, RowBlock *index_block)
     while (SUCCED(ret) && index_block_reader.valid()) {
       if (FAILED(index_block_reader.get_key(key))) {
         SE_LOG(WARN, "fail to get index key", K(ret));
-      } else if (FAILED(index_block_reader.get_value(block_info))) {
+      } else if (FAILED(index_block_reader.get_value(false, block_info))) {
         SE_LOG(WARN, "fail to get block stats", K(ret));
       } else {
         extent_info.update(key, block_info);
