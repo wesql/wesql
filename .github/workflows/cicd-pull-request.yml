@@ -2,8 +2,8 @@ name: CICD Pull Request
 
 on:
   pull_request:
-    paths-ignore:
-      - '.github/**'
+#    paths-ignore:
+#      - '.github/**'
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -57,6 +57,10 @@ jobs:
           sudo yum install perl-App-cpanminus
           sudo cpan App::cpanminus
           sudo cpanm Memoize
+          
+          sudo yum install python3-devel python3-pip mysql-devel
+          sudo pip3 install mysqlclient
+          sudo ln -sfn /usr/bin/python3 /usr/bin/python
 
       - name: cmake
         run: |
@@ -143,6 +147,10 @@ jobs:
           sudo yum install perl-App-cpanminus
           sudo cpan App::cpanminus
           sudo cpanm Memoize
+          
+          sudo yum install python3-devel python3-pip mysql-devel
+          sudo pip3 install mysqlclient
+          sudo ln -sfn /usr/bin/python3 /usr/bin/python
 
       - name: cmake
         run: |
