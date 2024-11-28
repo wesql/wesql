@@ -94,6 +94,11 @@ class Consistent_recovery {
                                  my_off_t &mysql_binlog_end_pos);
   int fetch_last_persistent_snapshot_index_file(std::string &last_index);
   int fetch_last_persistent_binlog_index_file(std::string &last_binlog_index);
+  bool list_persistent_objects(
+      const char *objstore_bucket,
+      std::vector<objstore::ObjectMeta> &persistent_objects,
+      const char *search_key, bool recursive, bool all,
+      bool allow_no_search_key);
   enum Consistent_recovery_state {
     CONSISTENT_RECOVERY_STATE_NONE = 0,
     CONSISTENT_RECOVERY_STATE_SNAPSHOT_FILE = 1,

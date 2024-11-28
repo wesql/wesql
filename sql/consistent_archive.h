@@ -202,6 +202,9 @@ class Consistent_archive {
   int wait_for_consistent_archive(const std::chrono::seconds &timeout,
                                   bool &abort);
   bool mysql_binlog_has_updated();
+  bool list_persistent_objects(
+      std::vector<objstore::ObjectMeta> &persistent_objects,
+      const char *search_key, bool all, bool allow_no_search_key);
   // index file for every archive type.
   int fetch_last_persistent_index_file(std::string &last_index,
                                        Archive_type arch_type);

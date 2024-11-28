@@ -553,7 +553,10 @@ class Binlog_archive {
   mysql_mutex_t m_index_lock;
   char m_index_local_file_name[FN_REFLEN];
   char m_index_file_name[FN_REFLEN];
-  uint64_t m_opened_index_term; // the term of the opened index file
+  uint64_t m_opened_index_term;  // the term of the opened index file
+  bool list_persistent_objects(
+      std::vector<objstore::ObjectMeta> &persistent_objects,
+      const char *search_key, bool all, bool allow_no_search_key);
   int fetch_last_persistent_index_file(std::string &last_index_file);
   bool open_index_file();
   void close_index_file();

@@ -7923,7 +7923,7 @@ index 61828fe0164..0c4a3aaa94e 100644
          if (mysql_bin_log.rotate_and_purge(thd, true)) *write_to_binlog = -1;
        }
 diff --git a/sql/sql_show.cc b/sql/sql_show.cc
-index 64c61f060db..2ca297bfae4 100644
+index 64c61f060db..15a7c98909f 100644
 --- a/sql/sql_show.cc
 +++ b/sql/sql_show.cc
 @@ -72,6 +72,8 @@
@@ -8050,7 +8050,7 @@ index 64c61f060db..2ca297bfae4 100644
 +  mysql_mutex_unlock(binlog_archive_lock);
 +  binlog_archive->lock_binlog_index();
 +  index_file = binlog_archive->get_index_file();
-+  if (!index_file) {
++  if (!index_file || !my_b_inited(index_file)) {
 +    LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_LOG, "binlog archive binlog index is not open");
 +    binlog_archive->unlock_binlog_index();
 +    return 0;
@@ -8153,7 +8153,7 @@ index 64c61f060db..2ca297bfae4 100644
 +static int fill_mysql_innodb_persistent_index_file(THD *thd, Table_ref *tables,
 +                                                   Item *) {
 +  DBUG_TRACE;
-+  IO_CACHE *index_file;
++  IO_CACHE *index_file = nullptr;
 +  TABLE *table = tables->table;
 +  CHARSET_INFO *cs = system_charset_info;
 +  char file_name[FN_REFLEN];
@@ -8172,7 +8172,7 @@ index 64c61f060db..2ca297bfae4 100644
 +
 +  consistent_snapshot_archive->lock_mysql_clone_index();
 +  index_file = consistent_snapshot_archive->get_mysql_clone_index_file();
-+  if (!my_b_inited(index_file)) {
++  if (!index_file || !my_b_inited(index_file)) {
 +    consistent_snapshot_archive->unlock_mysql_clone_index();
 +    return 0;
 +  }
@@ -8237,7 +8237,7 @@ index 64c61f060db..2ca297bfae4 100644
 +static int fill_se_backup_persistent_index_file(THD *thd, Table_ref *tables,
 +                                           Item *) {
 +  DBUG_TRACE;
-+  IO_CACHE *index_file;
++  IO_CACHE *index_file = nullptr;
 +  TABLE *table = tables->table;
 +  CHARSET_INFO *cs = system_charset_info;
 +  char file_name[FN_REFLEN];
@@ -8256,7 +8256,7 @@ index 64c61f060db..2ca297bfae4 100644
 +
 +  consistent_snapshot_archive->lock_se_backup_index();
 +  index_file = consistent_snapshot_archive->get_se_backup_index_file();
-+  if (!my_b_inited(index_file)) {
++  if (!index_file || !my_b_inited(index_file)) {
 +    consistent_snapshot_archive->unlock_se_backup_index();
 +    return 0;
 +  }
@@ -8347,7 +8347,7 @@ index 64c61f060db..2ca297bfae4 100644
 +static int fill_consistent_snapshot_persistent_index_file(THD *thd, Table_ref *tables,
 +                                           Item *) {
 +  DBUG_TRACE;
-+  IO_CACHE *index_file;
++  IO_CACHE *index_file = nullptr;
 +  TABLE *table = tables->table;
 +  CHARSET_INFO *cs = system_charset_info;
 +  char snapshot_info[4 * FN_REFLEN];
@@ -8365,7 +8365,7 @@ index 64c61f060db..2ca297bfae4 100644
 +  mysql_mutex_unlock(Consistent_archive_lock);
 +  consistent_snapshot_archive->lock_consistent_snapshot_index();
 +  index_file = consistent_snapshot_archive->get_consistent_snapshot_index_file();
-+  if (!my_b_inited(index_file)) {
++  if (!index_file || !my_b_inited(index_file)) {
 +    consistent_snapshot_archive->unlock_consistent_snapshot_index();
 +    return 0;
 +  }

@@ -2171,6 +2171,63 @@ int Consistent_archive::show_consistent_snapshot_task_info(
 }
 
 /**
+ * @brief Fetch persistent objects from the object store by the search key.
+ *
+ * @param persistent_objects result of the fetched objects.
+ * @param search_key search key.
+ * @param all whether to fetch all objects, otherwise fetch one page.
+ * @param allow_no_search_key whether to allow no search key.
+ * @return true if the fetch is successful; otherwise, false.
+ */
+bool Consistent_archive::list_persistent_objects(
+    std::vector<objstore::ObjectMeta> &persistent_objects,
+    const char *search_key, bool all, bool allow_no_search_key) {
+  DBUG_TRACE;
+  DBUG_PRINT("info", ("list_persistent_objects"));
+  std::string err_msg;
+  bool finished = false;
+  std::string start_after;
+  std::string search_prefix;
+  search_prefix.assign(m_archive_dir);
+  search_prefix.append(search_key);
+  err_msg.assign("list persistent objects ");
+  err_msg.append(search_prefix);
+  do {
+    std::vector<objstore::ObjectMeta> tmp_objects;
+    objstore::Status ss = snapshot_objstore->list_object(
+        std::string_view(opt_objstore_bucket), search_prefix, false,
+        start_after, finished, tmp_objects);
+    if (!ss.is_succ()) {
+      if (allow_no_search_key &&
+          ss.error_code() == objstore::Errors::SE_NO_SUCH_KEY) {
+        return true;
+      }
+      err_msg.append("failed");
+      err_msg.append(" error=");
+      err_msg.append(ss.error_message());
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      return false;
+    }
+    persistent_objects.insert(persistent_objects.end(), tmp_objects.begin(),
+                              tmp_objects.end());
+  } while (all == true && finished == false);
+  // sort the objects by key in lexicographical order.
+  std::sort(persistent_objects.begin(), persistent_objects.end(),
+            [](const objstore::ObjectMeta &a, const objstore::ObjectMeta &b) {
+              return a.key < b.key;
+            });
+  if (allow_no_search_key == false && persistent_objects.empty()) {
+    err_msg.append("failed");
+    err_msg.append(" error=");
+    err_msg.append("no persistent objects found");
+    LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+    return false;
+  }
+  LogErr(INFORMATION_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+  return true;
+}
+
+/**
  * @brief Get the last persistent index file.
  * The persisted index file is based on multiple versions of the
  * consensus term, so the index file with the highest consensus term
@@ -2183,26 +2240,21 @@ int Consistent_archive::show_consistent_snapshot_task_info(
 int Consistent_archive::fetch_last_persistent_index_file(
     std::string &last_index, Archive_type arch_type) {
   std::vector<objstore::ObjectMeta> objects;
-  bool finished = false;
-  std::string start_after;
   std::string index_prefix;
   std::string old_index_keyid;
   std::string err_msg;
 
   if (arch_type == ARCHIVE_MYSQL_INNODB) {
-    index_prefix.assign(m_archive_dir);
-    index_prefix.append(CONSISTENT_INNODB_INDEX_FILE_BASENAME);
+    index_prefix.assign(CONSISTENT_INNODB_INDEX_FILE_BASENAME);
     old_index_keyid.assign(m_archive_dir);
     old_index_keyid.append(CONSISTENT_INNODB_ARCHIVE_INDEX_FILE);
   } else if (arch_type == ARCHIVE_SE) {
-    index_prefix.assign(m_archive_dir);
-    index_prefix.append(CONSISTENT_SE_INDEX_FILE_BASENAME);
+    index_prefix.assign(CONSISTENT_SE_INDEX_FILE_BASENAME);
     old_index_keyid.assign(m_archive_dir);
     old_index_keyid.append(CONSISTENT_SE_ARCHIVE_INDEX_FILE);
   } else {
     assert(arch_type == ARCHIVE_SNAPSHOT_FILE);
-    index_prefix.assign(m_archive_dir);
-    index_prefix.append(CONSISTENT_SNAPSHOT_INDEX_FILE_BASENAME);
+    index_prefix.assign(CONSISTENT_SNAPSHOT_INDEX_FILE_BASENAME);
     old_index_keyid.assign(m_archive_dir);
     old_index_keyid.append(CONSISTENT_SNAPSHOT_INDEX_FILE);
   }
@@ -2216,26 +2268,13 @@ int Consistent_archive::fetch_last_persistent_index_file(
    snapshot.index, should locate the last one in list. If only the
    single-version file (snapshot.index) exists, it is selected instead..
   */
-  do {
-    std::vector<objstore::ObjectMeta> tmp_objects;
-    objstore::Status ss = snapshot_objstore->list_object(
-        std::string_view(opt_objstore_bucket), index_prefix, false, start_after,
-        finished, tmp_objects);
-    if (!ss.is_succ()) {
-      err_msg.assign("list persistent index file failed: ");
-      err_msg.append(index_prefix);
-      err_msg.append(" error=");
-      err_msg.append(ss.error_message());
-      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
-      return 1;
-    }
-    objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-  } while (finished == false);
+  if (!list_persistent_objects(objects, index_prefix.c_str(), true, true)) {
+    return 1;
+  }
   // if no persistent binlog.index, return.
   if (objects.empty()) {
     err_msg.assign("no persistent index file found: ");
-    err_msg.append(index_prefix);
-    LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+    LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
     return 0;
   }
   // Initially, the last_index is assigned to the key of the last object in the
@@ -3522,9 +3561,7 @@ int Consistent_archive::purge_archive_garbage(const char *dirty_end_archive,
   DBUG_PRINT("info", ("purge_archive_garbage"));
   DBUG_EXECUTE_IF("fault_injection_purge_archive_garbage", { return 1; });
   int error = 0;
-  bool finished = false;
   std::string err_msg;
-  std::string start_after;
   std::string archive_prefix;
   uint64_t *index_term;
 
@@ -3534,40 +3571,22 @@ int Consistent_archive::purge_archive_garbage(const char *dirty_end_archive,
   err_msg.append(dirty_end_archive);
   LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
 
-  archive_prefix.assign(m_archive_dir);
   if (arch_type == ARCHIVE_MYSQL_INNODB) {
-    archive_prefix.append(CONSISTENT_INNODB_ARCHIVE_BASENAME);
+    archive_prefix.assign(CONSISTENT_INNODB_ARCHIVE_BASENAME);
     index_term = &m_opened_innodb_index_term;
   } else if (arch_type == ARCHIVE_SE) {
-    archive_prefix.append(CONSISTENT_SE_ARCHIVE_BASENAME);
+    archive_prefix.assign(CONSISTENT_SE_ARCHIVE_BASENAME);
     index_term = &m_opened_se_index_term;
   }
   // cleanup the garbage innodb or smartengine index file.
   purge_archive_index_garbage(*index_term, arch_type);
 
   std::vector<objstore::ObjectMeta> objects;
-  do {
-    std::vector<objstore::ObjectMeta> tmp_objects;
-    // Only return the files and directories at the first-level directory.
-    // Single-version format: innodb_000001.tar or
-    // innodb_000001.tar.gz or innodb_000001/
-    // Multi-version format: innodb_000001_000012.tar or
-    // innodb_000001_000012.tar.gz or innodb_000001_000012/
-    objstore::Status ss = snapshot_objstore->list_object(
-        std::string_view(opt_objstore_bucket), archive_prefix, false,
-        start_after, finished, tmp_objects);
-    if (!ss.is_succ()) {
-      error = 1;
-      err_msg.assign("list persistent object files: ");
-      err_msg.append(archive_prefix);
-      err_msg.append(" error=");
-      err_msg.append(ss.error_message());
-      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_PURGE_LOG, err_msg.c_str());
-      break;
-    }
-    objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-  } while (finished == false);
-
+  // To prevent memory overflow, only show one page of snapshot objects.
+  // Allow snapshot objects not exsits in object store.
+  if (!list_persistent_objects(objects, archive_prefix.c_str(), false, false)) {
+    error = 1;
+  }
   if (!error) {
     std::string dirty_end_archive_keyid;
     dirty_end_archive_keyid.assign(dirty_end_archive);
@@ -3618,8 +3637,6 @@ int Consistent_archive::purge_archive_garbage(const char *dirty_end_archive,
 int Consistent_archive::purge_archive_index_garbage(uint64_t end_term,
                                                     Archive_type arch_type) {
   std::vector<objstore::ObjectMeta> objects;
-  bool finished = false;
-  std::string start_after;
   std::string index_prefix;
   std::string old_index_keyid;
   std::string err_msg;
@@ -3628,19 +3645,16 @@ int Consistent_archive::purge_archive_index_garbage(uint64_t end_term,
     return 0;
   }
   if (arch_type == ARCHIVE_MYSQL_INNODB) {
-    index_prefix.assign(m_archive_dir);
-    index_prefix.append(CONSISTENT_INNODB_INDEX_FILE_BASENAME);
+    index_prefix.assign(CONSISTENT_INNODB_INDEX_FILE_BASENAME);
     old_index_keyid.assign(m_archive_dir);
     old_index_keyid.append(CONSISTENT_INNODB_ARCHIVE_INDEX_FILE);
   } else if (arch_type == ARCHIVE_SE) {
-    index_prefix.assign(m_archive_dir);
-    index_prefix.append(CONSISTENT_SE_INDEX_FILE_BASENAME);
+    index_prefix.assign(CONSISTENT_SE_INDEX_FILE_BASENAME);
     old_index_keyid.assign(m_archive_dir);
     old_index_keyid.append(CONSISTENT_SE_ARCHIVE_INDEX_FILE);
   } else {
     assert(arch_type == ARCHIVE_SNAPSHOT_FILE);
-    index_prefix.assign(m_archive_dir);
-    index_prefix.append(CONSISTENT_SNAPSHOT_INDEX_FILE_BASENAME);
+    index_prefix.assign(CONSISTENT_SNAPSHOT_INDEX_FILE_BASENAME);
     old_index_keyid.assign(m_archive_dir);
     old_index_keyid.append(CONSISTENT_SNAPSHOT_INDEX_FILE);
   }
@@ -3650,23 +3664,11 @@ int Consistent_archive::purge_archive_index_garbage(uint64_t end_term,
    snapshot.000003.index
    snapshot.index
   */
-  do {
-    std::vector<objstore::ObjectMeta> tmp_objects;
-    objstore::Status ss = snapshot_objstore->list_object(
-        std::string_view(opt_objstore_bucket), index_prefix, false, start_after,
-        finished, tmp_objects);
-    if (!ss.is_succ()) {
-      err_msg.assign("list persistent index file failed: ");
-      err_msg.append(index_prefix);
-      err_msg.append(" error=");
-      err_msg.append(ss.error_message());
-      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
-      return 1;
-    }
-    objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-  } while (finished == false);
-  // if no persistent binlog.index, return.
-  if (objects.size() < 2) {
+  if (!list_persistent_objects(objects, index_prefix.c_str(), true, false)) {
+    return 1;
+  }
+  // if only one persistent snapshot index, return.
+  if (objects.size() == 1) {
     err_msg.assign("no purge persistent index file.");
     return 0;
   }
@@ -4018,80 +4020,33 @@ int Consistent_archive::show_innodb_persistent_files(
     std::vector<objstore::ObjectMeta> &objects) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("show_innodb_persistent_files"));
-  int error = 0;
   if (snapshot_objstore != nullptr) {
-    bool finished = false;
-    std::string start_after;
-    std::string innodb_prefix;
-    innodb_prefix.assign(m_archive_dir);
-    innodb_prefix.append(CONSISTENT_INNODB_ARCHIVE_BASENAME);
-    do {
-      std::vector<objstore::ObjectMeta> tmp_objects;
-      // Only return the files and directories at the first-level directory.
-      // innodb_archive_000001.tar or innodb_archive_000001.tar.gz
-      // or innodb_archive_000001/
-      objstore::Status ss =
-          snapshot_objstore->list_object(std::string_view(opt_objstore_bucket),
-                                         std::string_view(innodb_prefix), false,
-                                         start_after, finished, tmp_objects);
-      if (!ss.is_succ()) {
-        std::string err_msg;
-        if (ss.error_code() == objstore::Errors::SE_NO_SUCH_KEY) {
-          error = 0;
-          break;
-        }
-        error = 1;
-        err_msg.assign("list innodb from object store failed: ");
-        err_msg.append(CONSISTENT_INNODB_ARCHIVE_BASENAME);
-        err_msg.append(" error=");
-        err_msg.append(ss.error_message());
-        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
-        break;
-      }
-      // Append object.
-      objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-    } while (finished == false);
+    // Only return the files and directories at the first-level directory.
+    // innodb_archive_000001.tar or innodb_archive_000001.tar.gz
+    // or innodb_archive_000001/
+    // To prevent memory overflow, only show one page of objects.
+    // Allow objects not exsits in object store.
+    if (!list_persistent_objects(objects, CONSISTENT_INNODB_ARCHIVE_BASENAME,
+                                 false, true)) {
+      return 1;
+    }
   }
-  return error;
+  return 0;
 }
 
 int Consistent_archive::show_se_persistent_files(
     std::vector<objstore::ObjectMeta> &objects) {
   DBUG_TRACE;
-  int error = 0;
+  DBUG_PRINT("info", ("show_se_persistent_files"));
   if (snapshot_objstore != nullptr) {
-    bool finished = false;
-    std::string start_after;
-    std::string se_prefix;
-    se_prefix.assign(m_archive_dir);
-    se_prefix.append(CONSISTENT_SE_ARCHIVE_BASENAME);
-    do {
-      std::vector<objstore::ObjectMeta> tmp_objects;
-      // Only return the files and directories at the first-level directory.
-      // innodb_archive_000001.tar or innodb_archive_000001.tar.gz
-      // or innodb_archive_000001/
-      objstore::Status ss = snapshot_objstore->list_object(
-          std::string_view(opt_objstore_bucket), se_prefix, false, start_after,
-          finished, tmp_objects);
-      if (!ss.is_succ()) {
-        std::string err_msg;
-        if (ss.error_code() == objstore::Errors::SE_NO_SUCH_KEY) {
-          error = 0;
-          break;
-        }
-        error = 1;
-        err_msg.assign("list smartengine from object store failed: ");
-        err_msg.append(CONSISTENT_SE_ARCHIVE_BASENAME);
-        err_msg.append(" error=");
-        err_msg.append(ss.error_message());
-        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
-        break;
-      }
-      // Append object to result vector.
-      objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-    } while (finished == false);
+    // To prevent memory overflow, only show one page of objects.
+    // Allow objects not exsits in object store.
+    if (!list_persistent_objects(objects, CONSISTENT_SE_ARCHIVE_BASENAME, false,
+                                 true)) {
+      return 1;
+    }
   }
-  return error;
+  return 0;
 }
 
 int Consistent_archive::show_se_backup_snapshot(

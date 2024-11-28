@@ -2535,6 +2535,58 @@ bool Binlog_archive::notify_slice_persisted(const Binlog_expected_slice &slice,
 }
 
 /**
+ * @brief Fetch persistent objects from the object store by the search key.
+ *
+ * @param persistent_objects result of the fetched objects.
+ * @param search_key search key.
+ * @param all whether to fetch all objects, otherwise fetch one page.
+ * @param allow_no_search_key whether to allow no search key.
+ * @return true if the fetch is successful; otherwise, false.
+ */
+bool Binlog_archive::list_persistent_objects(
+    std::vector<objstore::ObjectMeta> &persistent_objects,
+    const char *search_key, bool all, bool allow_no_search_key) {
+  DBUG_TRACE;
+  DBUG_PRINT("info", ("list_persistent_objects"));
+  bool finished = false;
+  std::string start_after;
+  std::string binlog_index_prefix;
+  binlog_index_prefix.assign(m_binlog_archive_dir);
+  binlog_index_prefix.append(search_key);
+  do {
+    std::vector<objstore::ObjectMeta> tmp_objects;
+    objstore::Status ss = binlog_objstore->list_object(
+        std::string_view(opt_objstore_bucket), binlog_index_prefix, false,
+        start_after, finished, tmp_objects);
+    if (!ss.is_succ()) {
+      if (allow_no_search_key &&
+          ss.error_code() == objstore::Errors::SE_NO_SUCH_KEY) {
+        return true;
+      }
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT, "failed",
+             binlog_index_prefix.c_str(),
+             std::string(ss.error_message()).c_str());
+      return false;
+    }
+    persistent_objects.insert(persistent_objects.end(), tmp_objects.begin(),
+                              tmp_objects.end());
+  } while (all == true && finished == false);
+  // sort the objects by key in lexicographical order.
+  std::sort(persistent_objects.begin(), persistent_objects.end(),
+            [](const objstore::ObjectMeta &a, const objstore::ObjectMeta &b) {
+              return a.key < b.key;
+            });
+  if (allow_no_search_key == false && persistent_objects.empty()) {
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT, "failed",
+           binlog_index_prefix.c_str(), "no persistent objects found");
+    return false;
+  }
+  LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT, "",
+         binlog_index_prefix.c_str(), "");
+  return true;
+}
+
+/**
  * @brief Update the binlog index file with the persisted slices.
  *
  * @param need_slice_lock Whether to acquire the slice mutex lock.
@@ -2726,29 +2778,15 @@ bool Binlog_archive::update_index_file(bool need_slice_lock) {
 int Binlog_archive::fetch_last_persistent_index_file(
     std::string &last_binlog_index) {
   std::vector<objstore::ObjectMeta> objects;
-  bool finished = false;
-  std::string start_after;
-  do {
-    std::vector<objstore::ObjectMeta> tmp_objects;
-    std::string binlog_index_prefix;
-    binlog_index_prefix.assign(m_binlog_archive_dir);
-    binlog_index_prefix.append(BINLOG_ARCHIVE_INDEX_FILE_BASENAME);
-    objstore::Status ss = binlog_objstore->list_object(
-        std::string_view(opt_objstore_bucket), binlog_index_prefix, false,
-        start_after, finished, tmp_objects);
-    if (!ss.is_succ()) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT,
-             "list persistent binlog-index.index failed",
-             BINLOG_ARCHIVE_INDEX_FILE_BASENAME,
-             std::string(ss.error_message()).c_str());
-      return 1;
-    }
-    objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-  } while (finished == false);
+
+  if (!list_persistent_objects(objects, BINLOG_ARCHIVE_INDEX_FILE_BASENAME,
+                               true, true)) {
+    return 1;
+  }
   // if no persistent binlog.index, return.
   if (objects.empty()) {
     LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT,
-           "No persistent binlog index file",
+           "no persistent binlog index file",
            BINLOG_ARCHIVE_INDEX_FILE_BASENAME, "");
     return 0;
   }
@@ -4189,28 +4227,13 @@ err:
       LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_LOG, err_msg.c_str());
 
       // binlog/binlog.*, fetch all persistent binlog.
-      std::string binlog_prefix;
-      binlog_prefix.assign(m_binlog_archive_dir);
-      binlog_prefix.append(BINLOG_ARCHIVE_BASENAME);
-
+      // To prevent memory overflow, only fetch one page of binlog objects.
+      // The remaining binlog objects will be processed next time.
       std::vector<objstore::ObjectMeta> objects;
-      bool finished = false;
-      std::string start_after;
-      do {
-        std::vector<objstore::ObjectMeta> tmp_objects;
-        objstore::Status ss = binlog_objstore->list_object(
-            std::string_view(opt_objstore_bucket), binlog_prefix, false,
-            start_after, finished, tmp_objects);
-        if (!ss.is_succ()) {
-          error = 1;
-          LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT,
-                 "list binlog failed", binlog_prefix.c_str(),
-                 std::string(ss.error_message()).c_str());
-          break;
-        }
-        objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-      } while (finished == false);
-
+      if (!list_persistent_objects(objects, BINLOG_ARCHIVE_BASENAME, false,
+                                   false)) {
+        error = 1;
+      }
       // Starting from the smallest persistent binlog until the
       // `dirty_end_binlog`.
       if (!error) {
@@ -4266,26 +4289,10 @@ err:
 
       // Fetch all binlog-index.index.
       std::vector<objstore::ObjectMeta> objects;
-      bool finished = false;
-      std::string start_after;
-      do {
-        std::vector<objstore::ObjectMeta> tmp_objects;
-        std::string binlog_index_prefix;
-        binlog_index_prefix.assign(m_binlog_archive_dir);
-        binlog_index_prefix.append(BINLOG_ARCHIVE_INDEX_FILE_BASENAME);
-        objstore::Status ss = binlog_objstore->list_object(
-            std::string_view(opt_objstore_bucket), binlog_index_prefix, false,
-            start_after, finished, tmp_objects);
-        if (!ss.is_succ()) {
-          error = 1;
-          LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT,
-                 "list binlog-index.index failed",
-                 BINLOG_ARCHIVE_INDEX_FILE_BASENAME,
-                 std::string(ss.error_message()).c_str());
-          break;
-        }
-        objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-      } while (finished == false);
+      if (!list_persistent_objects(objects, BINLOG_ARCHIVE_INDEX_FILE_BASENAME,
+                                   true, false)) {
+        error = 1;
+      }
       // Starting from the smallest persistent binlog-index.{term}.idex until
       // the `dirty_end_binlog_term`.
       if (!error) {
@@ -4554,34 +4561,16 @@ err:
 int Binlog_archive::show_binlog_persistent_files(
     std::vector<objstore::ObjectMeta> &objects) {
   DBUG_TRACE;
-  int error = 0;
+  DBUG_PRINT("info", ("show_binlog_persistent_files"));
   if (binlog_objstore != nullptr) {
-    bool finished = false;
-    std::string start_after;
-    std::string binlog_prefix;
-    binlog_prefix.assign(m_binlog_archive_dir);
-    binlog_prefix.append(BINLOG_ARCHIVE_BASENAME);
-
-    do {
-      std::vector<objstore::ObjectMeta> tmp_objects;
-      objstore::Status ss = binlog_objstore->list_object(
-          std::string_view(opt_objstore_bucket), binlog_prefix, false,
-          start_after, finished, tmp_objects);
-      if (!ss.is_succ()) {
-        std::string err_msg;
-        if (ss.error_code() == objstore::Errors::SE_NO_SUCH_KEY) {
-          error = 0;
-          return error;
-        }
-        error = 1;
-        LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT, "list binlog failed",
-               binlog_prefix.c_str(), std::string(ss.error_message()).c_str());
-        return error;
-      }
-      objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-    } while (finished == false);
+    // To prevent memory overflow, only show one page of binlog objects.
+    // Allow binlog objects not exsits in object store.
+    if (!list_persistent_objects(objects, BINLOG_ARCHIVE_BASENAME, false,
+                                 true)) {
+      return 1;
+    }
   }
-  return error;
+  return 0;
 }
 
 inline int Binlog_archive::reset_transmit_packet(size_t event_len) {

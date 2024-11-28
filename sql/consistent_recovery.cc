@@ -1440,9 +1440,7 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
 
   // get source all smartengine extent objects.
   std::vector<objstore::ObjectMeta> objects;
-  bool finished = false;
   std::string err_msg;
-  std::string start_after{};
   std::string source_se_objecstore_prefix;
   source_se_objecstore_prefix.assign(opt_initialize_repo_objstore_id);
   source_se_objecstore_prefix.append(FN_DIRSEP);
@@ -1456,22 +1454,15 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
   err_msg.append(source_se_objecstore_prefix);
   LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
 
-  do {
-    std::vector<objstore::ObjectMeta> tmp_objects;
-    objstore::Status ss = recovery_objstore->list_object(
-        std::string_view(opt_initialize_objstore_bucket),
-        source_se_objecstore_prefix, true, start_after, finished, tmp_objects);
-    if (!ss.is_succ()) {
-      err_msg.assign("list persistent object files: ");
-      err_msg.append(source_se_objecstore_prefix);
-      err_msg.append(" error=");
-      err_msg.append(ss.error_message());
-      LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
-      return true;
-    }
-    objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-  } while (finished == false);
+  // TODO: maybe memory overflow, if the number of smartengine extent objects is
+  // too large. Should be optimized by pagination.
+  if (!list_persistent_objects(opt_initialize_objstore_bucket, objects,
+                               source_se_objecstore_prefix.c_str(), true, true,
+                               false)) {
+    return true;
+  }
 
+  assert(objects.size() > 0);
   for (const auto &object : objects) {
     std::string data{};
     // get object from source object store.
@@ -1611,6 +1602,65 @@ int Consistent_recovery::consistent_snapshot_consensus_recovery_finish() {
 }
 
 /**
+ * @brief Fetch persistent objects from the object store by the search key.
+ *
+ * @param persistent_objects result of the fetched objects.
+ * @param search_key search key.
+ * @param all whether to fetch all objects, otherwise fetch one page.
+ * @param allow_no_search_key whether to allow no search key.
+ * @return true if the fetch is successful; otherwise, false.
+ */
+bool Consistent_recovery::list_persistent_objects(
+    const char *objstore_bucket,
+    std::vector<objstore::ObjectMeta> &persistent_objects,
+    const char *search_key, bool recursive, bool all,
+    bool allow_no_search_key) {
+  DBUG_TRACE;
+  DBUG_PRINT("info", ("list_persistent_objects"));
+  std::string err_msg;
+  bool finished = false;
+  std::string start_after;
+  std::string search_prefix;
+  search_prefix.assign(search_key);
+  err_msg.assign("list persistent objects ");
+  err_msg.append(search_prefix);
+  err_msg.append(recursive ? " recursive" : "");
+  do {
+    std::vector<objstore::ObjectMeta> tmp_objects;
+    objstore::Status ss = recovery_objstore->list_object(
+        std::string_view(objstore_bucket), search_prefix, recursive,
+        start_after, finished, tmp_objects);
+    if (!ss.is_succ()) {
+      if (allow_no_search_key &&
+          ss.error_code() == objstore::Errors::SE_NO_SUCH_KEY) {
+        return true;
+      }
+      err_msg.append("failed");
+      err_msg.append(" error=");
+      err_msg.append(ss.error_message());
+      LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
+      return false;
+    }
+    persistent_objects.insert(persistent_objects.end(), tmp_objects.begin(),
+                              tmp_objects.end());
+  } while (all == true && finished == false);
+  // sort the objects by key in lexicographical order.
+  std::sort(persistent_objects.begin(), persistent_objects.end(),
+            [](const objstore::ObjectMeta &a, const objstore::ObjectMeta &b) {
+              return a.key < b.key;
+            });
+  if (allow_no_search_key == false && persistent_objects.empty()) {
+    err_msg.append("failed");
+    err_msg.append(" error=");
+    err_msg.append("no persistent objects found");
+    LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
+    return false;
+  }
+  LogErr(INFORMATION_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
+  return true;
+}
+
+/**
  * @brief Get the last persistent index file.
  * The persisted index file is based on multiple versions of the
  * consensus term, so the index file with the highest consensus term
@@ -1623,8 +1673,6 @@ int Consistent_recovery::consistent_snapshot_consensus_recovery_finish() {
 int Consistent_recovery::fetch_last_persistent_snapshot_index_file(
     std::string &last_index) {
   std::vector<objstore::ObjectMeta> objects;
-  bool finished = false;
-  std::string start_after;
   std::string index_prefix;
   std::string old_index_keyid;
   std::string err_msg{};
@@ -1644,24 +1692,13 @@ int Consistent_recovery::fetch_last_persistent_snapshot_index_file(
    snapshot.index, should locate the last one in list. If only the
    single-version file (snapshot.index) exists, it is selected instead..
   */
-  do {
-    std::vector<objstore::ObjectMeta> tmp_objects;
-    objstore::Status ss = recovery_objstore->list_object(
-        std::string_view(opt_objstore_bucket), index_prefix, false, start_after,
-        finished, tmp_objects);
-    if (!ss.is_succ()) {
-      err_msg.append(" failed, ");
-      err_msg.append(index_prefix);
-      err_msg.append(" error=");
-      err_msg.append(ss.error_message());
-      LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
-      return 1;
-    }
-    objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-  } while (finished == false);
+  if (!list_persistent_objects(opt_objstore_bucket, objects,
+                               index_prefix.c_str(), false, true, true)) {
+    return 1;
+  }
   // if no persistent binlog.index, return.
   if (objects.empty()) {
-    err_msg.append(", not exist");
+    err_msg.append(", no persistent snapshot index file");
     LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
     return 0;
   }
@@ -1695,31 +1732,19 @@ int Consistent_recovery::fetch_last_persistent_binlog_index_file(
     std::string &last_binlog_index) {
   std::string err_msg{};
   std::vector<objstore::ObjectMeta> objects{};
-  bool finished = false;
-  std::string start_after{};
   std::string binlog_index_prefix{};
 
   binlog_index_prefix.assign(m_binlog_archive_dir);
   binlog_index_prefix.append(BINLOG_ARCHIVE_INDEX_FILE_BASENAME);
-  do {
-    std::vector<objstore::ObjectMeta> tmp_objects{};
-    objstore::Status ss = recovery_objstore->list_object(
-        std::string_view(m_objstore_bucket), binlog_index_prefix, false,
-        start_after, finished, tmp_objects);
-    if (!ss.is_succ()) {
-      err_msg.assign("List persistent binlog index files failed: ");
-      err_msg.append(binlog_index_prefix);
-      err_msg.append(" error=");
-      err_msg.append(ss.error_message());
-      LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
-      return 1;
-    }
-    objects.insert(objects.end(), tmp_objects.begin(), tmp_objects.end());
-  } while (finished == false);
+  if (!list_persistent_objects(m_objstore_bucket, objects,
+                               binlog_index_prefix.c_str(), false, true,
+                               true)) {
+    return 1;
+  }
   // if no persistent binlog.index, return.
   if (objects.empty()) {
     LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
-           "No persistent binlog index file");
+           "no persistent binlog index file");
     return 0;
   }
   last_binlog_index.assign((objects.back()).key);
