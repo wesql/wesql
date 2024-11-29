@@ -1,0 +1,73 @@
+name: Release Image Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      type:
+        description: 'release type (e.g. image)'
+        default: 'image'
+        type: string
+        required: true
+      prerelease:
+        description: 'prerelease'
+        required: false
+        default: '1'
+        type: string
+      date:
+        description: 'date'
+        required: false
+        default: '0'
+        type: string
+      snapshot:
+        description: 'snapshot'
+        required: false
+        default: '0'
+        type: string
+
+
+run-name: ref_name:${{ github.ref_name }} prerelease:${{ inputs.prerelease }}
+
+env:
+  GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+
+jobs:
+  get-version:
+    uses: ./.github/workflows/get-version.yml
+    with:
+      prerelease: ${{ inputs.prerelease }}
+    secrets: inherit
+
+  release-image:
+    needs: [ get-version ]
+    uses: wesql/docker-wesql/.github/workflows/release-image.yml@main
+    with:
+      prerelease: ${{ inputs.prerelease }}
+      version: ${{ needs.get-version.outputs.mysql-version }}
+      wesql_version: ${{ needs.get-version.outputs.wesql-version }}
+    secrets: inherit
+
+  release-image-result:
+    runs-on: ubuntu-latest
+    needs: [ release-image ]
+    outputs:
+      release-result: ${{ steps.get_release_result.outputs.release_result }}
+    steps:
+      - name: get release result
+        id: get_release_result
+        run: |
+          RELEASE_RESULT="error"
+          if [[ "${{ needs.release-image.result }}" == "success" ]]; then
+              RELEASE_RESULT="success"
+          fi
+          echo 'release_result='$RELEASE_RESULT >> $GITHUB_OUTPUT
+
+  send-image-message:
+    needs: [ get-version, release-image-result ]
+    if: ${{ always() }}
+    uses: wesql/wesql-cd/.github/workflows/feishui-message.yml@v0.2.0
+    with:
+      TYPE: "2"
+      CONTENT: "release image ${{ needs.get-version.outputs.release-version }} ${{ needs.release-image-result.outputs.release-result }}"
+      APECD_REF: "v0.2.0"
+    secrets: inherit

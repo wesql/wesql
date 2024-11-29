@@ -1,32 +1,77 @@
-name: RELEASE-RPM
+name: Release RPM
 
 on:
+  workflow_call:
+    inputs:
+      prerelease:
+        description: 'prerelease'
+        required: true
+        default: '1'
+        type: string
+      date:
+        description: 'date'
+        required: true
+        default: '0'
+        type: string
+      snapshot:
+        description: 'snapshot'
+        required: true
+        default: '0'
+        type: string
+      without_test:
+        description: 'without test'
+        required: false
+        default: '1'
+        type: string
+      without_debug:
+        description: 'without debug'
+        required: false
+        default: '1'
+        type: string
+      parallel_build_jobs:
+        description: 'parallel build jobs'
+        required: false
+        default: '4'
+        type: string
+    outputs:
+      prerelease-image:
+        description: "prerelease for release image"
+        value: ${{ jobs.release-rpm.outputs.prerelease-image }}
+      release-tag:
+        description: "release tag"
+        value: ${{ jobs.release-rpm.outputs.release-tag }}
   workflow_dispatch:
     inputs:
       prerelease:
         description: 'prerelease'
         required: true
         default: '1'
+        type: string
       date:
         description: 'date'
         required: true
-        default: '1'
+        default: '0'
+        type: string
       snapshot:
         description: 'snapshot'
         required: true
-        default: '1'
+        default: '0'
+        type: string
       without_test:
         description: 'without test'
         required: false
         default: '1'
+        type: string
       without_debug:
         description: 'without debug'
         required: false
         default: '1'
+        type: string
       parallel_build_jobs:
         description: 'parallel build jobs'
         required: false
         default: '4'
+        type: string
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -51,23 +96,41 @@ jobs:
     uses: ./.github/workflows/enable-self-runner.yml
     with:
       CLOUD_PROVIDER: "eks"
-      RUNNER_LABEL: "eks-oracle8-amd-runner"
+      RUNNER_LABEL: "eks-oraclelinux8-amd64-runner"
     secrets: inherit
 
   enable-arm-runner:
     uses: ./.github/workflows/enable-self-runner.yml
     with:
-      RUNNER_LABEL: "eks-arm-runner"
+      CLOUD_PROVIDER: "eks"
+      RUNNER_LABEL: "eks-wesql2-arm64-runner"
     secrets: inherit
 
   release-rpm:
     name: release x86_64 rpm
     needs: [ enable-amd-runner ]
-    runs-on: [self-hosted, eks-oracle8-amd-runner ]
+    runs-on: [self-hosted, eks-oraclelinux8-amd64-runnerr ]
     outputs:
       runner-name: ${{ steps.get_runner_name.outputs.runner-name }}
+      prerelease-image: ${{ steps.get_prerelease.outputs.prerelease-image }}
+      release-tag: ${{ steps.get_prerelease.outputs.release-tag }}
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout MySQL Server Code
+        uses: actions/checkout@v4
+        with:
+          repository: mysql/mysql-server
+          ref: mysql-8.0.35
+
+      - name: Checkout Wesql Code
+        uses: actions/checkout@v4
+        with:
+          path: ./wesql
+
+      - name: Apply WeSQL Patches
+        run: |
+          cp -r ./wesql/* ./
+          git apply patches/mysql-server-8.0.35.patch
+
       - name: rpm build
         run: |
           sudo cp /home/mysql/${{ env.BOOST_NAME }} ${{ github.workspace }}/..
@@ -79,13 +142,13 @@ jobs:
           cd packaging/build-wesql
 
           sudo ./rpm_build.sh --builddir=${{ github.workspace }}/.. \
-            --source_code=wesql-server \
-            --build_rpm=1 --prerelease=${{ github.event.inputs.prerelease }} \
-            --date=${{ github.event.inputs.date }} \
-            --snapshot=${{ github.event.inputs.snapshot }} \
-            --without_test=${{ github.event.inputs.without_test }} \
-            --without_debug=${{ github.event.inputs.without_debug }} \
-            --parallel_build_jobs=${{ github.event.inputs.parallel_build_jobs }}
+            --source_code=wesql \
+            --build_rpm=1 --prerelease=${{ inputs.prerelease }} \
+            --date=${{ inputs.date }} \
+            --snapshot=${{ inputs.snapshot }} \
+            --without_test=${{ inputs.without_test }} \
+            --without_debug=${{ inputs.without_debug }} \
+            --parallel_build_jobs=${{ inputs.parallel_build_jobs }}
 
       - name: upload rpm
         run: |
@@ -101,6 +164,28 @@ jobs:
           sshpass -p ${{ env.SSH_PASSWORD }} ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} \
             createrepo --update /var/www/html/release/8/rpms/x86_64/
 
+      - name: get prerelease for image
+        id: get_prerelease
+        run: |
+          PRERELEASE_IMAGE=""
+          RELEASE_TAG=""
+          rpm_file_name=$(ls ${{ github.workspace }}/../rpm/*.rpm | head -n 1 | xargs basename)
+          if [[ -n "${rpm_file_name}" ]]; then
+              source MYSQL_VERSION
+              RELEASE_VERSION=${MYSQL_VERSION_MAJOR}.${MYSQL_VERSION_MINOR}.${MYSQL_VERSION_PATCH}-${WESQL_VERSION}
+              echo "RELEASE_VERSION:${RELEASE_VERSION}"
+          
+              PRERELEASE_IMAGE=${rpm_file_name#*${RELEASE_VERSION}_}
+              file_end="el8.x86_64.rpm"
+              PRERELEASE_IMAGE=${PRERELEASE_IMAGE%.${file_end}*}
+              echo "PRERELEASE_IMAGE:$PRERELEASE_IMAGE"
+          
+              RELEASE_TAG="${RELEASE_VERSION}_${PRERELEASE_IMAGE}"
+              echo "RELEASE_TAG:$RELEASE_TAG"
+          fi
+          echo prerelease-image="${PRERELEASE_IMAGE}" >> $GITHUB_OUTPUT
+          echo release-tag="${RELEASE_TAG}" >> $GITHUB_OUTPUT
+
       - name: get self runner name
         id: get_runner_name
         if: ${{ always() }}
@@ -111,46 +196,44 @@ jobs:
   release-arm-rpm:
     name: release aarch64 rpm
     needs: [ enable-arm-runner ]
-    runs-on: [ self-hosted, eks-arm-runner ]
+    runs-on: [ self-hosted, eks-wesql2-arm64-runner ]
     outputs:
       runner-name: ${{ steps.get_runner_name.outputs.runner-name }}
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout MySQL Server Code
+        uses: actions/checkout@v4
+        with:
+          repository: mysql/mysql-server
+          ref: mysql-8.0.35
+
+      - name: Checkout Wesql Code
+        uses: actions/checkout@v4
+        with:
+          path: ./wesql
+
+      - name: Apply WeSQL Patches
+        run: |
+          cp -r ./wesql/* ./
+          git apply patches/mysql-server-8.0.35.patch
+
       - name: rpm build
         run: |
-          cp /home/mysql/${{ env.BOOST_NAME }} ${{ github.workspace }}/extra
+          sudo cp /home/mysql/${{ env.BOOST_NAME }} ${{ github.workspace }}/..
 
           sudo git config --global --add safe.directory ${{ github.workspace }}
 
-          sudo docker login --username ${{ env.DOCKER_REGISTRY_USER }} \
-            --password ${{ env.DOCKER_REGISTRY_PASSWORD }} \
-            ${{ env.DOCKER_REGISTRY_URL }}
+          sudo rm -rf ${{ github.workspace }}/../rpm/*
 
-          sudo docker pull ${{ env.DOCKER_IMG }}:${{ env.IMG_VERSION }}
+          cd packaging/build-wesql
 
-          DOCKER_CONTAINER_ID=`sudo docker ps -a|grep ${{ env.SERVER_NAME }}|awk '{print $1}'`
-
-          if [[ -n $DOCKER_CONTAINER_ID ]]; then
-            sudo docker stop  $DOCKER_CONTAINER_ID
-            sudo docker rm $DOCKER_CONTAINER_ID
-          fi
-
-          sudo docker run -itd -v ${{ github.workspace }}:${{ env.BUILD_PATH }} \
-            --name ${{ env.SERVER_NAME }} \
-            ${{ env.DOCKER_IMG }}:${{ env.IMG_VERSION }}
-
-          sudo docker exec ${{ env.SERVER_NAME }} sh -c \
-            "sudo cp ${{ env.BUILD_PATH }}/extra/${{ env.BOOST_NAME }} ${{ env.BUILD_PATH }}/..; \
-            cd ${{ env.BUILD_PATH }}/packaging/build-wesql; \
-            sudo ./rpm_build.sh \
-            --build_rpm=1 \
-            --prerelease=${{ github.event.inputs.prerelease }} \
-            --date=${{ github.event.inputs.date }} \
-            --snapshot=${{ github.event.inputs.snapshot }} \
-            --without_test=${{ github.event.inputs.without_test }} \
-            --without_debug=${{ github.event.inputs.without_debug }} \
-            --parallel_build_jobs=${{ github.event.inputs.parallel_build_jobs }};
-            sudo cp -r ${{ env.BUILD_PATH }}/../rpm ${{ env.BUILD_PATH }}"
+          sudo ./rpm_build.sh --builddir=${{ github.workspace }}/.. \
+          --source_code=wesql \
+          --build_rpm=1 --prerelease=${{ inputs.prerelease }} \
+          --date=${{ inputs.date }} \
+          --snapshot=${{ inputs.snapshot }} \
+          --without_test=${{ inputs.without_test }} \
+          --without_debug=${{ inputs.without_debug }} \
+          --parallel_build_jobs=${{ inputs.parallel_build_jobs }}
 
       - name: upload rpm
         run: |

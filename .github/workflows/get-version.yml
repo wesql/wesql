@@ -1,0 +1,87 @@
+name: Get Release Version
+
+on:
+  workflow_call:
+    inputs:
+      prerelease:
+        description: 'prerelease'
+        required: true
+        default: '1'
+        type: string
+    outputs:
+      mysql-version:
+        description: "mysql version"
+        value: ${{ jobs.get-release-version.outputs.mysql-version }}
+      wesql-version:
+        description: "wesql version"
+        value: ${{ jobs.get-release-version.outputs.wesql-version }}
+      release-version:
+        description: "release version"
+        value: ${{ jobs.get-release-version.outputs.release-version }}
+
+jobs:
+  get-release-version:
+    runs-on: ubuntu-latest
+    outputs:
+      mysql-version: ${{ steps.get_release_version.outputs.mysql-version }}
+      wesql-version: ${{ steps.get_release_version.outputs.wesql-version }}
+      release-version: ${{ steps.get_release_version.outputs.release-version }}
+    steps:
+      - name: Checkout MySQL Server Code
+        uses: actions/checkout@v4
+        with:
+          repository: mysql/mysql-server
+          ref: mysql-8.0.35
+
+      - name: Checkout Wesql Code
+        uses: actions/checkout@v4
+        with:
+          path: ./wesql
+
+      - name: Apply WeSQL Patches
+        run: |
+          cp -r ./wesql/* ./
+          git apply patches/mysql-server-8.0.35.patch
+
+      - name: get release version
+        id: get_release_version
+        run: |
+          if [[ -f MYSQL_VERSION ]]; then
+              source MYSQL_VERSION
+          fi
+          
+          if [[ -z "${MYSQL_VERSION_MAJOR}" ]]; then
+              MYSQL_VERSION_MAJOR=8
+          fi
+          
+          if [[ -z "${MYSQL_VERSION_MINOR}" ]]; then
+              MYSQL_VERSION_MINOR=0
+          fi
+          
+          if [[ -z "${MYSQL_VERSION_PATCH}" ]]; then
+              MYSQL_VERSION_PATCH=35
+          fi
+          
+          if [[ -z "${WESQL_VERSION}" ]]; then
+              WESQL_VERSION=0.1.0
+          fi
+          
+          MYSQL_VERSION=${MYSQL_VERSION_MAJOR}.${MYSQL_VERSION_MINOR}.${MYSQL_VERSION_PATCH}
+          RELEASE_VERSION=${MYSQL_VERSION}-${WESQL_VERSION}_${{ inputs.prerelease }}
+          
+          echo "MYSQL_VERSION:${MYSQL_VERSION}"
+          echo "WESQL_VERSION:${WESQL_VERSION}"
+          echo "RELEASE_VERSION:${RELEASE_VERSION}"
+          
+          echo mysql-version=${MYSQL_VERSION} >> $GITHUB_OUTPUT
+          echo wesql-version=${WESQL_VERSION} >> $GITHUB_OUTPUT
+          echo release-version=${RELEASE_VERSION} >> $GITHUB_OUTPUT
+
+  release-message:
+    needs: [ get-release-version ]
+    uses: wesql/wesql-cd/.github/workflows/feishui-message.yml@v0.2.0
+    with:
+      TYPE: "1"
+      VERSION: "${{ needs.get-release-version.outputs.release-version }}"
+      APECD_REF: "v0.2.0"
+    secrets: inherit

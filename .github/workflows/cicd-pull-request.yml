@@ -230,5 +230,6 @@ jobs:
     if: ${{ always() }}
     uses: ./.github/workflows/enable-self-runner.yml
     with:
+      RUNNER_LABEL: "eks-oraclelinux8-amd64-runner"
       ENABLE: "disable"
     secrets: inherit
