@@ -89,7 +89,7 @@ jobs:
   release-image:
     needs: [ get-version, release-rpm ]
     if: ${{ inputs.type == 'all' }}
-    uses: wesql/docker-wesql/.github/workflows/release-image.yml@main
+    uses: ./.github/workflows/release-image.yml@main
     with:
       prerelease: ${{ needs.release-rpm.outputs.prerelease-image }}
       version: ${{ needs.get-version.outputs.mysql-version }}

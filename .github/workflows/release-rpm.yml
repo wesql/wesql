@@ -218,22 +218,39 @@ jobs:
 
       - name: rpm build
         run: |
-          sudo cp /home/mysql/${{ env.BOOST_NAME }} ${{ github.workspace }}/..
+          cp /home/mysql/${{ env.BOOST_NAME }} ${{ github.workspace }}/extra
 
           sudo git config --global --add safe.directory ${{ github.workspace }}
 
-          sudo rm -rf ${{ github.workspace }}/../rpm/*
+          sudo docker login --username ${{ env.DOCKER_REGISTRY_USER }} \
+            --password ${{ env.DOCKER_REGISTRY_PASSWORD }} \
+            ${{ env.DOCKER_REGISTRY_URL }}
 
-          cd packaging/build-wesql
+          sudo docker pull ${{ env.DOCKER_IMG }}:${{ env.IMG_VERSION }}
 
-          sudo ./rpm_build.sh --builddir=${{ github.workspace }}/.. \
-          --source_code=wesql \
-          --build_rpm=1 --prerelease=${{ inputs.prerelease }} \
-          --date=${{ inputs.date }} \
-          --snapshot=${{ inputs.snapshot }} \
-          --without_test=${{ inputs.without_test }} \
-          --without_debug=${{ inputs.without_debug }} \
-          --parallel_build_jobs=${{ inputs.parallel_build_jobs }}
+          DOCKER_CONTAINER_ID=`sudo docker ps -a|grep ${{ env.SERVER_NAME }}|awk '{print $1}'`
+
+          if [[ -n $DOCKER_CONTAINER_ID ]]; then
+            sudo docker stop  $DOCKER_CONTAINER_ID
+            sudo docker rm $DOCKER_CONTAINER_ID
+          fi
+
+          sudo docker run -itd -v ${{ github.workspace }}:${{ env.BUILD_PATH }} \
+            --name ${{ env.SERVER_NAME }} \
+            ${{ env.DOCKER_IMG }}:${{ env.IMG_VERSION }}
+
+          sudo docker exec ${{ env.SERVER_NAME }} sh -c \
+            "sudo cp ${{ env.BUILD_PATH }}/extra/${{ env.BOOST_NAME }} ${{ env.BUILD_PATH }}/..; \
+            cd ${{ env.BUILD_PATH }}/packaging/build-wesql; \
+            sudo ./rpm_build.sh \
+            --build_rpm=1 \
+            --prerelease=${{ inputs.prerelease }} \
+            --date=${{ inputs.date }} \
+            --snapshot=${{ inputs.snapshot }} \
+            --without_test=${{ inputs.without_test }} \
+            --without_debug=${{ inputs.without_debug }} \
+            --parallel_build_jobs=${{ inputs.parallel_build_jobs }};
+            sudo cp -r ${{ env.BUILD_PATH }}/../rpm ${{ env.BUILD_PATH }}"
 
       - name: upload rpm
         run: |

@@ -40,7 +40,7 @@ jobs:
 
   release-image:
     needs: [ get-version ]
-    uses: wesql/docker-wesql/.github/workflows/release-image.yml@main
+    uses: ./.github/workflows/release-image.yml@main
     with:
       prerelease: ${{ inputs.prerelease }}
       version: ${{ needs.get-version.outputs.mysql-version }}
