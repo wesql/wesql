@@ -1,0 +1,202 @@
+name: Release Image
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'version'
+        required: true
+        default: '8.0.35'
+        type: string
+      wesql_version:
+        description: 'wesql version'
+        required: true
+        default: '0.1.0'
+        type: string
+      prerelease:
+        description: 'prerelease'
+        required: false
+        default: '1'
+        type: string
+      buildx_platform:
+        description: 'buildx platform'
+        required: false
+        default: 'linux/amd64,linux/arm64'
+        type: string
+      img:
+        description: 'docker image'
+        required: false
+        default: 'apecloud/wesql-server'
+        type: string
+      tag:
+        description: 'tag'
+        required: false
+        default: ''
+        type: string
+      push_latest:
+        description: 'push latest'
+        required: false
+        default: 'false'
+        type: string
+      debug:
+        description: 'debug package'
+        required: false
+        default: 'false'
+        type: string
+      branch:
+        description: 'docker-wesql branch name'
+        required: false
+        default: 'main'
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'version'
+        required: true
+        default: '8.0.35'
+        type: string
+      wesql_version:
+        description: 'wesql version'
+        required: true
+        default: '0.1.0'
+        type: string
+      prerelease:
+        description: 'prerelease'
+        required: false
+        default: '1'
+        type: string
+      buildx_platform:
+        description: 'buildx platform'
+        required: false
+        type: string
+        default: 'linux/amd64,linux/arm64'
+      img:
+        description: 'docker image'
+        required: false
+        default: 'apecloud/wesql-server'
+        type: string
+      tag:
+        description: 'tag'
+        required: false
+        default: ''
+        type: string
+      push_latest:
+        description: 'push latest'
+        required: false
+        default: 'false'
+        type: string
+      debug:
+        description: 'debug package'
+        required: false
+        default: 'false'
+        type: string
+      branch:
+        description: 'docker-wesql branch name'
+        required: false
+        default: ''
+        type: string
+
+env:
+  DOCKER_REGISTRY_URL: docker.io
+  ALIYUN_REGISTRY_URL: apecloud-registry.cn-zhangjiakou.cr.aliyuncs.com
+  DOCKER_REGISTRY_USER: ${{ secrets.DOCKER_REGISTRY_USER }}
+  DOCKER_REGISTRY_PASSWORD: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+  ALIYUN_REGISTRY_USER: ${{ secrets.ALIYUN_REGISTRY_USER }}
+  ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+  GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+jobs:
+  release-image:
+    strategy:
+      matrix:
+        registry: [ dockerhub, aliyun ]
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ inputs.branch == '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: wesql/docker-wesql
+          path: ./
+          token: ${{ env.GITHUB_TOKEN }}
+
+      - if: ${{ inputs.branch != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: wesql/docker-wesql
+          ref: ${{ inputs.branch }}
+          path: ./
+          token: ${{ env.GITHUB_TOKEN }}
+
+      - uses: docker/setup-qemu-action@v2
+      - uses: docker/setup-buildx-action@v2
+        with:
+          driver-opts: image=moby/buildkit:master
+
+      - name: make docker-push
+        shell: bash
+        run: |
+          echo "version: ${{ inputs.version }}"
+          echo "wesql_version: ${{ inputs.wesql_version }}"
+          echo "prerelease: ${{ inputs.prerelease }}"
+          echo "platform: ${{ inputs.buildx_platform }}"
+          echo "image: ${{ inputs.img }}"
+          echo "tag: ${{ inputs.tag }}"
+          echo "push_latest: ${{ inputs.push_latest }}"
+
+          sed -i "9s/version.*/version\": \"${{ inputs.version }}-${{ inputs.wesql_version }}\",/" versions.json
+          sed -i "10s/prerelease.*/prerelease\": \"${{ inputs.prerelease }}\",/" versions.json
+          sed -i "11s/debug.*/debug\": \"${{ inputs.debug }}\"/" versions.json
+          sed -i "13s/version.*/version\": \"${{ inputs.version }}\"/" versions.json
+
+          bash update_apecloud_mysql.sh
+
+          APECLOUD_MYSQL_VERSION=""
+          if [[ -n "${{ inputs.tag }}" ]];then
+            APECLOUD_MYSQL_VERSION="${{ inputs.version }}-${{ inputs.wesql_version }}.${{ inputs.tag }}"
+          elif [[ -z "${{ inputs.prerelease }}" ]];then
+            APECLOUD_MYSQL_VERSION="${{ inputs.version }}-${{ inputs.wesql_version }}"
+          else
+            APECLOUD_MYSQL_VERSION="${{ inputs.version }}-${{ inputs.wesql_version }}_${{ inputs.prerelease }}"
+          fi
+          
+          image_registry="${{ matrix.registry }}"
+          case "${image_registry}" in
+              dockerhub)
+                  docker login --username '${{ env.DOCKER_REGISTRY_USER }}' \
+                    --password '${{ env.DOCKER_REGISTRY_PASSWORD }}' \
+                    ${{ env.DOCKER_REGISTRY_URL }}
+              
+                  if [[ "${{ inputs.push_latest }}" = "true" ]]; then
+                    BUILDX_ARGS="--sbom=false --provenance=false" \
+                      BUILDX_PLATFORMS=${{ inputs.buildx_platform }} \
+                      IMG=${{ inputs.img }} \
+                      APECLOUD_MYSQL_VERSION=$APECLOUD_MYSQL_VERSION \
+                      make docker-push-latest
+                  else
+                    BUILDX_ARGS="--sbom=false --provenance=false" \
+                      BUILDX_PLATFORMS=${{ inputs.buildx_platform }} \
+                      IMG=${{ inputs.img }} \
+                      APECLOUD_MYSQL_VERSION=$APECLOUD_MYSQL_VERSION \
+                      make docker-push
+                  fi
+              ;;
+              aliyun)
+                  docker login --username '${{ env.ALIYUN_REGISTRY_USER }}' \
+                    --password '${{ env.ALIYUN_REGISTRY_PASSWORD }}' \
+                    ${{ env.ALIYUN_REGISTRY_URL }}
+        
+                  if [[ "${{ inputs.push_latest }}" = "true" ]]; then
+                    BUILDX_ARGS="--sbom=false --provenance=false" \
+                      BUILDX_PLATFORMS=${{ inputs.buildx_platform }} \
+                      IMG=${{ env.ALIYUN_REGISTRY_URL }}/${{ inputs.img }} \
+                      APECLOUD_MYSQL_VERSION=$APECLOUD_MYSQL_VERSION \
+                      make docker-push-latest
+                  else
+                    BUILDX_ARGS="--sbom=false --provenance=false" \
+                      BUILDX_PLATFORMS=${{ inputs.buildx_platform }} \
+                      IMG=${{ env.ALIYUN_REGISTRY_URL }}/${{ inputs.img }} \
+                      APECLOUD_MYSQL_VERSION=$APECLOUD_MYSQL_VERSION \
+                      make docker-push
+                  fi
+              ;;
+          esac
