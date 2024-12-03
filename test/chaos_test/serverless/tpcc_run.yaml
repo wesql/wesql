@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: sysbench-tpcc-run-
+  namespace: ${NAMESPACE}
+spec:
+  containers:
+  - name: customsuites
+    image: apecloud/customsuites:tpcc-latest
+    imagePullPolicy: IfNotPresent
+    stdin: true
+    tty: true
+    env:
+      - name: TYPE
+        value: "2"
+      - name: FLAG
+        value: "0"
+      - name: CONFIGS
+        value: "host:${HOST},user:${DB_USERNAME},password:${DB_PASSWORD},mode:run,driver:mysql,port:3306,times:300,db:tpcc_test,type:tpcc,threads:${THREADS},tables:${TABLES},scale:${SIZE}"
+  restartPolicy: Never

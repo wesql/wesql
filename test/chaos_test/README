@@ -1,0 +1,3 @@
+1. Begin by establishing a Kubernetes testing environment and verifying kubectl connectivity to the cluster.
+2. Proceed with the installation of Chaos Mesh by following the instructions provided at https://chaos-mesh.org/docs/production-installation-using-helm/.
+3. Once the installation is complete, initiate fault injection tests by executing the test_fault_serverless.sh script. For comprehensive details regarding available parameters, invoke the script with the --help flag.

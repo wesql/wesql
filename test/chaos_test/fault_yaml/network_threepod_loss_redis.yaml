@@ -1,0 +1,26 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  creationTimestamp: null
+  generateName: network-chaos-
+  namespace: default
+spec:
+  action: loss
+  direction: to
+  duration: ${duration}
+  loss:
+    loss: "100"
+  mode: all
+  selector:
+    namespaces:
+    - ${NAMESPACE}
+    pods:
+      ${NAMESPACE}:
+      - ${leader_pod}
+      - ${follower_pod1}
+      - ${follower_pod2}
+      - ${sentinel_pod1}
+      - ${sentinel_pod2}
+      - ${sentinel_pod3}
+status:
+  experiment: {}

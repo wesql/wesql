@@ -1,0 +1,19 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  creationTimestamp: null
+  generateName: network-chaos-
+  namespace: default
+spec:
+  action: partition
+  direction: to
+  duration: 1s
+  mode: all
+  selector:
+    namespaces:
+    - ${NAMESPACE}
+    pods:
+      ${NAMESPACE}:
+      - ${pod_name}
+status:
+  experiment: {}

@@ -1,0 +1,15 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: GCPChaos
+metadata:
+  creationTimestamp: null
+  generateName: node-chaos-
+  namespace: default
+spec:
+  action: node-stop
+  duration: ${duration}
+  instance: ${node_name}
+  project: ${project}
+  secretName: cloud-key-secret-gcp
+  zone: ${region}
+status:
+  experiment: {}

@@ -1,0 +1,19 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  creationTimestamp: null
+  generateName: pod-chaos-
+  namespace: default
+spec:
+  action: pod-kill
+  duration: 10s
+  mode: all
+  selector:
+    namespaces:
+    - ${NAMESPACE}
+    pods:
+      ${NAMESPACE}:
+      - ${follower_pod1}
+      - ${follower_pod2}
+status:
+  experiment: {}

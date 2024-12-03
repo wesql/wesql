@@ -1,0 +1,21 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  creationTimestamp: null
+  generateName: pod-chaos-
+  namespace: default
+spec:
+  action: container-kill
+  duration: 10s
+  mode: all
+  containerNames: ['mysql']
+  selector:
+    namespaces:
+    - ${NAMESPACE}
+    pods:
+      ${NAMESPACE}:
+      - ${leader_pod}
+      - ${follower_pod1}
+      - ${follower_pod2}
+status:
+  experiment: {}

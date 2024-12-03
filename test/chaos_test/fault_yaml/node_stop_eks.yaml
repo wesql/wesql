@@ -1,0 +1,14 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: AWSChaos
+metadata:
+  creationTimestamp: null
+  generateName: node-chaos-
+  namespace: default
+spec:
+  action: ec2-stop
+  awsRegion: ${region}
+  duration: ${duration}
+  ec2Instance: ${node_name}
+  secretName: cloud-key-secret-aws
+status:
+  experiment: {}

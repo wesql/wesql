@@ -1,0 +1,21 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata:
+  creationTimestamp: null
+  generateName: io-chaos-
+  namespace: default
+spec:
+  action: fault
+  duration: ${duration}
+  errno: ${errorno}
+  mode: all
+  percent: 100
+  selector:
+    namespaces:
+    - ${NAMESPACE}
+    pods:
+      ${NAMESPACE}:
+      - ${leader_pod}
+  volumePath: ${datapath}
+status:
+  experiment: {}

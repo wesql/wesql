@@ -1,0 +1,26 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  creationTimestamp: null
+  generateName: stress-chaos-
+  namespace: default
+spec:
+  duration: ${duration}
+  mode: all
+  selector:
+    namespaces:
+    - ${NAMESPACE}
+    pods:
+      ${NAMESPACE}:
+      - ${leader_pod}
+      - ${follower_pod}
+  stressors:
+    cpu:
+      load: 0
+      workers: 5
+    memory:
+      size: '20GB'
+      workers: 5
+      oomScoreAdj: -1000
+status:
+  experiment: {}

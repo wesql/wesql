@@ -1,0 +1,25 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  creationTimestamp: null
+  generateName: network-chaos-
+  namespace: default
+spec:
+  action: delay
+  delay:
+    correlation: "100"
+    jitter: 0ms
+    latency: 15s
+  direction: to
+  duration: ${duration}
+  mode: all
+  selector:
+    namespaces:
+    - ${NAMESPACE}
+    pods:
+      ${NAMESPACE}:
+      - ${pod_name1}
+      - ${pod_name2}
+      - ${pod_name3}
+status:
+  experiment: {}
