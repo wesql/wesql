@@ -32,17 +32,17 @@ static std::atomic<bool> is_lease_lock_owner = false;
 static std::atomic<bool> should_abort_if_not_owner = false;
 static std::chrono::milliseconds lease_lock_last_lease_time = std::chrono::milliseconds(0);
 
-// renewal interval is 3s(3000ms)
-const std::chrono::milliseconds single_data_node_lock_renewal_interval = std::chrono::milliseconds(3000);
+// renewal interval is 2.5s(2500ms)
+const std::chrono::milliseconds single_data_node_lock_renewal_interval = std::chrono::milliseconds(2500);
 
 #ifdef NDEBUG
 namespace {
 #endif
 
-// lease timeout is 12s(12000ms)
-const std::chrono::milliseconds single_data_node_lock_lease_timeout = std::chrono::milliseconds(12000);
-// renewal timeout is 8s(8000ms), we can't renew the lock after this time
-const std::chrono::milliseconds single_data_node_lock_renewal_timeout = std::chrono::milliseconds(8000);
+// lease timeout is 8s(8000ms)
+const std::chrono::milliseconds single_data_node_lock_lease_timeout = std::chrono::milliseconds(8000);
+// renewal timeout is 5s(5000ms), we can't renew the lock after this time
+const std::chrono::milliseconds single_data_node_lock_renewal_timeout = std::chrono::milliseconds(5000);
 
 int get_single_data_node_lease_lock_expire_time(ObjectStore *objstore,
                                                 const std::string_view bucket_dir,

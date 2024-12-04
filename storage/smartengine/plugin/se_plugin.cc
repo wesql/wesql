@@ -298,11 +298,11 @@ static int se_init_func(void *const p)
     }
 
     sql_print_warning("SE: This node is not the owner of the lease lock, waiting...");
-    // retry 60 times( 1 minute ) to get single data node lease lock.
-    int retry = 60;
+    // retry 1 minute to get single data node lease lock.
+    int retry = 60000;
     while (!objstore::is_lease_lock_owner_node() && retry > 0) {
       // if this node is not the owner of the lease lock, can't do anything but wait
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
       retry--;
     }
     if (!objstore::is_lease_lock_owner_node()) {
