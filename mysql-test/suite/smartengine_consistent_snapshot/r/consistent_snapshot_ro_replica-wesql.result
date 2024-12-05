@@ -1,0 +1,88 @@
+# Wait for at least 1 snapshots to be generated 
+CREATE TABLE t1(c1 int) ENGINE=SMARTENGINE ;
+INSERT INTO t1 values(1);
+INSERT INTO t1 values(2);
+INSERT INTO t1 values(3);
+INSERT INTO t1 values(4);
+INSERT INTO t1 values(5);
+SELECT SNAPSHOT_ARCHIVE_PERSISTENT_FORCE();
+SNAPSHOT_ARCHIVE_PERSISTENT_FORCE()
+
+# Wait for at least 2 snapshots to be generated 
+INSERT INTO t1 values(6);
+INSERT INTO t1 values(7);
+INSERT INTO t1 values(8);
+INSERT INTO t1 values(9);
+INSERT INTO t1 values(10);
+INSERT INTO t1 values(11);
+INSERT INTO t1 values(12);
+INSERT INTO t1 values(13);
+INSERT INTO t1 values(14);
+INSERT INTO t1 values(15);
+INSERT INTO t1 values(16);
+INSERT INTO t1 values(17);
+INSERT INTO t1 values(18);
+INSERT INTO t1 values(19);
+INSERT INTO t1 values(20);
+SELECT count(*) FROM t1;
+count(*)
+20
+# Wait for all binlog persistent
+# clone database ro
+# Initialize ro server
+# Start ro server
+# Wait ro accept connection
+# Wait ro changed leader
+# Connection ro
+SELECT count(*) FROM t1;
+count(*)
+20
+# Connection master for insert
+# Insert values
+INSERT INTO t1 values(21);
+INSERT INTO t1 values(22);
+INSERT INTO t1 values(23);
+INSERT INTO t1 values(24);
+INSERT INTO t1 values(25);
+SELECT count(*) FROM t1;
+count(*)
+25
+# Connection ro for checking binlog replication
+SELECT count(*) FROM t1;
+count(*)
+25
+# Shutdown ro
+# Connection master for insert values
+# Insert values into master
+INSERT INTO t1 values(26);
+INSERT INTO t1 values(27);
+INSERT INTO t1 values(28);
+INSERT INTO t1 values(29);
+INSERT INTO t1 values(30);
+SELECT count(*) FROM t1;
+count(*)
+30
+# Restart ro for binlog continuous replication
+# Wait ro accept reconnection
+# Check ro binlog replication
+SELECT count(*) FROM t1;
+count(*)
+30
+# Connection master for insert values
+# Insert values
+INSERT INTO t1 values(31);
+INSERT INTO t1 values(32);
+INSERT INTO t1 values(33);
+INSERT INTO t1 values(34);
+INSERT INTO t1 values(35);
+SELECT count(*) FROM t1;
+count(*)
+35
+# Connection ro for checking binlog replication
+SELECT count(*) FROM t1;
+count(*)
+35
+# Shutdown ro
+# Cleanup ro
+# Cleanup
+DROP TABLE t1;

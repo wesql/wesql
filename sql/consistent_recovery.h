@@ -99,6 +99,8 @@ class Consistent_recovery {
       std::vector<objstore::ObjectMeta> &persistent_objects,
       const char *search_key, bool recursive, bool all,
       bool allow_no_search_key);
+  bool set_binlog_variable(const char *source_binlog,
+                           my_off_t source_binlog_pos);
   enum Consistent_recovery_state {
     CONSISTENT_RECOVERY_STATE_NONE = 0,
     CONSISTENT_RECOVERY_STATE_SNAPSHOT_FILE = 1,
@@ -132,6 +134,7 @@ class Consistent_recovery {
   // state
   uint64_t m_consensus_index;
   uint64_t m_se_snapshot_id;
+  char m_binlog_end_file[FN_REFLEN + 1];
   char m_mysql_binlog_end_file[FN_REFLEN + 1];
   my_off_t m_mysql_binlog_end_pos;
   char m_snapshot_end_binlog_file[FN_REFLEN + 1];

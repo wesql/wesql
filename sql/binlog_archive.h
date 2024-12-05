@@ -371,8 +371,6 @@ class Binlog_archive {
   bool is_thread_dead() const { return m_thd_state.is_thread_dead(); }
   bool is_thread_alive() const { return m_thd_state.is_thread_alive(); }
   bool is_thread_running() const { return m_thd_state.is_running(); }
-  int archive_event(File_reader &reader, uchar *event_ptr, uint32 event_len,
-                    const char *log_file, my_off_t log_pos);
   int binlog_stop_waiting_for_archive(const char *log_file_name,
                                       char *persistent_log_file_name,
                                       my_off_t log_pos,
@@ -501,7 +499,7 @@ class Binlog_archive {
       m_slice_end_consensus_index;  // end consensus index of persisted binlogs.
   uint64 m_mysql_end_consensus_index;  // end consensus index of readed mysql
                                        // binlogs.
-  int new_binlog_slice(bool new_binlog, const char *log_file, my_off_t log_pos,
+  int new_binlog_slice(bool new_binlog, const char *mysql_log_file,
                        uint64_t previous_consensus_index);
   int archive_init();
   int archive_cleanup();
@@ -510,6 +508,8 @@ class Binlog_archive {
   int archive_binlog(File_reader &reader, my_off_t start_pos);
   std::pair<my_off_t, int> get_binlog_end_pos(File_reader &reader);
   int archive_events(File_reader &reader, my_off_t end_pos);
+  int archive_event(File_reader &reader, uchar *event_ptr, uint32 event_len,
+                    const char *mysql_log_file, my_off_t log_pos);
   int read_format_description_event(File_reader &reader);
   int wait_new_mysql_binlog_events(my_off_t log_pos);
   int new_persistent_binlog_slice_key(const char *binlog,

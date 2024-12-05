@@ -2751,10 +2751,10 @@ index e010b378799..a6f94f8f194 100644
  ################################################################################
  # DO NOT add messages for the error-log to this file;
 diff --git a/share/messages_to_error_log.txt b/share/messages_to_error_log.txt
-index cdef214ae5f..7d4b4479f98 100644
+index cdef214ae5f..2f1f0545876 100644
 --- a/share/messages_to_error_log.txt
 +++ b/share/messages_to_error_log.txt
-@@ -12293,6 +12293,450 @@ ER_WARN_DEPRECATED_OR_BLOCKED_CIPHER
+@@ -12293,6 +12293,459 @@ ER_WARN_DEPRECATED_OR_BLOCKED_CIPHER
  # End of 8.0 error messages intended to be written to the server error log.
  #
  
@@ -3168,6 +3168,15 @@ index cdef214ae5f..7d4b4479f98 100644
 +ER_BINLOG_ARCHIVE_PURGE_LOG
 +  eng "Binlog archive: purge persistent binlog %s"
 +
++ER_BINLOG_ARCHIVE_REPLICA
++  eng "Binlog archive replica: %s."
++
++ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER
++  eng "Binlog archive replica replay worker: %s."
++
++ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER
++  eng "Binlog archive replica io worker %d: %s."
++
 +ER_CONSISTENT_SNAPSHOT_LOG
 +   eng "Snapshot archive: %s"
 +
@@ -3206,7 +3215,7 @@ index cdef214ae5f..7d4b4479f98 100644
  # Error numbers 50000 to 51999 are reserved. Please do not use them for
  # other error messages.
 diff --git a/sql/CMakeLists.txt b/sql/CMakeLists.txt
-index 4691f507e46..d391e5532f9 100644
+index 4691f507e46..6e7c49bfbbe 100644
 --- a/sql/CMakeLists.txt
 +++ b/sql/CMakeLists.txt
 @@ -633,7 +633,25 @@ SET(SQL_SHARED_SOURCES
@@ -3235,16 +3244,17 @@ index 4691f507e46..d391e5532f9 100644
  
  IF(BUILD_IS_SINGLE_CONFIG)
    GET_PROPERTY(CWD_DEFINITIONS DIRECTORY PROPERTY COMPILE_DEFINITIONS)
-@@ -1003,6 +1021,8 @@ SET(BINLOG_SOURCE
+@@ -1003,6 +1021,9 @@ SET(BINLOG_SOURCE
    binlog/monitoring/context.cc
    binlog/decompressing_event_object_istream.cc
    binlog.cc
 +  binlog_archive.cc
++  binlog_archive_replica.cc
 +  binlog_archive_command.cc
    binlog_istream.cc
    binlog_ostream.cc
    binlog_reader.cc
-@@ -1011,6 +1031,10 @@ SET(BINLOG_SOURCE
+@@ -1011,6 +1032,10 @@ SET(BINLOG_SOURCE
    changestreams/misc/column_filters/column_filter_inbound_func_indexes.cc
    changestreams/misc/column_filters/column_filter_inbound_gipk.cc
    changestreams/misc/column_filters/column_filter_outbound_func_indexes.cc
@@ -3255,7 +3265,7 @@ index 4691f507e46..d391e5532f9 100644
    log_event.cc
    rpl_commit_stage_manager.cc
    rpl_filter.cc
-@@ -1089,6 +1113,16 @@ SET (RPL_REPLICA_SRCS
+@@ -1089,6 +1114,16 @@ SET (RPL_REPLICA_SRCS
    udf_service_impl.cc
    udf_service_util.cc
    )
@@ -4674,10 +4684,10 @@ index c288026b810..22d6c7b9d24 100644
  
  #endif /* _log_event_h */
 diff --git a/sql/mysqld.cc b/sql/mysqld.cc
-index 3f94e768956..a7c2475e3da 100644
+index 3f94e768956..17d146270c6 100644
 --- a/sql/mysqld.cc
 +++ b/sql/mysqld.cc
-@@ -774,15 +774,18 @@ MySQL clients support the protocol:
+@@ -774,15 +774,19 @@ MySQL clients support the protocol:
  #include "sql/auth/auth_common.h"         // grant_init
  #include "sql/auth/sql_authentication.h"  // init_rsa_keys
  #include "sql/auth/sql_security_ctx.h"
@@ -4687,6 +4697,7 @@ index 3f94e768956..a7c2475e3da 100644
 +#include "sql/auto_thd.h"        // Auto_THD
 +#include "sql/binlog.h"          // mysql_bin_log
 +#include "sql/binlog_archive.h"  // start_binlog_archive
++#include "sql/binlog_archive_replica.h" // start_binlog_archive_replica
 +#include "sql/bootstrap.h"       // bootstrap
  #include "sql/check_stack.h"
  #include "sql/conn_handler/connection_acceptor.h"  // Connection_acceptor
@@ -4700,7 +4711,7 @@ index 3f94e768956..a7c2475e3da 100644
  #include "sql/dd/cache/dictionary_client.h"
  #include "sql/debug_sync.h"  // debug_sync_end
  #include "sql/derror.h"
-@@ -885,6 +888,10 @@ MySQL clients support the protocol:
+@@ -885,6 +889,10 @@ MySQL clients support the protocol:
  #include "typelib.h"
  #include "violite.h"
  
@@ -4711,7 +4722,7 @@ index 3f94e768956..a7c2475e3da 100644
  #ifdef WITH_PERFSCHEMA_STORAGE_ENGINE
  #include "storage/perfschema/pfs_server.h"
  #endif /* WITH_PERFSCHEMA_STORAGE_ENGINE */
-@@ -1221,6 +1228,9 @@ bool opt_no_monitor = false;
+@@ -1221,6 +1229,9 @@ bool opt_no_monitor = false;
  
  bool opt_no_dd_upgrade = false;
  long opt_upgrade_mode = UPGRADE_AUTO;
@@ -4721,7 +4732,7 @@ index 3f94e768956..a7c2475e3da 100644
  bool opt_initialize = false;
  bool opt_skip_replica_start = false;  ///< If set, slave is not autostarted
  bool opt_enable_named_pipe = false;
-@@ -1500,6 +1510,65 @@ char server_version[SERVER_VERSION_LENGTH];
+@@ -1500,6 +1511,68 @@ char server_version[SERVER_VERSION_LENGTH];
  const char *mysqld_unix_port;
  char *opt_mysql_tmpdir;
  
@@ -4744,6 +4755,9 @@ index 3f94e768956..a7c2475e3da 100644
 +ulong opt_binlog_archive_expire_seconds = 0;
 +ulonglong opt_binlog_archive_period = 0;
 +ulong opt_binlog_archive_parallel_workers = 0;
++bool opt_binlog_archive_replica = false;
++char *opt_binlog_archive_replica_source_log_file = nullptr;
++ulong opt_binlog_archive_replica_source_log_pos = 0;
 +char *opt_consistent_snapshot_archive_dir = nullptr;
 +bool opt_consistent_snapshot_persistent_on_objstore = false;
 +bool opt_initialize_use_objstore = false;
@@ -4758,15 +4772,15 @@ index 3f94e768956..a7c2475e3da 100644
 +char *opt_recovery_consistent_snapshot_tmpdir = nullptr;
 +bool opt_recovery_consistent_snapshot_only = false;
 +char *opt_recovery_consistent_snapshot_timestamp = nullptr;
-+bool opt_initialize_from_objstore = false;
-+char *opt_initialize_objstore_provider = nullptr;
-+char *opt_initialize_objstore_region = nullptr;
-+char *opt_initialize_objstore_endpoint = nullptr;
-+bool opt_initialize_objstore_use_https = false;
-+char *opt_initialize_objstore_bucket = nullptr;
-+char *opt_initialize_repo_objstore_id = nullptr;
-+char *opt_initialize_branch_objstore_id = nullptr;
-+bool opt_initialize_smartengine_objectstore_data = false;
++bool opt_initialize_from_source_objectstore = false;
++char *opt_source_objectstore_provider = nullptr;
++char *opt_source_objectstore_region = nullptr;
++char *opt_source_objectstore_endpoint = nullptr;
++bool opt_source_objectstore_use_https = false;
++char *opt_source_objectstore_bucket = nullptr;
++char *opt_source_objectstore_repo_id = nullptr;
++char *opt_source_objectstore_branch_id = nullptr;
++bool opt_source_objectstore_smartengine_data = false;
 +bool opt_serverless = true;
 +/**
 +  TODO(cnut): how to validate the relationship between different variables of
@@ -4787,7 +4801,7 @@ index 3f94e768956..a7c2475e3da 100644
  char *opt_authentication_policy;
  std::vector<std::string> authentication_policy_list;
  /*
-@@ -2362,6 +2431,11 @@ static void close_connections(void) {
+@@ -2362,6 +2435,12 @@ static void close_connections(void) {
    Call_close_conn call_close_conn(true);
    thd_manager->do_for_all_thd(&call_close_conn);
  
@@ -4795,20 +4809,22 @@ index 3f94e768956..a7c2475e3da 100644
 +  // smartengine plugin and clone plugin.
 +  stop_consistent_archive();
 +  stop_binlog_archive();
++  stop_binlog_archive_replica();
 +
    (void)RUN_HOOK(server_state, after_server_shutdown, (nullptr));
  
    /*
-@@ -2493,6 +2567,8 @@ void clean_up_mysqld_mutexes() { clean_up_mutexes(); }
+@@ -2493,6 +2572,9 @@ void clean_up_mysqld_mutexes() { clean_up_mutexes(); }
  static void mysqld_exit(int exit_code) {
    assert((exit_code >= MYSQLD_SUCCESS_EXIT && exit_code <= MYSQLD_ABORT_EXIT) ||
           exit_code == MYSQLD_RESTART_EXIT);
 +  (Binlog_archive::get_instance())->deinit_pthread_object();
 +  (Consistent_archive::get_instance())->deinit_pthread_object();
++  (Binlog_archive_replica::get_instance())->deinit_pthread_object();
    mysql_audit_finalize();
    Srv_session::module_deinit();
    delete_optimizer_cost_module();
-@@ -4272,6 +4348,10 @@ SHOW_VAR com_status_vars[] = {
+@@ -4272,6 +4354,10 @@ SHOW_VAR com_status_vars[] = {
       (char *)offsetof(System_status_var,
                        com_stat[(uint)SQLCOM_SHOW_BINLOG_EVENTS]),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
@@ -4819,7 +4835,7 @@ index 3f94e768956..a7c2475e3da 100644
      {"show_binlogs",
       (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_SHOW_BINLOGS]),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-@@ -4443,6 +4523,14 @@ SHOW_VAR com_status_vars[] = {
+@@ -4443,6 +4529,14 @@ SHOW_VAR com_status_vars[] = {
       (char *)offsetof(System_status_var,
                        com_stat[(uint)SQLCOM_STOP_GROUP_REPLICATION]),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
@@ -4834,7 +4850,7 @@ index 3f94e768956..a7c2475e3da 100644
      {"stmt_execute", (char *)offsetof(System_status_var, com_stmt_execute),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
      {"stmt_close", (char *)offsetof(System_status_var, com_stmt_close),
-@@ -4498,6 +4586,16 @@ SHOW_VAR com_status_vars[] = {
+@@ -4498,6 +4592,16 @@ SHOW_VAR com_status_vars[] = {
      {"xa_start",
       (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_XA_START]),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
@@ -4851,17 +4867,18 @@ index 3f94e768956..a7c2475e3da 100644
      {NullS, NullS, SHOW_LONG, SHOW_SCOPE_ALL}};
  
  LEX_CSTRING sql_statement_names[(uint)SQLCOM_END + 1];
-@@ -4817,6 +4915,9 @@ int init_common_variables() {
+@@ -4817,6 +4921,10 @@ int init_common_variables() {
    */
    mysql_bin_log.init_pthread_objects();
  
 +  (Binlog_archive::get_instance())->init_pthread_object();
 +  (Consistent_archive::get_instance())->init_pthread_object();
++  (Binlog_archive_replica::get_instance())->init_pthread_object();
 +
    /* TODO: remove this when my_time_t is 64 bit compatible */
    if (!is_time_t_valid_for_timestamp(server_start_time)) {
      LogErr(ERROR_LEVEL, ER_UNSUPPORTED_DATE);
-@@ -4859,6 +4960,12 @@ int init_common_variables() {
+@@ -4859,6 +4967,12 @@ int init_common_variables() {
    default_storage_engine = "InnoDB";
    default_tmp_storage_engine = default_storage_engine;
  
@@ -4874,7 +4891,7 @@ index 3f94e768956..a7c2475e3da 100644
    /*
      Add server status variables to the dynamic list of
      status variables that is shown by SHOW STATUS.
-@@ -6286,6 +6393,14 @@ static int init_server_components() {
+@@ -6286,6 +6400,14 @@ static int init_server_components() {
        opt_bin_logname = my_strdup(key_memory_opt_bin_logname, buf, MYF(0));
      }
  
@@ -4889,7 +4906,7 @@ index 3f94e768956..a7c2475e3da 100644
      /*
        Skip opening the index file if we start with --help. This is necessary
        to avoid creating the file in an otherwise empty datadir, which will
-@@ -6503,6 +6618,33 @@ static int init_server_components() {
+@@ -6503,6 +6625,33 @@ static int init_server_components() {
        LogErr(ERROR_LEVEL, ER_CANT_INITIALIZE_BUILTIN_PLUGINS);
      unireg_abort(1);
    }
@@ -4909,7 +4926,7 @@ index 3f94e768956..a7c2475e3da 100644
 +    }
 +
 +    // Consistent recovery smartengine sst when clone instance.
-+    if (unlikely(opt_initialize) && opt_initialize_from_objstore &&
++    if (unlikely(opt_initialize) && opt_initialize_from_source_objectstore &&
 +        consistent_recovery.recovery_smartengine_objectstore_data()) {
 +      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
 +             "Failed to recovery smartengine sst from object storage");
@@ -4917,13 +4934,13 @@ index 3f94e768956..a7c2475e3da 100644
 +    }
 +    // Consistent recovery finish.
 +    consistent_recovery.recovery_consistent_snapshot_finish();
-+    if(unlikely(opt_initialize) && opt_initialize_from_objstore) 
++    if(unlikely(opt_initialize) && opt_initialize_from_source_objectstore) 
 +      unireg_abort(MYSQLD_SUCCESS_EXIT);
 +  }
  
    /*
      Needs to be done before dd::init() which runs DDL commands (for real)
-@@ -6785,6 +6927,27 @@ static int init_server_components() {
+@@ -6785,6 +6934,27 @@ static int init_server_components() {
      unireg_abort(1);
    }
  
@@ -4951,7 +4968,7 @@ index 3f94e768956..a7c2475e3da 100644
    if (opt_initialize) log_output_options = LOG_FILE;
  
    /*
-@@ -6818,6 +6981,20 @@ static int init_server_components() {
+@@ -6818,6 +6988,20 @@ static int init_server_components() {
    /*
      Set the default storage engines
    */
@@ -4972,7 +4989,7 @@ index 3f94e768956..a7c2475e3da 100644
    if (initialize_storage_engine(default_storage_engine, "",
                                  &global_system_variables.table_plugin))
      unireg_abort(MYSQLD_ABORT_EXIT);
-@@ -6890,7 +7067,22 @@ static int init_server_components() {
+@@ -6890,7 +7074,22 @@ static int init_server_components() {
      unireg_abort(MYSQLD_ABORT_EXIT);
    }
  
@@ -4996,7 +5013,7 @@ index 3f94e768956..a7c2475e3da 100644
      /*
        Configures what object is used by the current log to store processed
        gtid(s). This is necessary in the MYSQL_BIN_LOG::MYSQL_BIN_LOG to
-@@ -7531,6 +7723,11 @@ int mysqld_main(int argc, char **argv)
+@@ -7531,6 +7730,11 @@ int mysqld_main(int argc, char **argv)
    */
    init_server_psi_keys();
  
@@ -5008,7 +5025,7 @@ index 3f94e768956..a7c2475e3da 100644
    /*
      Now that some instrumentation is in place,
      recreate objects which were initialised early,
-@@ -7818,6 +8015,16 @@ int mysqld_main(int argc, char **argv)
+@@ -7818,6 +8022,16 @@ int mysqld_main(int argc, char **argv)
      unireg_abort(exit_state);
    }
  
@@ -5025,7 +5042,7 @@ index 3f94e768956..a7c2475e3da 100644
    /*
     We have enough space for fiddling with the argv, continue
    */
-@@ -7830,6 +8037,63 @@ int mysqld_main(int argc, char **argv)
+@@ -7830,6 +8044,63 @@ int mysqld_main(int argc, char **argv)
      unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
    }
  
@@ -5058,7 +5075,7 @@ index 3f94e768956..a7c2475e3da 100644
 +  // Binlog recovery will be done after bin-log and bin-log-index option is
 +  // ready.
 +  if (!is_help_or_validate_option() && opt_serverless &&
-+      (opt_recovery_from_objstore || opt_initialize_from_objstore)) {
++      (opt_recovery_from_objstore || opt_initialize_from_source_objectstore)) {
 +    Consistent_snapshot_recovery_status recovery_status = {};
 +    if (consistent_recovery.read_consistent_snapshot_recovery_status(
 +            recovery_status) == 0) {
@@ -5073,12 +5090,12 @@ index 3f94e768956..a7c2475e3da 100644
 +      strmake(mysql_path, mysql_real_data_home, sizeof(mysql_path) - 1);
 +      convert_dirname(mysql_path, mysql_path, NullS);
 +      strcat(mysql_path, "mysql");
-+      if ((opt_initialize && opt_initialize_from_objstore) ||
++      if ((opt_initialize && opt_initialize_from_source_objectstore) ||
 +          (!opt_initialize && opt_recovery_from_objstore &&
 +           !my_stat(mysql_path, &stat, MYF(0)))) {
 +        // 1. If $datadir/mysql not exists, we need to recover from object
 +        // store.
-+        // 2. If opt_initialize_from_objstore is set, we need to recover from
++        // 2. If opt_initialize_from_source_objectstore is set, we need to recover from
 +        // object store.
 +        if (consistent_recovery.recovery_consistent_snapshot(0))
 +          unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
@@ -5089,7 +5106,7 @@ index 3f94e768956..a7c2475e3da 100644
    /*
     The subsequent calls may take a long time : e.g. innodb log read.
     Thus set the long running service control manager timeout
-@@ -7879,6 +8143,16 @@ int mysqld_main(int argc, char **argv)
+@@ -7879,6 +8150,16 @@ int mysqld_main(int argc, char **argv)
      if (gtid_state->read_gtid_executed_from_table() == -1) unireg_abort(1);
    }
  
@@ -5106,7 +5123,7 @@ index 3f94e768956..a7c2475e3da 100644
    if (opt_bin_log) {
      /*
        Initialize GLOBAL.GTID_EXECUTED and GLOBAL.GTID_PURGED from
-@@ -7998,6 +8272,14 @@ int mysqld_main(int argc, char **argv)
+@@ -7998,6 +8279,14 @@ int mysqld_main(int argc, char **argv)
      (void)RUN_HOOK(server_state, after_engine_recovery, (nullptr));
    }
  
@@ -5121,7 +5138,7 @@ index 3f94e768956..a7c2475e3da 100644
    if (init_ssl_communication()) unireg_abort(MYSQLD_ABORT_EXIT);
    if (network_init()) unireg_abort(MYSQLD_ABORT_EXIT);
  
-@@ -8133,8 +8415,22 @@ int mysqld_main(int argc, char **argv)
+@@ -8133,8 +8422,22 @@ int mysqld_main(int argc, char **argv)
  
    initialize_information_schema_acl();
  
@@ -5144,7 +5161,21 @@ index 3f94e768956..a7c2475e3da 100644
    if (Events::init(opt_noacl || opt_initialize))
      unireg_abort(MYSQLD_ABORT_EXIT);
  
-@@ -9267,6 +9563,12 @@ struct my_option my_long_options[] = {
+@@ -8158,6 +8461,13 @@ int mysqld_main(int argc, char **argv)
+     return 1;
+   }
+ 
++  if (!opt_initialize) {
++    // start binlog archive replica.
++    if (start_binlog_archive_replica()) {
++      unireg_abort(MYSQLD_ABORT_EXIT);
++    }
++  }
++
+   /*
+     Invoke the bootstrap thread, if required.
+   */
+@@ -9267,6 +9577,12 @@ struct my_option my_long_options[] = {
       &opt_upgrade_mode, &opt_upgrade_mode, &upgrade_mode_typelib, GET_ENUM,
       REQUIRED_ARG, UPGRADE_AUTO, 0, 0, nullptr, 0, nullptr},
  
@@ -5157,7 +5188,7 @@ index 3f94e768956..a7c2475e3da 100644
      {nullptr, 0, nullptr, nullptr, nullptr, nullptr, GET_NO_ARG, NO_ARG, 0, 0,
       0, nullptr, 0, nullptr}};
  
-@@ -11131,6 +11433,7 @@ static int get_options(int *argc_ptr, char ***argv_ptr) {
+@@ -11131,6 +11447,7 @@ static int get_options(int *argc_ptr, char ***argv_ptr) {
  #ifndef _WIN32
    if (mysqld_chroot) set_root(mysqld_chroot);
  #endif
@@ -5165,7 +5196,7 @@ index 3f94e768956..a7c2475e3da 100644
    if (fix_paths()) return 1;
  
    /*
-@@ -11184,6 +11487,11 @@ static void set_server_version(void) {
+@@ -11184,6 +11501,11 @@ static void set_server_version(void) {
  #ifndef NDEBUG
    if (!strstr(MYSQL_SERVER_SUFFIX_STR, "-debug"))
      end = my_stpcpy(end, "-debug");
@@ -5177,7 +5208,7 @@ index 3f94e768956..a7c2475e3da 100644
  #endif
  #ifdef HAVE_VALGRIND
    if (SERVER_VERSION_LENGTH - (end - server_version) >
-@@ -11795,6 +12103,13 @@ PSI_mutex_key key_monitor_info_run_lock;
+@@ -11795,6 +12117,13 @@ PSI_mutex_key key_monitor_info_run_lock;
  PSI_mutex_key key_LOCK_delegate_connection_mutex;
  PSI_mutex_key key_LOCK_group_replication_connection_mutex;
  
@@ -5191,7 +5222,7 @@ index 3f94e768956..a7c2475e3da 100644
  /* clang-format off */
  static PSI_mutex_info all_server_mutexes[]=
  {
-@@ -11861,6 +12176,12 @@ static PSI_mutex_info all_server_mutexes[]=
+@@ -11861,6 +12190,12 @@ static PSI_mutex_info all_server_mutexes[]=
    { &key_mutex_slave_parallel_pend_jobs, "Relay_log_info::pending_jobs_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_mutex_slave_parallel_worker_count, "Relay_log_info::exit_count_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_mutex_slave_parallel_worker, "Worker_info::jobs_lock", 0, 0, PSI_DOCUMENT_ME},
@@ -5204,7 +5235,7 @@ index 3f94e768956..a7c2475e3da 100644
    { &key_TABLE_SHARE_LOCK_ha_data, "TABLE_SHARE::LOCK_ha_data", 0, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_error_messages, "LOCK_error_messages", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_log_throttle_qni, "LOCK_log_throttle_qni", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
-@@ -11887,7 +12208,7 @@ static PSI_mutex_info all_server_mutexes[]=
+@@ -11887,7 +12222,7 @@ static PSI_mutex_info all_server_mutexes[]=
    { &key_monitor_info_run_lock, "Source_IO_monitor::run_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_delegate_connection_mutex, "LOCK_delegate_connection_mutex", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_group_replication_connection_mutex, "LOCK_group_replication_connection_mutex", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
@@ -5213,7 +5244,7 @@ index 3f94e768956..a7c2475e3da 100644
    { &key_LOCK_global_conn_mem_limit, "LOCK_global_conn_mem_limit", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME}
  };
  /* clang-format on */
-@@ -11906,6 +12227,14 @@ PSI_rwlock_key key_rwlock_Binlog_transmit_delegate_lock;
+@@ -11906,6 +12241,14 @@ PSI_rwlock_key key_rwlock_Binlog_transmit_delegate_lock;
  PSI_rwlock_key key_rwlock_Binlog_relay_IO_delegate_lock;
  PSI_rwlock_key key_rwlock_resource_group_mgr_map_lock;
  
@@ -5228,7 +5259,7 @@ index 3f94e768956..a7c2475e3da 100644
  /* clang-format off */
  static PSI_rwlock_info all_server_rwlocks[]=
  {
-@@ -11922,6 +12251,13 @@ static PSI_rwlock_info all_server_rwlocks[]=
+@@ -11922,6 +12265,13 @@ static PSI_rwlock_info all_server_rwlocks[]=
    { &key_rwlock_Trans_delegate_lock, "Trans_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_Server_state_delegate_lock, "Server_state_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_Binlog_storage_delegate_lock, "Binlog_storage_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
@@ -5242,7 +5273,7 @@ index 3f94e768956..a7c2475e3da 100644
    { &key_rwlock_receiver_sid_lock, "gtid_retrieved", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_rpl_filter_lock, "rpl_filter_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_channel_to_filter_lock, "channel_to_filter_lock", 0, 0, PSI_DOCUMENT_ME},
-@@ -11960,6 +12296,12 @@ PSI_cond_key key_cond_slave_worker_hash;
+@@ -11960,6 +12310,12 @@ PSI_cond_key key_cond_slave_worker_hash;
  PSI_cond_key key_monitor_info_run_cond;
  PSI_cond_key key_COND_delegate_connection_cond_var;
  PSI_cond_key key_COND_group_replication_connection_cond_var;
@@ -5255,7 +5286,7 @@ index 3f94e768956..a7c2475e3da 100644
  
  /* clang-format off */
  static PSI_cond_info all_server_conds[]=
-@@ -11997,6 +12339,12 @@ static PSI_cond_info all_server_conds[]=
+@@ -11997,6 +12353,12 @@ static PSI_cond_info all_server_conds[]=
    { &key_cond_slave_parallel_pend_jobs, "Relay_log_info::pending_jobs_cond", 0, 0, PSI_DOCUMENT_ME},
    { &key_cond_slave_parallel_worker, "Worker_info::jobs_cond", 0, 0, PSI_DOCUMENT_ME},
    { &key_cond_mta_gaq, "Relay_log_info::mta_gaq_cond", 0, 0, PSI_DOCUMENT_ME},
@@ -5269,7 +5300,7 @@ index 3f94e768956..a7c2475e3da 100644
    { &key_COND_compress_gtid_table, "COND_compress_gtid_table", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_commit_order_manager_cond, "Commit_order_manager::m_workers.cond", 0, 0, PSI_DOCUMENT_ME},
 diff --git a/sql/mysqld.h b/sql/mysqld.h
-index 8b5a842b54b..9f53718f532 100644
+index 8b5a842b54b..32ac050fe84 100644
 --- a/sql/mysqld.h
 +++ b/sql/mysqld.h
 @@ -180,6 +180,9 @@ extern MYSQL_PLUGIN_IMPORT std::atomic<int32>
@@ -5305,7 +5336,7 @@ index 8b5a842b54b..9f53718f532 100644
  #endif /* HAVE_PSI_INTERFACE */
  
  /*
-@@ -698,6 +717,56 @@ extern MYSQL_PLUGIN_IMPORT char pidfile_name[];
+@@ -698,6 +717,59 @@ extern MYSQL_PLUGIN_IMPORT char pidfile_name[];
  
  #define mysql_tmpdir (my_tmpdir(&mysql_tmpdir_list))
  
@@ -5326,6 +5357,9 @@ index 8b5a842b54b..9f53718f532 100644
 +extern ulong opt_binlog_archive_expire_seconds;
 +extern ulonglong opt_binlog_archive_period;
 +extern ulong opt_binlog_archive_parallel_workers;
++extern bool opt_binlog_archive_replica;
++extern char *opt_binlog_archive_replica_source_log_file;
++extern ulong opt_binlog_archive_replica_source_log_pos;
 +extern char *opt_consistent_snapshot_archive_dir;
 +extern bool opt_consistent_snapshot_persistent_on_objstore;
 +extern bool opt_initialize_use_objstore;
@@ -5340,15 +5374,15 @@ index 8b5a842b54b..9f53718f532 100644
 +extern char *opt_recovery_consistent_snapshot_tmpdir;
 +extern bool opt_recovery_consistent_snapshot_only;
 +extern char *opt_recovery_consistent_snapshot_timestamp;
-+extern bool opt_initialize_from_objstore;
-+extern char *opt_initialize_objstore_provider;
-+extern char *opt_initialize_objstore_region;
-+extern char *opt_initialize_objstore_endpoint;
-+extern bool opt_initialize_objstore_use_https;
-+extern char *opt_initialize_objstore_bucket;
-+extern char *opt_initialize_repo_objstore_id;
-+extern char *opt_initialize_branch_objstore_id;
-+extern bool opt_initialize_smartengine_objectstore_data;
++extern bool opt_initialize_from_source_objectstore;
++extern char *opt_source_objectstore_provider;
++extern char *opt_source_objectstore_region;
++extern char *opt_source_objectstore_endpoint;
++extern bool opt_source_objectstore_use_https;
++extern char *opt_source_objectstore_bucket;
++extern char *opt_source_objectstore_repo_id;
++extern char *opt_source_objectstore_branch_id;
++extern bool opt_source_objectstore_smartengine_data;
 +
 +extern MYSQL_PLUGIN_IMPORT bool opt_serverless;
 +extern MYSQL_PLUGIN_IMPORT bool opt_table_on_objstore;
@@ -6647,7 +6681,7 @@ index b11348b5b48..346978f5c55 100644
       Forward iterators to initiate traversing of a map.
  
 diff --git a/sql/rpl_replica.cc b/sql/rpl_replica.cc
-index 57dfb700ea5..c2817e34ad5 100644
+index 57dfb700ea5..8361ce91d56 100644
 --- a/sql/rpl_replica.cc
 +++ b/sql/rpl_replica.cc
 @@ -650,6 +650,21 @@ bool start_slave(THD *thd) {
@@ -6882,7 +6916,21 @@ index 57dfb700ea5..c2817e34ad5 100644
    // Value-initialization, to avoid compiler warnings on push_back.
    Slave_job_group job_worker = Slave_job_group();
  
-@@ -6510,6 +6649,10 @@ bool mta_checkpoint_routine(Relay_log_info *rli, bool force) {
+@@ -6343,6 +6482,13 @@ bool mts_recovery_groups(Relay_log_info *rli) {
+ 
+         if (ev->get_type_code() == binary_log::ROTATE_EVENT ||
+             ev->get_type_code() == binary_log::FORMAT_DESCRIPTION_EVENT ||
++#ifdef WESQL_CLUSTER
++            ev->get_type_code() ==
++                binary_log::PREVIOUS_CONSENSUS_INDEX_LOG_EVENT ||
++            ev->get_type_code() == binary_log::CONSENSUS_LOG_EVENT ||
++            ev->get_type_code() == binary_log::CONSENSUS_CLUSTER_INFO_EVENT ||
++            ev->get_type_code() == binary_log::CONSENSUS_EMPTY_EVENT ||
++#endif
+             ev->get_type_code() == binary_log::PREVIOUS_GTIDS_LOG_EVENT) {
+           delete ev;
+           ev = nullptr;
+@@ -6510,6 +6656,10 @@ bool mta_checkpoint_routine(Relay_log_info *rli, bool force) {
    if (rli->gaq->lwm.group_relay_log_name[0] != 0)
      rli->set_group_relay_log_name(rli->gaq->lwm.group_relay_log_name);
  
@@ -6893,7 +6941,7 @@ index 57dfb700ea5..c2817e34ad5 100644
    /*
       todo: uncomment notifies when UNTIL will be supported
  
-@@ -7090,6 +7233,18 @@ extern "C" void *handle_slave_sql(void *arg) {
+@@ -7090,6 +7240,18 @@ extern "C" void *handle_slave_sql(void *arg) {
        goto err;
      }
  
@@ -6912,7 +6960,7 @@ index 57dfb700ea5..c2817e34ad5 100644
      /* MTS: starting the worker pool */
      if (slave_start_workers(rli, rli->opt_replica_parallel_workers,
                              &mts_inited) != 0) {
-@@ -7159,6 +7314,15 @@ extern "C" void *handle_slave_sql(void *arg) {
+@@ -7159,6 +7321,15 @@ extern "C" void *handle_slave_sql(void *arg) {
      rli->trans_retries = 0;  // start from "no error"
      DBUG_PRINT("info", ("rli->trans_retries: %lu", rli->trans_retries));
  
@@ -6928,7 +6976,7 @@ index 57dfb700ea5..c2817e34ad5 100644
      if (applier_reader.open(&errmsg)) {
        rli->report(ERROR_LEVEL, ER_REPLICA_FATAL_ERROR, "%s", errmsg);
        goto err;
-@@ -7261,8 +7425,23 @@ extern "C" void *handle_slave_sql(void *arg) {
+@@ -7261,8 +7432,23 @@ extern "C" void *handle_slave_sql(void *arg) {
          saved_skip = 0;
        }
  
@@ -6952,7 +7000,7 @@ index 57dfb700ea5..c2817e34ad5 100644
        ev = applier_reader.read_next_event();
        mysql_mutex_unlock(&rli->data_lock);
  
-@@ -7346,6 +7525,22 @@ extern "C" void *handle_slave_sql(void *arg) {
+@@ -7346,6 +7532,22 @@ extern "C" void *handle_slave_sql(void *arg) {
      thd->reset_query();
      thd->reset_db(NULL_CSTR);
  
@@ -6975,7 +7023,427 @@ index 57dfb700ea5..c2817e34ad5 100644
      /*
        Pause the SQL thread and wait for 'continue_to_stop_sql_thread'
        signal to continue to shutdown the SQL thread.
-@@ -8638,6 +8833,14 @@ int flush_relay_logs(Master_info *mi, THD *thd) {
+@@ -8247,6 +8449,419 @@ end:
+   return res;
+ }
+ 
++/**
++ * @brief Store an event from the object store into the relay log.
++ *
++ * @param mi
++ * @param buf
++ * @param event_len
++ * @param do_flush_mi
++ * @param event_pos Mark that this event with "event_pos=0", so the slave should
++ not increment master's binlog position (mi->master_log_pos)
++ * @return QUEUE_EVENT_RESULT
++ */
++QUEUE_EVENT_RESULT queue_event_from_objstore(Master_info *mi, const char *buf,
++                                             ulong event_len,
++                                             bool do_flush_mi) {
++  QUEUE_EVENT_RESULT res = QUEUE_EVENT_OK;
++  ulong inc_pos = 0;
++  Relay_log_info *rli = mi->rli;
++  mysql_mutex_t *log_lock = rli->relay_log.get_log_lock();
++  ulong s_id;
++  int lock_count = 0;
++
++  enum_binlog_checksum_alg checksum_alg =
++      mi->checksum_alg_before_fd != binary_log::BINLOG_CHECKSUM_ALG_UNDEF
++          ? mi->checksum_alg_before_fd
++          : mi->rli->relay_log.relay_log_checksum_alg;
++
++  const char *save_buf =
++      nullptr;  // needed for checksumming the fake Rotate event
++  char rot_buf[LOG_EVENT_HEADER_LEN + Binary_log_event::ROTATE_HEADER_LEN +
++               FN_REFLEN];
++  Gtid gtid = {0, 0};
++  ulonglong immediate_commit_timestamp = 0;
++  ulonglong original_commit_timestamp = 0;
++  bool info_error{false};
++  binary_log::Log_event_basic_info log_event_info;
++  ulonglong compressed_transaction_bytes = 0;
++  ulonglong uncompressed_transaction_bytes = 0;
++  auto compression_type = binary_log::transaction::compression::type::NONE;
++  Log_event_type event_type = (Log_event_type)buf[EVENT_TYPE_OFFSET];
++
++  assert(checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_OFF ||
++         checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_UNDEF ||
++         checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_CRC32);
++
++  DBUG_TRACE;
++
++  /*
++    Pause the binlog archive replica relay thread execution and wait for
++    'continue_queuing_event' signal to continue IO thread execution.
++  */
++  DBUG_SIGNAL_WAIT_FOR(current_thd, "pause_on_queuing_event_from_objstore",
++                       "reached_pause_on_queue_event_from_objstore",
++                       "continue_queuing_event_from_objstore");
++
++  if (event_type == binary_log::FORMAT_DESCRIPTION_EVENT) {
++    checksum_alg = Log_event_footer::get_checksum_alg(buf, event_len);
++  }
++
++  assert(mi->rli->relay_log.relay_log_checksum_alg !=
++         binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
++
++  binary_log_debug::debug_checksum_test =
++      DBUG_EVALUATE_IF("simulate_checksum_test_failure", true, false);
++  if (Log_event_footer::event_checksum_test(
++          const_cast<uchar *>(pointer_cast<const uchar *>(buf)), event_len,
++          checksum_alg)) {
++    mi->report(ERROR_LEVEL, ER_NETWORK_READ_EVENT_CHECKSUM_FAILURE, "%s",
++               ER_THD(current_thd, ER_NETWORK_READ_EVENT_CHECKSUM_FAILURE));
++    goto err;
++  }
++
++  /*
++    From now, and up to finishing queuing the event, no other thread is allowed
++    to write to the relay log, or to rotate it.
++  */
++  mysql_mutex_lock(log_lock);
++  assert(lock_count == 0);
++  lock_count = 1;
++
++  if (mi->get_mi_description_event() == nullptr) {
++    LogErr(ERROR_LEVEL, ER_RPL_REPLICA_QUEUE_EVENT_FAILED_INVALID_CONFIGURATION,
++           mi->get_channel());
++    goto err;
++  }
++
++  std::tie(info_error, log_event_info) = extract_log_event_basic_info(
++      buf, event_len, mi->get_mi_description_event());
++  if (info_error || mi->transaction_parser.feed_event(log_event_info, true)) {
++    LogErr(WARNING_LEVEL,
++           ER_RPL_REPLICA_IO_THREAD_DETECTED_UNEXPECTED_EVENT_SEQUENCE,
++           mi->get_master_log_name(), mi->get_master_log_pos());
++  }
++
++  switch (event_type) {
++    case binary_log::STOP_EVENT:
++      do_flush_mi = false;
++      goto end;
++    case binary_log::ROTATE_EVENT: {
++      Format_description_log_event *fde = mi->get_mi_description_event();
++      enum_binlog_checksum_alg fde_checksum_alg = fde->footer()->checksum_alg;
++      if (fde_checksum_alg != checksum_alg)
++        fde->footer()->checksum_alg = checksum_alg;
++      Rotate_log_event rev(buf, fde);
++      fde->footer()->checksum_alg = fde_checksum_alg;
++
++      if (unlikely(process_io_rotate(mi, &rev))) {
++        // This error will be reported later at handle_slave_io().
++        goto err;
++      }
++      /*
++         Checksum special cases for the fake Rotate (R_f) event caused by the
++         protocol of events generation and serialization in RL where Rotate of
++         master is queued right next to FD of slave. Since it's only FD that
++         carries the alg desc of FD_s has to apply to R_m. Two special rules
++         apply only to the first R_f which comes in before any FD_m. The 2nd R_f
++         should be compatible with the FD_s that must have taken over the last
++         seen FD_m's (A).
++
++         RSC_1: If OM \and fake Rotate \and slave is configured to
++                to compute checksum for its first FD event for RL
++                the fake Rotate gets checksummed here.
++      */
++      if (uint4korr(&buf[0]) == 0 &&
++          checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_OFF &&
++          mi->rli->relay_log.relay_log_checksum_alg !=
++              binary_log::BINLOG_CHECKSUM_ALG_OFF) {
++        ha_checksum rot_crc = checksum_crc32(0L, nullptr, 0);
++        event_len += BINLOG_CHECKSUM_LEN;
++        memcpy(rot_buf, buf, event_len - BINLOG_CHECKSUM_LEN);
++        int4store(&rot_buf[EVENT_LEN_OFFSET],
++                  uint4korr(rot_buf + EVENT_LEN_OFFSET) + BINLOG_CHECKSUM_LEN);
++        rot_crc = checksum_crc32(rot_crc, (const uchar *)rot_buf,
++                                 event_len - BINLOG_CHECKSUM_LEN);
++        int4store(&rot_buf[event_len - BINLOG_CHECKSUM_LEN], rot_crc);
++        assert(event_len == uint4korr(&rot_buf[EVENT_LEN_OFFSET]));
++        assert(mi->get_mi_description_event()->common_footer->checksum_alg ==
++               mi->rli->relay_log.relay_log_checksum_alg);
++        /* the first one */
++        assert(mi->checksum_alg_before_fd !=
++               binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
++        save_buf = buf;
++        buf = rot_buf;
++      } else
++          /*
++            RSC_2: If NM \and fake Rotate \and slave does not compute checksum
++            the fake Rotate's checksum is stripped off before relay-logging.
++          */
++          if (uint4korr(&buf[0]) == 0 &&
++              checksum_alg != binary_log::BINLOG_CHECKSUM_ALG_OFF &&
++              mi->rli->relay_log.relay_log_checksum_alg ==
++                  binary_log::BINLOG_CHECKSUM_ALG_OFF) {
++        event_len -= BINLOG_CHECKSUM_LEN;
++        memcpy(rot_buf, buf, event_len);
++        int4store(&rot_buf[EVENT_LEN_OFFSET],
++                  uint4korr(rot_buf + EVENT_LEN_OFFSET) - BINLOG_CHECKSUM_LEN);
++        assert(event_len == uint4korr(&rot_buf[EVENT_LEN_OFFSET]));
++        assert(mi->get_mi_description_event()->common_footer->checksum_alg ==
++               mi->rli->relay_log.relay_log_checksum_alg);
++        /* the first one */
++        assert(mi->checksum_alg_before_fd !=
++               binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
++        save_buf = buf;
++        buf = rot_buf;
++      }
++      inc_pos = 0;
++      break;
++    }
++    case binary_log::FORMAT_DESCRIPTION_EVENT: {
++      /*
++        Create an event, and save it (when we rotate the relay log, we will have
++        to write this event again).
++      */
++      mi->checksum_alg_before_fd = binary_log::BINLOG_CHECKSUM_ALG_UNDEF;
++      Format_description_log_event *new_fdle;
++      Log_event *ev = nullptr;
++      if (binlog_event_deserialize(reinterpret_cast<const unsigned char *>(buf),
++                                   event_len, mi->get_mi_description_event(),
++                                   true, &ev) != Binlog_read_error::SUCCESS) {
++        // This error will be reported later at handle_slave_io().
++        goto err;
++      }
++
++      new_fdle = dynamic_cast<Format_description_log_event *>(ev);
++      if (new_fdle->common_footer->checksum_alg ==
++          binary_log::BINLOG_CHECKSUM_ALG_UNDEF)
++        new_fdle->common_footer->checksum_alg =
++            binary_log::BINLOG_CHECKSUM_ALG_OFF;
++
++      mi->set_mi_description_event(new_fdle);
++
++      /* installing new value of checksum Alg for relay log */
++      mi->rli->relay_log.relay_log_checksum_alg =
++          new_fdle->common_footer->checksum_alg;
++
++      /*
++         Though this does some conversion to the slave's format, this will
++         preserve the master's binlog format version, and number of event types.
++      */
++      /*
++         If the event was not requested by the slave (the slave did not ask for
++         it), i.e. has end_log_pos=0, we do not increment
++         mi->get_master_log_pos()
++      */
++           /*
++         If the event was not requested by the slave (the slave did not ask for
++         it), i.e. has end_log_pos=0, we do not increment
++         mi->get_master_log_pos()
++      */
++      inc_pos = uint4korr(buf + LOG_POS_OFFSET) ? event_len : 0;
++    } break;
++
++    case binary_log::HEARTBEAT_LOG_EVENT: 
++    case binary_log::HEARTBEAT_LOG_EVENT_V2: {
++      assert(false);
++    } break;
++    case binary_log::PREVIOUS_GTIDS_LOG_EVENT: {
++      /*
++        This event does not have any meaning for the slave and
++        was just sent to show the slave the master is making
++        progress and avoid possible deadlocks.
++        So at this point, the event is replaced by a rotate
++        event what will make the slave to update what it knows
++        about the master's coordinates.
++      */
++      inc_pos = 0;
++      mysql_mutex_lock(&mi->data_lock);
++      mi->set_master_log_pos(mi->get_master_log_pos() + event_len);
++      mysql_mutex_unlock(&mi->data_lock);
++
++      if (write_rotate_to_master_pos_into_relay_log(
++              mi->info_thd, mi, true /* force_flush_mi_info */))
++        goto err;
++
++      do_flush_mi = false; /* write_rotate_... above flushed master info */
++      goto end;
++    } break;
++
++    case binary_log::TRANSACTION_PAYLOAD_EVENT: {
++      binary_log::Transaction_payload_event tpe(buf,
++                                                mi->get_mi_description_event());
++      compression_type = tpe.get_compression_type();
++      compressed_transaction_bytes = tpe.get_payload_size();
++      uncompressed_transaction_bytes = tpe.get_uncompressed_size();
++      auto gtid_monitoring_info = mi->get_gtid_monitoring_info();
++      gtid_monitoring_info->update(compression_type,
++                                   compressed_transaction_bytes,
++                                   uncompressed_transaction_bytes);
++      inc_pos = event_len;
++      break;
++    }
++
++    case binary_log::GTID_LOG_EVENT: {
++      /*
++        This can happen if the master uses GTID_MODE=OFF_PERMISSIVE, and
++        sends GTID events to the slave. A possible scenario is that user
++        does not follow the upgrade procedure for GTIDs, and creates a
++        topology like A->B->C, where A uses GTID_MODE=ON_PERMISSIVE, B
++        uses GTID_MODE=OFF_PERMISSIVE, and C uses GTID_MODE=OFF.  Each
++        connection is allowed, but the master A will generate GTID
++        transactions which will be sent through B to C.  Then C will hit
++        this error.
++      */
++      if (global_gtid_mode.get() == Gtid_mode::OFF) {
++        mi->report(
++            ERROR_LEVEL, ER_CANT_REPLICATE_GTID_WITH_GTID_MODE_OFF,
++            ER_THD(current_thd, ER_CANT_REPLICATE_GTID_WITH_GTID_MODE_OFF),
++            mi->get_master_log_name(), mi->get_master_log_pos());
++        goto err;
++      }
++      Gtid_log_event gtid_ev(buf, mi->get_mi_description_event());
++      if (!gtid_ev.is_valid()) goto err;
++      rli->get_sid_lock()->rdlock();
++      gtid.sidno = gtid_ev.get_sidno(rli->get_gtid_set()->get_sid_map());
++      rli->get_sid_lock()->unlock();
++      if (gtid.sidno < 0) goto err;
++      gtid.gno = gtid_ev.get_gno();
++      original_commit_timestamp = gtid_ev.original_commit_timestamp;
++      immediate_commit_timestamp = gtid_ev.immediate_commit_timestamp;
++      compressed_transaction_bytes = uncompressed_transaction_bytes =
++          gtid_ev.transaction_length - gtid_ev.get_event_length();
++
++      inc_pos = event_len;
++    } break;
++
++    case binary_log::ANONYMOUS_GTID_LOG_EVENT: {
++      if (mi->rli->m_assign_gtids_to_anonymous_transactions_info
++                   .get_type() == Assign_gtids_to_anonymous_transactions_info::
++                                      enum_type::AGAT_OFF) {
++        if (global_gtid_mode.get() == Gtid_mode::ON) {
++          mi->report(ERROR_LEVEL, ER_CANT_REPLICATE_ANONYMOUS_WITH_GTID_MODE_ON,
++                     ER_THD(current_thd,
++                            ER_CANT_REPLICATE_ANONYMOUS_WITH_GTID_MODE_ON),
++                     mi->get_master_log_name(), mi->get_master_log_pos());
++          goto err;
++        }
++      }
++      /*
++       save the original_commit_timestamp and the immediate_commit_timestamp to
++       be later used for monitoring
++      */
++      Gtid_log_event anon_gtid_ev(buf, mi->get_mi_description_event());
++      original_commit_timestamp = anon_gtid_ev.original_commit_timestamp;
++      immediate_commit_timestamp = anon_gtid_ev.immediate_commit_timestamp;
++      compressed_transaction_bytes = uncompressed_transaction_bytes =
++          anon_gtid_ev.transaction_length - anon_gtid_ev.get_event_length();
++    }
++      [[fallthrough]];
++    default:
++      inc_pos = event_len;
++      break;
++  }
++  s_id = uint4korr(buf + SERVER_ID_OFFSET);
++
++  /*
++    If server_id_bits option is set we need to mask out irrelevant bits
++    when checking server_id, but we still put the full unmasked server_id
++    into the Relay log so that it can be accessed when applying the event
++  */
++  s_id &= opt_server_id_mask;
++
++  if ((s_id == ::server_id && !mi->rli->replicate_same_server_id) ||
++      (mi->ignore_server_ids->dynamic_ids.size() > 0 &&
++       mi->shall_ignore_server_id(s_id) &&
++       /* everything is filtered out from non-master */
++       (s_id != mi->master_id ||
++        /* for the master meta information is necessary */
++        (event_type != binary_log::FORMAT_DESCRIPTION_EVENT &&
++         event_type != binary_log::ROTATE_EVENT)))) {
++    if (!(s_id == ::server_id && !mi->rli->replicate_same_server_id) ||
++        (event_type != binary_log::FORMAT_DESCRIPTION_EVENT &&
++         event_type != binary_log::ROTATE_EVENT &&
++         event_type != binary_log::STOP_EVENT)) {
++      rli->relay_log.lock_binlog_end_pos();
++      mi->set_master_log_pos(mi->get_master_log_pos() + inc_pos);
++      memcpy(rli->ign_master_log_name_end, mi->get_master_log_name(),
++             FN_REFLEN);
++      assert(rli->ign_master_log_name_end[0]);
++      rli->ign_master_log_pos_end = mi->get_master_log_pos();
++      // the slave SQL thread needs to re-check
++      rli->relay_log.update_binlog_end_pos(false /*need_lock*/);
++      rli->relay_log.unlock_binlog_end_pos();
++    }
++    DBUG_PRINT(
++        "info",
++        ("source_log_pos: %lu, event originating from %u server, ignored",
++         (ulong)mi->get_master_log_pos(), uint4korr(buf + SERVER_ID_OFFSET)));
++  } else {
++    bool is_error = false;
++    /* write the event to the relay log */
++    if (likely(rli->relay_log.write_buffer(buf, event_len, mi) == 0)) {
++      DBUG_SIGNAL_WAIT_FOR(
++          current_thd, "pause_on_queue_event_from_objstore_after_write_buffer",
++          "receiver_reached_pause_on_queue_event_from_objstore",
++          "receiver_continue_queuing_event_from_objstore");
++      mysql_mutex_lock(&mi->data_lock);
++      lock_count = 2;
++      mi->set_master_log_pos(mi->get_master_log_pos() + inc_pos);
++      DBUG_PRINT("info",
++                 ("source_log_pos: %lu", (ulong)mi->get_master_log_pos()));
++      if (event_type == binary_log::GTID_LOG_EVENT ||
++          event_type == binary_log::ANONYMOUS_GTID_LOG_EVENT) {
++        // set the timestamp for the start time of queueing this transaction
++        mi->started_queueing(gtid, original_commit_timestamp,
++                             immediate_commit_timestamp);
++
++        auto gtid_monitoring_info = mi->get_gtid_monitoring_info();
++        gtid_monitoring_info->update(
++            binary_log::transaction::compression::type::NONE,
++            compressed_transaction_bytes, uncompressed_transaction_bytes);
++      }
++    } else {
++      mi->transaction_parser.rollback();
++      is_error = true;
++    }
++
++    if (save_buf != nullptr) buf = save_buf;
++    if (is_error) {
++      // This error will be reported later at handle_slave_io().
++      goto err;
++    }
++  }
++  goto end;
++
++err:
++  res = QUEUE_EVENT_ERROR_QUEUING;
++
++end:
++  if (res == QUEUE_EVENT_OK && do_flush_mi) {
++    /*
++      Take a ride in the already locked LOCK_log to flush master info.
++
++      JAG: TODO: Notice that we could only flush master info if we are
++                 not in the middle of a transaction. Having a proper
++                 relay log recovery can allow us to do this.
++    */
++    if (lock_count == 1) {
++      mysql_mutex_lock(&mi->data_lock);
++      lock_count = 2;
++    }
++
++    if (flush_master_info(mi, true /*force*/, lock_count == 0 /*need_lock*/,
++                          false /*flush_relay_log*/, mi->is_gtid_only_mode()))
++      res = QUEUE_EVENT_ERROR_FLUSHING_INFO;
++    if (mi->is_gtid_only_mode()) {
++      mi->update_flushed_relay_log_info();
++    }
++  }
++  if (lock_count >= 2) mysql_mutex_unlock(&mi->data_lock);
++  if (lock_count >= 1) mysql_mutex_unlock(log_lock);
++  DBUG_PRINT("info", ("queue result: %d", res));
++  return res;
++}
++
+ /**
+   Hook to detach the active VIO before closing a connection handle.
+ 
+@@ -8638,6 +9253,14 @@ int flush_relay_logs(Master_info *mi, THD *thd) {
    if (mi) {
      Relay_log_info *rli = mi->rli;
      if (rli->inited) {
@@ -6990,7 +7458,7 @@ index 57dfb700ea5..c2817e34ad5 100644
        // Rotate immediately if one is true:
        if ((!is_group_replication_plugin_loaded() ||  // GR is disabled
             !mi->transaction_parser
-@@ -9331,6 +9534,16 @@ bool reset_slave_cmd(THD *thd) {
+@@ -9331,6 +9954,16 @@ bool reset_slave_cmd(THD *thd) {
        return true;
      }
  
@@ -7007,7 +7475,7 @@ index 57dfb700ea5..c2817e34ad5 100644
      if (mi)
        res = reset_slave(thd, mi, thd->lex->reset_slave_info.all);
      else if (strcmp(channel_map.get_default_channel(), lex->mi.channel))
-@@ -10997,6 +11210,14 @@ bool change_master_cmd(THD *thd) {
+@@ -10997,6 +11630,14 @@ bool change_master_cmd(THD *thd) {
      goto err;
    }
  
@@ -7022,6 +7490,20 @@ index 57dfb700ea5..c2817e34ad5 100644
    if (channel_map.is_group_replication_channel_name(lex->mi.channel, true)) {
      /*
        If the chosen name is for group_replication_applier channel we allow the
+diff --git a/sql/rpl_replica.h b/sql/rpl_replica.h
+index ee4add37b8f..83d1b7b7314 100644
+--- a/sql/rpl_replica.h
++++ b/sql/rpl_replica.h
+@@ -595,6 +595,9 @@ typedef enum {
+ } QUEUE_EVENT_RESULT;
+ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
+                                ulong event_len, bool flush_mi = true);
++QUEUE_EVENT_RESULT queue_event_from_objstore(Master_info *mi, const char *buf,
++                                             ulong event_len,
++                                             bool do_flush_mi = true);
+ 
+ int heartbeat_queue_event(bool is_valid, Master_info *&mi,
+                           std::string binlog_name, uint64_t position,
 diff --git a/sql/rpl_rli.cc b/sql/rpl_rli.cc
 index 438c58fa82b..ed1e814d81a 100644
 --- a/sql/rpl_rli.cc
@@ -8841,7 +9323,7 @@ index 6c3dd85db23..8c43a67cd52 100644
          | HASH_SYM
          | HISTOGRAM_SYM
 diff --git a/sql/sys_vars.cc b/sql/sys_vars.cc
-index b16cb1830e4..b76c7e5e413 100644
+index b16cb1830e4..9924d84a1b7 100644
 --- a/sql/sys_vars.cc
 +++ b/sql/sys_vars.cc
 @@ -93,11 +93,13 @@
@@ -8937,7 +9419,7 @@ index b16cb1830e4..b76c7e5e413 100644
  
  static bool check_set_require_row_format(sys_var *, THD *thd, set_var *var) {
    /*
-@@ -7718,3 +7764,297 @@ static Sys_var_enum Sys_explain_format(
+@@ -7718,3 +7764,306 @@ static Sys_var_enum Sys_explain_format(
      SESSION_VAR(explain_format), CMD_LINE(OPT_ARG), explain_format_names,
      DEFAULT(static_cast<ulong>(Explain_format_type::TRADITIONAL)),
      NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(nullptr));
@@ -8996,6 +9478,24 @@ index b16cb1830e4..b76c7e5e413 100644
 +    "object store in parallel",
 +    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive_parallel_workers),
 +    CMD_LINE(REQUIRED_ARG), VALID_RANGE(1, MTS_MAX_WORKERS), DEFAULT(4),
++    BLOCK_SIZE(1));
++
++static Sys_var_bool Sys_binlog_archive_replica(
++    "binlog_archive_replica", "Indicate if binlog archive replica enable.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive_replica), CMD_LINE(OPT_ARG),
++    DEFAULT(false));
++
++static Sys_var_charptr Sys_binlog_archive_replica_source_log_file(
++    "binlog_archive_replica_source_log_file",
++    "The start source binlog file for snapshot archive replica",
++    GLOBAL_VAR(opt_binlog_archive_replica_source_log_file),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(nullptr));
++
++static Sys_var_ulong Sys_binlog_archive_replica_source_log_pos(
++    "binlog_archive_replica_source_log_pos",
++    "The start source binlog file position for snapshot archive replica",
++    GLOBAL_VAR(opt_binlog_archive_replica_source_log_pos),
++    CMD_LINE(REQUIRED_ARG), VALID_RANGE(1, ULONG_MAX), DEFAULT(4),
 +    BLOCK_SIZE(1));
 +
 +static Sys_var_bool Sys_snapshot_archive(
@@ -9089,74 +9589,65 @@ index b16cb1830e4..b76c7e5e413 100644
 +    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(nullptr));
 +
 +static Sys_var_bool Sys_initialize_from_objstore(
-+    "initialize_from_objectstore",
-+    "Initialzie instance using binlog and snapshot from object "
++    "initialize_from_source_objectstore",
++    "Initialzie instance using binlog and snapshot from source object "
 +    "store.",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_from_objstore),
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_from_source_objectstore),
 +    CMD_LINE(OPT_ARG), DEFAULT(false));
 +
 +static Sys_var_charptr Sys_initialize_objstore_provider(
-+    "initialize_objectstore_provider",
-+    "The provider of object store as the source of data during instance."
-+    "If initialize_from_objectstore is true, it must not be "
-+    "empty.",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_objstore_provider),
++    "source_objectstore_provider",
++    "The provider of object store as the source of data during instance.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_provider),
 +    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("local"));
 +
 +static Sys_var_charptr Sys_initialize_objstore_region(
-+    "initialize_objectstore_region",
++    "source_objectstore_region",
 +    "The region of object store as the source of data during instance "
-+    "initialization."
-+    "If initialize_from_objectstore is true, it must not be "
-+    "empty.",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_objstore_region),
++    "initialization.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_region),
 +    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(".local_objectstore_region_1"));
 +
 +static Sys_var_charptr Sys_initialize_objstore_endpoint(
-+    "initialize_objectstore_endpoint",
++    "source_objectstore_endpoint",
 +    "The endpoint of object store as the source of data during instance "
 +    "initialization. "
-+    "If initialize_from_objectstore is true, user can specify the endpoint of "
-+    "object store. "
 +    "Ususally it's need to provide on non-AWS environment.",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_objstore_endpoint),
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_endpoint),
 +    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(nullptr));
 +
 +static Sys_var_bool Sys_initialize_objstore_use_https(
-+    "initialize_objectstore_use_https",
-+    "If initialize_from_objectstore is true, whether using https to connect to "
-+    "objstore or not "
++    "source_objectstore_use_https",
++    "Whether using https to connect to objstore or not "
 +    "as the source of data during instance initialization",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_objstore_use_https),
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_use_https),
 +    CMD_LINE(OPT_ARG), DEFAULT(false));
 +
 +static Sys_var_charptr Sys_initialize_objstore_bucket(
-+    "initialize_objectstore_bucket",
++    "source_objectstore_bucket",
 +    "The object store bucket to store record as the source of data during "
-+    "instance initialization. If initialize_from_objectstore is true, it must "
-+    "not be empty.",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_objstore_bucket),
++    "instance initialization. ",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_bucket),
 +    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("objectstore_bucket_1"));
 +
 +static Sys_var_charptr Sys_initialize_repo_objstore_id(
-+    "initialize_repo_objectstore_id",
-+    "The repo identifier for data directory of source cluster in object store. "
-+    "If initialize_from_objectstore is true, it must not be empty.",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_repo_objstore_id),
++    "source_objectstore_repo_id",
++    "The repo identifier for data directory of source cluster in object store. ",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_repo_id),
 +    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("wesql_serverless_repo"));
 +
 +static Sys_var_charptr Sys_initialize_branch_objstore_id(
-+    "initialize_branch_objectstore_id",
++    "source_objectstore_branch_id",
 +    "The branch identifier for data directory of source cluster in object store.",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_branch_objstore_id),
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_branch_id),
 +    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("main"));
 +
-+static Sys_var_bool Sys_initialize_smartengine_objectstore_data(
-+    "initialize_smartengine_objectstore_data",
-+    "If initialize_from_objectstore is true, whether initialize smartengine "
++static Sys_var_bool Sys_source_objectstore_smartengine_data(
++    "source_objectstore_smartengine_data",
++    "Whether initialize smartengine "
 +    "object store data from source cluster object store.",
 +    READ_ONLY NON_PERSIST
-+        GLOBAL_VAR(opt_initialize_smartengine_objectstore_data),
++        GLOBAL_VAR(opt_source_objectstore_smartengine_data),
 +    CMD_LINE(OPT_ARG), DEFAULT(false));
 +
 +static Sys_var_bool Sys_enable_serverless(

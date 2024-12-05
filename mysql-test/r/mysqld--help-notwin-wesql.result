@@ -113,9 +113,19 @@ The following options may be given as the first argument:
  If non-zero, persistent binlog will be purged after
  binlog_archive_expire_seconds seconds. If zero, all
  binlog will be retained.
+ --binlog-archive-parallel-workers=# 
+ Number of worker threads for uploading binlog slice to
+ object store in parallel
  --binlog-archive-period=# 
  binlog persist to object store at the given period
  milliseconds
+ --binlog-archive-replica 
+ Indicate if binlog archive replica enable.
+ --binlog-archive-replica-source-log-file=name 
+ The start source binlog file for snapshot archive replica
+ --binlog-archive-replica-source-log-pos=# 
+ The start source binlog file position for snapshot
+ archive replica
  --binlog-archive-slice-max-size=# 
  Binary log events will be persistent archived
  automatically when the size exceeds this value.
@@ -545,45 +555,12 @@ The following options may be given as the first argument:
  --init-slave=name   This option is deprecated. Use init_replica instead.
  -I, --initialize    Create the default database and exit. Create a super user
  with a random expired password and store it into the log.
- --initialize-branch-objectstore-id=name 
- The branch identifier for data directory of source
- cluster in object store.
- --initialize-from-objectstore 
- Initialzie instance using binlog and snapshot from object
- store.
+ --initialize-from-source-objectstore 
+ Initialzie instance using binlog and snapshot from source
+ object store.
  --initialize-insecure 
  Create the default database and exit. Create a super user
  with empty password.
- --initialize-objectstore-bucket=name 
- The object store bucket to store record as the source of
- data during instance initialization. If
- initialize_from_objectstore is true, it must not be
- empty.
- --initialize-objectstore-endpoint=name 
- The endpoint of object store as the source of data during
- instance initialization. If initialize_from_objectstore
- is true, user can specify the endpoint of object store.
- Ususally it's need to provide on non-AWS environment.
- --initialize-objectstore-provider=name 
- The provider of object store as the source of data during
- instance.If initialize_from_objectstore is true, it must
- not be empty.
- --initialize-objectstore-region=name 
- The region of object store as the source of data during
- instance initialization.If initialize_from_objectstore is
- true, it must not be empty.
- --initialize-objectstore-use-https 
- If initialize_from_objectstore is true, whether using
- https to connect to objstore or not as the source of data
- during instance initialization
- --initialize-repo-objectstore-id=name 
- The repo identifier for data directory of source cluster
- in object store. If initialize_from_objectstore is true,
- it must not be empty.
- --initialize-smartengine-objectstore-data 
- If initialize_from_objectstore is true, whether
- initialize smartengine object store data from source
- cluster object store.
  --interactive-timeout=# 
  The number of seconds the server waits for activity on an
  interactive connection before closing it
@@ -2055,6 +2032,31 @@ The following options may be given as the first argument:
  --sort-buffer-size=# 
  Each thread that needs to do a sort allocates a buffer of
  this size
+ --source-objectstore-branch-id=name 
+ The branch identifier for data directory of source
+ cluster in object store.
+ --source-objectstore-bucket=name 
+ The object store bucket to store record as the source of
+ data during instance initialization. 
+ --source-objectstore-endpoint=name 
+ The endpoint of object store as the source of data during
+ instance initialization. Ususally it's need to provide on
+ non-AWS environment.
+ --source-objectstore-provider=name 
+ The provider of object store as the source of data during
+ instance.
+ --source-objectstore-region=name 
+ The region of object store as the source of data during
+ instance initialization.
+ --source-objectstore-repo-id=name 
+ The repo identifier for data directory of source cluster
+ in object store. 
+ --source-objectstore-smartengine-data 
+ Whether initialize smartengine object store data from
+ source cluster object store.
+ --source-objectstore-use-https 
+ Whether using https to connect to objstore or not as the
+ source of data during instance initialization
  --source-verify-checksum 
  Force checksum verification of events in binary log
  before sending them to replicas or printing them in
@@ -2277,7 +2279,11 @@ binlog-archive TRUE
 binlog-archive-dir (No default value)
 binlog-archive-expire-auto-purge TRUE
 binlog-archive-expire-seconds 2592000
+binlog-archive-parallel-workers 4
 binlog-archive-period 1000
+binlog-archive-replica FALSE
+binlog-archive-replica-source-log-file (No default value)
+binlog-archive-replica-source-log-pos 4
 binlog-archive-slice-max-size 4194304
 binlog-archive-using-consensus-index TRUE
 binlog-cache-size 32768
@@ -2389,16 +2395,8 @@ init-file (No default value)
 init-replica 
 init-slave 
 initialize TRUE
-initialize-branch-objectstore-id main
-initialize-from-objectstore FALSE
+initialize-from-source-objectstore FALSE
 initialize-insecure TRUE
-initialize-objectstore-bucket objectstore_bucket_1
-initialize-objectstore-endpoint (No default value)
-initialize-objectstore-provider local
-initialize-objectstore-region local_objectstore_region_1
-initialize-objectstore-use-https FALSE
-initialize-repo-objectstore-id wesql_serverless_repo
-initialize-smartengine-objectstore-data FALSE
 interactive-timeout 28800
 internal-tmp-mem-storage-engine TempTable
 join-buffer-size 262144
@@ -2829,7 +2827,7 @@ smartengine-table-cache-size 1073741824
 smartengine-table-space ON
 smartengine-tables ON
 smartengine-total-max-shrink-extent-count 7680
-smartengine-total-memtable-size 107374182400
+smartengine-total-memtable-size 134217728
 smartengine-total-wal-size 134217728
 smartengine-trx ON
 smartengine-unsafe-for-binlog FALSE
@@ -2846,6 +2844,14 @@ snapshot-archive-period 300
 snapshot-archive-smartengine-backup-checkpoint FALSE
 snapshot-archive-smartengine-tar-mode OFF
 sort-buffer-size 262144
+source-objectstore-branch-id main
+source-objectstore-bucket objectstore_bucket_1
+source-objectstore-endpoint (No default value)
+source-objectstore-provider local
+source-objectstore-region .local_objectstore_region_1
+source-objectstore-repo-id wesql_serverless_repo
+source-objectstore-smartengine-data FALSE
+source-objectstore-use-https FALSE
 source-verify-checksum FALSE
 sporadic-binlog-dump-fail FALSE
 sql-generate-invisible-primary-key FALSE

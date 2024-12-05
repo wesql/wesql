@@ -1790,6 +1790,11 @@ int write_rotate_event_into_consensus_log(MYSQL_BIN_LOG *binlog) {
 
   // don't be ignored by slave SQL thread
   r.server_id = 0;
+  r.pos = binlog_file_get_current_pos(binlog->get_binlog_file()) +
+          LOG_EVENT_HEADER_LEN + r.get_data_size() +
+          (binlog_checksum_options != binary_log::BINLOG_CHECKSUM_ALG_OFF
+               ? BINLOG_CHECKSUM_LEN
+               : 0);
   r.common_header->when.tv_sec = consensus_log_manager.get_event_timestamp();
 
   return binlog_write_event_directly(binlog, &r);

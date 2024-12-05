@@ -41,7 +41,7 @@ let MYSQLD_DATADIR = $tmp_dir/snapshot_clone_ro_test;
 let MYSQLD_ERROR_LOG = $tmp_dir/ro_boost.err;
 let MYSQLD_ERROR_START_LOG = $tmp_dir/ro_start.err;
 let self_bucket=wesql-ro;
-let MYSQLD_EXTRA_INIT_ARGS = --initialize_from_objectstore=true --initialize_smartengine_objectstore_data=true --initialize_objectstore_region=$source_region --initialize_objectstore_bucket=$source_bucket --initialize_repo_objectstore_id=$source_repo --objectstore_bucket=$self_bucket;
+let MYSQLD_EXTRA_INIT_ARGS = --initialize_from_source_objectstore=true --source_objectstore_smartengine_data=true --source_objectstore_region=$source_region --source_objectstore_bucket=$source_bucket --source_objectstore_repo_id=$source_repo --objectstore_bucket=$self_bucket;
 
 --echo # Initialize ro server
 let $MYSQLD_EXTRA_ARGS = --port=$ro_port --socket=$MYSQLD_DATADIR/test.sock --console --skip-ssl --log-bin=master-bin --objectstore-region=.local_region --objectstore_bucket=$self_bucket --log-error-verbosity=3 --datadir=$MYSQLD_DATADIR;
@@ -120,7 +120,7 @@ let MYSQLD_INNODB_WAL_DIR = $MYSQLD_LOG_DIR;
 let MYSQLD_SE_SST_DATADIR = $MYSQLD_LOG_DIR/smartengine_sst;
 let MYSQLD_SE_WAL_DIR = $MYSQLD_LOG_DIR/smartengine_wal;
 
-let MYSQLD_EXTRA_INIT_ARGS = --initialize_from_objectstore=true --initialize_smartengine_objectstore_data=true --initialize_objectstore_region=$source_region --initialize_objectstore_bucket=$source_bucket --initialize_repo_objectstore_id=$source_repo --objectstore_bucket=$self_bucket;
+let MYSQLD_EXTRA_INIT_ARGS = --initialize_from_source_objectstore=true --source_objectstore_smartengine_data=true --source_objectstore_region=$source_region --source_objectstore_bucket=$source_bucket --source_objectstore_repo_id=$source_repo --objectstore_bucket=$self_bucket;
 
 --echo # Initialize ro2 server
 let $MYSQLD_EXTRA_ARGS = --port=$ro2_port --socket=$MYSQLD_DATADIR/test.sock --console --skip-ssl --log-bin=$MYSQLD_BINLOG_DIR --objectstore-region=.local_region --objectstore_bucket=$self_bucket --log-error-verbosity=3 --datadir=$MYSQLD_DATADIR --innodb_log_group_home_dir=$MYSQLD_INNODB_WAL_DIR --smartengine_data_dir=$MYSQLD_SE_SST_DATADIR --smartengine_wal_dir=$MYSQLD_SE_WAL_DIR;

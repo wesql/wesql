@@ -96,12 +96,13 @@ static PSI_file_key PSI_binlog_archive_log_index_key;
 static PSI_file_key PSI_binlog_archive_log_index_cache_key;
 
 static PSI_thread_info all_binlog_archive_threads[] = {
-    {&THR_KEY_binlog_archive, "archive", "bin_arch", PSI_FLAG_AUTO_SEQNUM, 0,
-     PSI_DOCUMENT_ME},
-    {&THR_KEY_binlog_archive_worker, "archive", "bin_arch_w",
-     PSI_FLAG_AUTO_SEQNUM, 0, PSI_DOCUMENT_ME},
-    {&THR_KEY_binlog_archive_update_index_worker, "archive", "bin_arch_i",
-     PSI_FLAG_AUTO_SEQNUM, 0, PSI_DOCUMENT_ME}};
+    {&THR_KEY_binlog_archive, "binlog_arch", "bin_ac",
+     PSI_FLAG_SINGLETON | PSI_FLAG_THREAD_SYSTEM, 0, PSI_DOCUMENT_ME},
+    {&THR_KEY_binlog_archive_worker, "binlog_arch_io", "bin_ac_io",
+     PSI_FLAG_AUTO_SEQNUM | PSI_FLAG_THREAD_SYSTEM, 0, PSI_DOCUMENT_ME},
+    {&THR_KEY_binlog_archive_update_index_worker, "binlog_arch_update_index",
+     "bin_ac_update", PSI_FLAG_SINGLETON | PSI_FLAG_THREAD_SYSTEM, 0,
+     PSI_DOCUMENT_ME}};
 
 static PSI_mutex_info all_binlog_archive_mutex_info[] = {
     {&PSI_binlog_archive_lock_key, "binlog_archive::mutex", 0, 0,
@@ -681,6 +682,7 @@ int start_binlog_archive() {
 void stop_binlog_archive() {
   DBUG_TRACE;
   DBUG_PRINT("info", ("stop_binlog_archive"));
+  if (!opt_binlog_archive || !opt_serverless) return;
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_LOG, "terminate begin");
 
   mysql_mutex_lock(&m_binlog_archive_run_lock);
@@ -1744,22 +1746,22 @@ int Binlog_archive::archive_events(File_reader &reader, my_off_t end_pos) {
  * into the same persistent binlog.
  */
 int Binlog_archive::archive_event(File_reader &reader, uchar *event_ptr,
-                                  uint32 event_len, const char *log_file,
+                                  uint32 event_len, const char *mysql_log_file,
                                   my_off_t log_pos) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("archive_event"));
   DBUG_EXECUTE_IF("fault_injection_archive_event", { return 1; });
   int error = 0;
-  assert(log_file != nullptr);
+  assert(mysql_log_file != nullptr);
   assert(log_pos >= BIN_LOG_HEADER_SIZE);
 
   Log_event_type type = (Log_event_type)event_ptr[EVENT_TYPE_OFFSET];
   uint32 len = uint4korr(event_ptr + EVENT_LEN_OFFSET);
   assert(len == event_len);
-  my_off_t event_start_pos = reader.event_start_pos();
-  uint32 event_end_pos = uint4korr(event_ptr + LOG_POS_OFFSET);
-  assert((event_start_pos + event_len) == event_end_pos);
-  assert(event_end_pos == log_pos);
+  my_off_t mysql_event_start_pos = reader.event_start_pos();
+  uint32 mysql_event_end_pos = uint4korr(event_ptr + LOG_POS_OFFSET);
+  assert((mysql_event_start_pos + event_len) == mysql_event_end_pos);
+  assert(mysql_event_end_pos == log_pos);
 
   DBUG_PRINT("info",
              ("Archiving event of type %s", Log_event::get_type_str(type)));
@@ -1779,7 +1781,7 @@ int Binlog_archive::archive_event(File_reader &reader, uchar *event_ptr,
     }
 
     // switch next mysql binlog and generate first slice.
-    if (new_binlog_slice(true, log_file, log_pos,
+    if (new_binlog_slice(true, mysql_log_file,
                          m_mysql_binlog_previouse_consensus_index)) {
       error = 1;
       goto err_slice;
@@ -1797,8 +1799,8 @@ int Binlog_archive::archive_event(File_reader &reader, uchar *event_ptr,
     m_binlog_last_event_type_str = Log_event::get_type_str(type);
     m_slice_bytes_written += event_len;
     // Update the last archived event end of position.
-    m_binlog_archive_write_last_event_end_pos = event_end_pos;
-    m_mysql_binlog_write_last_event_end_pos = event_end_pos;
+    m_binlog_archive_write_last_event_end_pos = mysql_event_end_pos;
+    m_mysql_binlog_write_last_event_end_pos = mysql_event_end_pos;
     mysql_mutex_unlock(&m_rotate_lock);
     goto suc;
   } else {
@@ -1856,38 +1858,86 @@ int Binlog_archive::archive_event(File_reader &reader, uchar *event_ptr,
   // leader.
   if (m_slice_cache.empty()) {
     assert(log_pos > BIN_LOG_HEADER_SIZE);
-    if (new_binlog_slice(false, log_file, log_pos, 0)) {
+    if (new_binlog_slice(false, mysql_log_file, 0)) {
       error = 1;
       goto err_slice;
     }
   }
 
+  // If rotate event , need reconstruct the rotate event with
+  // persistent binlog file name.
+  if (type == binary_log::ROTATE_EVENT) {
+    uchar *old_rotate_header = event_ptr + LOG_EVENT_HEADER_LEN;
+    my_off_t old_rotate_header_pos = uint8korr(old_rotate_header);
+    char new_binlog[FN_REFLEN + 1] = {0};
+
+    if (old_rotate_header_pos == LOG_EVENT_OFFSET) {
+      // reconstruct the last rotate event in binlog file.
+      snprintf(new_binlog, sizeof(new_binlog) - 1, BINLOG_ARCHIVE_FILE_FORMAT,
+               static_cast<my_off_t>(m_binlog_archive_last_index_number + 1));
+    } else {
+      // Reconstruct the intermediate Rotate event in the binlog file. These
+      // Rotate events record the current file information for applying the
+      // barrier.
+      assert(old_rotate_header_pos > LOG_EVENT_OFFSET);
+      strmake(new_binlog, m_binlog_archive_file_name, sizeof(new_binlog) - 1);
+    }
+
+    size_t ident_len = strlen(new_binlog);
+    uint32 rotate_event_len = ident_len + LOG_EVENT_HEADER_LEN +
+                              Binary_log_event::ROTATE_HEADER_LEN +
+                              (event_checksum_on() ? BINLOG_CHECKSUM_LEN : 0);
+    size_t event_offset = m_packet.length();
+    m_packet.length(rotate_event_len + event_offset);
+    uchar *header = pointer_cast<uchar *>(m_packet.ptr()) + event_offset;
+    uchar *rotate_header = header + LOG_EVENT_HEADER_LEN;
+
+    int4store(header, uint4korr(event_ptr));  // timestamp
+    header[EVENT_TYPE_OFFSET] = binary_log::ROTATE_EVENT;
+    int4store(header + SERVER_ID_OFFSET,
+              uint4korr(event_ptr + SERVER_ID_OFFSET));
+    int4store(header + EVENT_LEN_OFFSET, static_cast<uint32>(rotate_event_len));
+    int4store(header + LOG_POS_OFFSET,
+              m_binlog_archive_write_last_event_end_pos + rotate_event_len);
+    int2store(header + FLAGS_OFFSET, 0);
+
+    if (old_rotate_header_pos == LOG_EVENT_OFFSET) {
+      int8store(rotate_header, LOG_EVENT_OFFSET);
+    } else {
+      assert(old_rotate_header_pos > LOG_EVENT_OFFSET);
+      int8store(rotate_header,
+                m_binlog_archive_write_last_event_end_pos + rotate_event_len);
+    }
+
+    memcpy(rotate_header + Binary_log_event::ROTATE_HEADER_LEN, new_binlog,
+           ident_len);
+
+    if (event_checksum_on()) calc_event_checksum(header, rotate_event_len);
+    event_ptr = header;
+    event_len = rotate_event_len;
+    // mysql_event_end_pos = m_binlog_archive_write_last_event_end_pos +
+    // event_len;
+  }
+
   m_binlog_last_event_type = type;
   m_binlog_last_event_type_str = Log_event::get_type_str(type);
   m_slice_bytes_written += event_len;
-  // Record the last archived event end of position.
+  // Record the last write archive cache event end of position.
   m_binlog_archive_write_last_event_end_pos += event_len;
-  m_mysql_binlog_write_last_event_end_pos = event_end_pos;
+  m_mysql_binlog_write_last_event_end_pos = mysql_event_end_pos;
 
   // Here, the primary consideration is that the new Leader's current
   // `binlog.000004` event needs to be persisted into the `binlog.000001` file
   // generated by the old Leader. However, the structures of these two binlogs
-  // might differ, so it may be necessary to adjust the `event_end_pos` of each
-  // event.
-  if (m_mysql_binlog_first_file) {
-    if (event_end_pos != m_binlog_archive_write_last_event_end_pos) {
-      int4store(event_ptr + LOG_POS_OFFSET,
-                static_cast<uint32>(m_binlog_archive_write_last_event_end_pos));
-      if (event_checksum_on()) {
-        calc_event_checksum(event_ptr, event_len);
-      }
-      event_end_pos = uint4korr(event_ptr + LOG_POS_OFFSET);
-    }
-  } else {
-    assert(m_binlog_archive_write_last_event_end_pos ==
-           m_mysql_binlog_write_last_event_end_pos);
+  // might differ, so it may be necessary to adjust the `mysql_event_end_pos` of
+  // each event.
+  // Or after recontructing the Rotate event, then the subsequent events in the
+  // binlog file need to have their positions (pos) adjusted.
+  if (mysql_event_end_pos != m_binlog_archive_write_last_event_end_pos) {
+    int4store(event_ptr + LOG_POS_OFFSET,
+              static_cast<uint32>(m_binlog_archive_write_last_event_end_pos));
+    if (event_checksum_on()) calc_event_checksum(event_ptr, event_len);
   }
-  assert(m_binlog_archive_write_last_event_end_pos == event_end_pos);
   m_slice_cache.append(reinterpret_cast<const char *>(event_ptr), event_len);
 
   // rotate binlog slice, if the binlog slice size is too large.
@@ -2212,8 +2262,8 @@ std::pair<my_off_t, int> Binlog_archive::get_binlog_end_pos(
  * @return int
  * @note Must be called with m_rotate_lock held.
  */
-int Binlog_archive::new_binlog_slice(bool new_binlog, const char *log_file,
-                                     my_off_t log_pos [[maybe_unused]],
+int Binlog_archive::new_binlog_slice(bool new_binlog,
+                                     const char *mysql_log_file,
                                      uint64_t previous_consensus_index) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("new_binlog_slice"));
@@ -2231,7 +2281,7 @@ int Binlog_archive::new_binlog_slice(bool new_binlog, const char *log_file,
     // The first persisted binlog.
     if (m_mysql_end_consensus_index == 0)
       m_mysql_end_consensus_index = previous_consensus_index;
-    strmake(m_mysql_binlog_file_name, log_file,
+    strmake(m_mysql_binlog_file_name, mysql_log_file,
             sizeof(m_mysql_binlog_file_name) - 1);
     // The maximum length of the string representation of
     // m_binlog_archive_last_index_number does not exceed 20

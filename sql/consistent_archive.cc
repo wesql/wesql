@@ -92,9 +92,11 @@ static PSI_file_key PSI_consistent_archive_mysql_log_index_cache_key;
 static PSI_file_key PSI_consistent_archive_se_log_index_cache_key;
 static PSI_file_key PSI_consistent_snapshot_file_cache_key;
 
+// The name lenght include a terminating NUL character of thread can not exceed
+// 16 characters, if flag is PSI_FLAG_SINGLETON.
 static PSI_thread_info all_consistent_archive_threads[] = {
-    {&THR_KEY_consistent_archive, "archive", "ss_arch", PSI_FLAG_AUTO_SEQNUM, 0,
-     PSI_DOCUMENT_ME}};
+    {&THR_KEY_consistent_archive, "snapshot_archive", "snapshot_arch",
+     PSI_FLAG_SINGLETON | PSI_FLAG_THREAD_SYSTEM, 0, PSI_DOCUMENT_ME}};
 
 static PSI_mutex_info all_consistent_archive_mutex_info[] = {
     {&PSI_consistent_index_lock_key, "consistent_mutex", 0, 0, PSI_DOCUMENT_ME},
