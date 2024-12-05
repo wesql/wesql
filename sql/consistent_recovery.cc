@@ -1487,7 +1487,7 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
     destination_object_key.append(object_key_suffix);
 
     // push object to destination object store.
-    ss = init_destination_objstore->put_object(opt_objstore_bucket,
+    ss = init_destination_objstore->put_object(m_init_destination_objstore_bucket,
                                                destination_object_key, data);
     if (!ss.is_succ()) {
       err_msg.assign("put object to destination object store failed: ");
@@ -1692,7 +1692,7 @@ int Consistent_recovery::fetch_last_persistent_snapshot_index_file(
    snapshot.index, should locate the last one in list. If only the
    single-version file (snapshot.index) exists, it is selected instead..
   */
-  if (!list_persistent_objects(opt_objstore_bucket, objects,
+  if (!list_persistent_objects(m_objstore_bucket, objects,
                                index_prefix.c_str(), false, true, true)) {
     return 1;
   }
@@ -1807,7 +1807,7 @@ int Consistent_recovery::get_last_persistent_binlog_consensus_index() {
   remove_file(binlog_index_file_name);
   {
     objstore::Status ss = recovery_objstore->get_object_to_file(
-        std::string_view(opt_objstore_bucket), last_index_keyid,
+        std::string_view(m_objstore_bucket), last_index_keyid,
         std::string_view(binlog_index_file_name));
     if (!ss.is_succ()) {
       err_msg.assign("download persistent binlog index file failed: ");
