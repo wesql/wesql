@@ -479,7 +479,7 @@ TEST(BlockInfoTest, serialize_and_deserialize)
   ASSERT_TRUE(des_block_info.get_bloom_filter().empty());
   ASSERT_EQ(0, des_block_info.get_per_key_bits());
   ASSERT_EQ(0, des_block_info.get_probe_num());
-  delete serilize_buf;
+  delete[] serilize_buf;
 
   // serialize with bloom filter
   block_info.set_bloom_filter(fake_string);
@@ -506,7 +506,7 @@ TEST(BlockInfoTest, serialize_and_deserialize)
   ASSERT_EQ(6, des_block_info.get_per_key_bits());
   ASSERT_EQ(2, des_block_info.get_probe_num());
   ASSERT_EQ(Slice(fake_string), des_block_info.get_bloom_filter());
-  delete serilize_buf;
+  delete[] serilize_buf;
 
   // serialize with columnar format
   ColumnUnitInfo unit_info;
@@ -539,7 +539,7 @@ TEST(BlockInfoTest, serialize_and_deserialize)
   ASSERT_EQ(1, des_block_info.get_unit_infos().size());
   ASSERT_EQ(2, des_block_info.get_unit_infos().at(0).column_count_);
   ASSERT_EQ(1, des_block_info.get_unit_infos().at(0).column_type_);
-  delete serilize_buf;
+  delete[] serilize_buf;
 }
 
 } // namespace table

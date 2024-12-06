@@ -3,7 +3,7 @@ name: CICD Pull Request
 on:
   pull_request:
     paths-ignore:
-      - '.github/**'
+#      - '.github/**'
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -193,6 +193,75 @@ jobs:
         run: |
           echo runner-name=${RUNNER_NAME} >> $GITHUB_OUTPUT
 
+
+  run-se-ut:
+    name: smartengine unit tests
+    runs-on: [self-hosted, eks-oraclelinux8-amd64-runner ]
+    needs: [ enable-runner ]
+    outputs:
+      runner-name: ${{ steps.get_runner_name.outputs.runner-name }}
+    steps:
+      - name: Checkout MySQL Server Code
+        uses: actions/checkout@v4
+        with:
+          repository: mysql/mysql-server
+          ref: mysql-8.0.35
+
+      - name: Checkout Wesql Code
+        uses: actions/checkout@v4
+        with:
+          path: ./wesql
+
+      - name: Apply WeSQL Patches
+        run: |
+          cp -r ./wesql/* ./
+          git apply patches/mysql-server-8.0.35.patch
+
+      - name: copy boost_1_77_0
+        run: |
+          extra_dir="${{ github.workspace }}/extra"
+          mkdir -pv ${extra_dir}
+          cp /home/mysql/boost_1_77_0.tar.bz2 ${extra_dir}
+          sudo mkdir -pv /usr/local/mysql
+          sudo chown -R mysql:mysql /usr/local/mysql
+          
+          sudo yum install -y perl-core
+          sudo yum install perl-App-cpanminus
+          sudo cpan App::cpanminus
+          sudo cpanm Memoize
+          
+          sudo yum install python3-devel python3-pip mysql-devel
+          sudo pip3 install mysqlclient
+          sudo ln -sfn /usr/bin/python3 /usr/bin/python
+
+      - name: cmake
+        run: |
+          sudo yum install which -y
+          source /opt/rh/gcc-toolset-12/enable
+                
+          # install gflags
+          cd ./storage/smartengine/core
+          tar xvzf third-party/gflags-v2.2.2.tar.gz
+          cd gflags-2.2.2
+          mkdir build && cd build
+          cmake -DBUILD_SHARED_LIBS=OFF -DCMAKE_CXX_FLAGS="-fPIC -D_GLIBCXX_USE_CXX11_ABI=0" -DGFLAGS_NAMESPACE="gflags"  ..
+          make -j8 && sudo make install
+          cd ../../
+
+          sh build_smartengine.sh -t debug
+
+      - name: run test
+        run: |
+          cd ./storage/smartengine/core/bu-Debug
+          make test
+
+      - name: get self runner name
+        id: get_runner_name
+        if: ${{ always() }}
+        run: |
+          echo runner-name=${RUNNER_NAME} >> $GITHUB_OUTPUT
+
+
   remove-serverless-runner:
     runs-on: ubuntu-latest
     needs: [ mtr-serverless ]
@@ -222,6 +291,22 @@ jobs:
         with:
           github-token: ${{ env.GITHUB_TOKEN }}
           runner-name: ${{ needs.mtr-normal-file.outputs.runner-name }}
+          access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+
+  remove-se-ut-runner:
+    runs-on: ubuntu-latest
+    needs: [ run-se-ut ]
+    if: ${{ always() }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Delete self runner
+        continue-on-error: true
+        uses: './.github/actions/delete-runner'
+        with:
+          github-token: ${{ env.GITHUB_TOKEN }}
+          runner-name: ${{ needs.run-se-ut.outputs.runner-name }}
           access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
           secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
 

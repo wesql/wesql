@@ -22,17 +22,18 @@
 
 # download from https://github.com/aliyun/aliyun-oss-cpp-sdk/archive/refs/tags/1.10.0.tar.gz
 set(OSS_SDK_VERSION "1.10.0")
-set(LOCAL_ALIYUN_OSS_SDK_ZIP "${PROJECT_SOURCE_DIR}/../../../extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}.tar.gz")
-set(LOCAL_ALIYUN_OSS_SDK_DIR "${PROJECT_SOURCE_DIR}/../../../extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}")
+get_filename_component(WESQL_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../../../" ABSOLUTE)
+set(LOCAL_ALIYUN_OSS_SDK_ZIP "${WESQL_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}.tar.gz")
+set(LOCAL_ALIYUN_OSS_SDK_DIR "${WESQL_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}")
 set(ALIYUN_OSS_SDK_LIB_DIR "${CMAKE_BINARY_DIR}/lib")
-set(ALIYUN_OSS_SDK_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/../../../extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}/sdk/include")
+set(ALIYUN_OSS_SDK_INCLUDE_DIR "${WESQL_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}/sdk/include")
 
 IF(NOT EXISTS ${LOCAL_ALIYUN_OSS_SDK_ZIP})
   MESSAGE(FATAL_ERROR "${LOCAL_ALIYUN_OSS_SDK_ZIP} not found")
 ELSE()
     MESSAGE(STATUS "${LOCAL_ALIYUN_OSS_SDK_ZIP} found")
-    MESSAGE(STATUS "cd ${PROJECT_SOURCE_DIR}/../../../extra && tar -xvzf aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}.tar.gz")
-    execute_process(COMMAND tar -xvzf ${LOCAL_ALIYUN_OSS_SDK_ZIP} WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/../../../extra RESULT_VARIABLE tar_result)
+    MESSAGE(STATUS "cd ${WESQL_SOURCE_DIR}/extra && tar -xvzf aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}.tar.gz")
+    execute_process(COMMAND tar -xvzf ${LOCAL_ALIYUN_OSS_SDK_ZIP} WORKING_DIRECTORY ${WESQL_SOURCE_DIR}/extra RESULT_VARIABLE tar_result)
     IF (NOT tar_result EQUAL "0")
       MESSAGE(FATAL_ERROR "tar -xvzf ${LOCAL_ALIYUN_OSS_SDK_ZIP} failed")
     ENDIF()
@@ -45,7 +46,7 @@ MACRO(PREPARE_OJBSTORE_ALIYUN_OSS)
   set(ENABLE_COVERAGE OFF CACHE BOOL "Flag to enable/disable building code with -fprofile-arcs and -ftest-coverage. Gcc only")
   set(ENABLE_RTTI ON CACHE BOOL   "Flag to enable/disable building code with RTTI information")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
-  
+
   add_subdirectory(${LOCAL_ALIYUN_OSS_SDK_DIR} ${CMAKE_BINARY_DIR}/extra/aliyun-oss-cpp-sdk)
 ENDMACRO()
 

@@ -1241,7 +1241,7 @@ int CheckpointDumpCommand::dump_version_set_checkpoint(util::RandomAccessFile *c
   }
 
   if (nullptr != buf) {
-    delete buf;
+    delete[] buf;
     buf = nullptr;
   }
 
@@ -1292,7 +1292,7 @@ int CheckpointDumpCommand::read_big_subtable(util::RandomAccessFile *checkpoint_
   }
 
   if (nullptr != buf) {
-    delete buf;
+    delete[] buf;
     buf = nullptr;
   }
 

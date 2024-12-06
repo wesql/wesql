@@ -96,11 +96,11 @@ else
 fi
 
 if [ x"$build_type" = x"RelWithDebInfo" ]; then
-  COMMON_FLAGS="-O3 -g -fexceptions -fno-omit-frame-pointer -fno-strict-aliasing -D_GLIBCXX_USE_CXX11_ABI=0 -Wno-error=deprecated-copy -Wno-error=maybe-uninitialized"
+  COMMON_FLAGS="-O3 -g -fexceptions -fno-omit-frame-pointer -fno-strict-aliasing -D_GLIBCXX_USE_CXX11_ABI=0 -Wno-error=deprecated-copy -Wno-error=maybe-uninitialized  -Wno-error=unused-function"
   CFLAGS="$COMMON_FLAGS"
   CXXFLAGS="$COMMON_FLAGS"
 elif [ x"$build_type" = x"Debug" ]; then
-  COMMON_FLAGS="-O0 -g3 -gdwarf-2 -fexceptions -fno-omit-frame-pointer -fno-strict-aliasing -D_GLIBCXX_USE_CXX11_ABI=0"
+  COMMON_FLAGS="-O0 -g3 -gdwarf-2 -fexceptions -fno-omit-frame-pointer -fno-strict-aliasing -D_GLIBCXX_USE_CXX11_ABI=0  -Wno-error=format-truncation"
   CFLAGS="$COMMON_FLAGS"
   CXXFLAGS="$COMMON_FLAGS"
 fi
@@ -144,8 +144,6 @@ if [ ! -f $CC ] || [ ! -f $CXX ]; then
 fi
 #CC=/opt/rh/gcc-toolset-11/root/usr/bin/gcc
 #CXX=/opt/rh/gcc-toolset-11/root/usr/bin/g++
-#CC=clang
-#CXX=clang++
 
 export CC CFLAGS CXX CXXFLAGS
 
