@@ -235,7 +235,8 @@ TEST_P(ExtentSpaceTest, obj_extent_allocate_and_recycle)
   build_extent_space_args(args);
   ret = extent_space_->create(args);
   ASSERT_EQ(Status::kOk, ret);
-  for (int64_t i = 1; i <= 5120; ++i) {
+  // TODO(Zhao Dongsheng) : The ExtentId.offset_ should start from 1 in future.
+  for (int64_t i = 0; i <= 5120; ++i) {
     ret = extent_space_->allocate(std::string(), io_info);
     ASSERT_EQ(Status::kOk, ret);
     ASSERT_LT(io_info.extent_id_.file_number, 0);
@@ -265,11 +266,12 @@ TEST_P(ExtentSpaceTest, obj_extent_allocate_and_recycle)
 
   // success to recycle extent and then reallocate
   extent_id.file_number = correct_fd;
-  extent_id.offset = 1;
+  extent_id.offset = 0;
   ret = extent_space_->recycle(std::string(), extent_id);
   ASSERT_EQ(Status::kOk, ret);
   ExtentIOInfo new_io_info;
   ret = extent_space_->allocate(std::string(), new_io_info);
+  ASSERT_EQ(Status::kOk, ret);
   ASSERT_LT(new_io_info.extent_id_.file_number, 0);
 
   int32_t next_exent_id = new_io_info.extent_id_.offset;

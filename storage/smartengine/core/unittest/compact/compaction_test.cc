@@ -2129,7 +2129,7 @@ TEST_F(CompactionTest, test_single_del) {
   run_major_compact();
   print_raw_meta();
 
-  IntRange r[2] = {{40001, 49265, 2}, {49267, 49999, 2}};
+  IntRange r[2] = {{40001, 49035, 2}, {49037, 49999, 2}};
   check_result(2, r, 2);
   auto check_func = [&r](int64_t row, const Slice &key,
       const Slice &value) -> bool {
