@@ -171,7 +171,7 @@ jobs:
               WESQL_IMAGE="$(cat test_fault_serverless.sh | grep "DEFAULT_IMAGE=")"
               WESQL_IMAGE="$(echo ${WESQL_IMAGE#*=} | sed 's/"//g')"
           fi
-          
+          echo "WESQL_IMAGE:${WESQL_IMAGE}"
           echo wesql-image="${WESQL_IMAGE}" >> $GITHUB_OUTPUT
           
           THREADS="${{ inputs.THREADS }}"
@@ -223,8 +223,8 @@ jobs:
 
       - name: send test result message
         run: |
-          WESQL_IMAGE="${{ needs.cloud-test-k3d.outputs.wesql-image }}"
-          TEST_RESULT="${{ needs.cloud-test-k3d.outputs.test-result }}"
+          WESQL_IMAGE="${{ needs.chaos-test-k3s.outputs.wesql-image }}"
+          TEST_RESULT="${{ needs.chaos-test-k3s.outputs.test-result }}"
           if [[ -z "${TEST_RESULT}" ]]; then
               TEST_RESULT="[FAILED]"
           fi
