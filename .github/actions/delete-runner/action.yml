@@ -6,6 +6,10 @@ inputs:
     description: 'The self runner name to be deleted.'
     required: true
     type: string
+  runner-namespace:
+    description: 'The self runner namespace to be deleted.'
+    required: false
+    type: string
   github-token:
     description: 'The github token.'
     required: true
@@ -61,13 +65,19 @@ runs:
       shell: bash
       env:
         RUNNER_NAME: ${{ inputs.runner-name }}
+        RUNNER_NAMESPACE: ${{ inputs.runner-namespace }}
         AWS_REGION: "ap-northeast-1"
         AWS_CLUSTER: "foxlake-dev-001"
       run: |
+        RUNNER_NAMESPACE="${{ env.RUNNER_NAMESPACE }}"
+        if [[ -z "${{ env.RUNNER_NAMESPACE }}" ]]; then
+            RUNNER_NAMESPACE="github-runner"
+        fi
+        
         aws eks --region ${{ env.AWS_REGION }} update-kubeconfig --name ${{ env.AWS_CLUSTER }} \
             --role-arn $(aws iam get-role --role-name ${{ env.AWS_CLUSTER }}-admin-role --query 'Role.Arn' --output text)
 
-        runner_pod_exists=$(kubectl get pod -n github-runner | (grep "${{ env.RUNNER_NAME }}"||true))
+        runner_pod_exists=$(kubectl get pod -n "${RUNNER_NAMESPACE}" | (grep "${{ env.RUNNER_NAME }}"||true))
         if [[ -n "${runner_pod_exists}" ]]; then
-            kubectl delete pod -n github-runner "${{ env.RUNNER_NAME }}" --force
+            kubectl delete pod -n "${RUNNER_NAMESPACE}" "${{ env.RUNNER_NAME }}" --force
         fi

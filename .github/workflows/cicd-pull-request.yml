@@ -206,6 +206,7 @@ jobs:
         with:
           github-token: ${{ env.GITHUB_TOKEN }}
           runner-name: ${{ needs.mtr-serverless.outputs.runner-name }}
+          runner-namespace: "github-runner"
           access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
           secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
 
@@ -222,6 +223,7 @@ jobs:
         with:
           github-token: ${{ env.GITHUB_TOKEN }}
           runner-name: ${{ needs.mtr-normal-file.outputs.runner-name }}
+          runner-namespace: "github-runner"
           access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
           secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
 

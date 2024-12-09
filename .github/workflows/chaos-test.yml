@@ -59,6 +59,7 @@ jobs:
     with:
       CLOUD_PROVIDER: "eks"
       RUNNER_LABEL: "k3s-runner"
+      RUNNER_NAMESPACE: "default"
     secrets: inherit
 
   chaos-test-k3s:
@@ -228,6 +229,7 @@ jobs:
         with:
           github-token: ${{ env.GITHUB_TOKEN }}
           runner-name: ${{ needs.chaos-test-k3s.outputs.runner-name }}
+          runner-namespace: "default"
           access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
           secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
 
@@ -238,4 +240,5 @@ jobs:
     with:
       ENABLE: "disable"
       RUNNER_LABEL: "k3s-runner"
+      RUNNER_NAMESPACE: "default"
     secrets: inherit
