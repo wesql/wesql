@@ -110,7 +110,12 @@ jobs:
 
       - name: install chaos mesh
         run: |
-          bash testinfra/test/kbcli/install_minio_chaso_mesh.sh --region us-west-2
+          bash testinfra/test/kbcli/install_minio_chaso_mesh.sh --region us-west-2 --bucket-name "${{ inputs.OBJSTORE_BUCKET }}"
+
+      - name: install gettext
+        run: |
+          sudo apt-get update
+          sudo apt-get install gettext
 
       - name: run chaos test
         id: run_chaos_test
