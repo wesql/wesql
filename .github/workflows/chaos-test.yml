@@ -51,6 +51,7 @@ env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   K3D_NAME: default
+  K3S_VERSION: "v1.30"
 
 
 jobs:
@@ -85,7 +86,7 @@ jobs:
         uses: nolar/setup-k3d-k3s@v1
         with:
           k3d-name: "${{ env.K3D_NAME }}"
-          version: "v${{ inputs.K3S_VERSION }}"
+          version: "${{ env.K3S_VERSION }}"
           github-token: ${{ env.GITHUB_TOKEN }}
           k3d-args: --no-lb
 
@@ -211,7 +212,7 @@ jobs:
           
           date_ret=$(date +%Y-%m-%d-%T)
           TEST_TITLE="[${WESQL_IMAGE}] Chaos Test on Env K3s [${date_ret}]"
-          ${{ github.workspace }}/.github/utils/send_mesage.py \
+          python3 .github/utils/send_mesage.py \
               --url "${{ vars.TEST_BOT_WEBHOOK }}" \
               --title "$TEST_TITLE" \
               --result "$TEST_RESULT"
