@@ -151,7 +151,7 @@ jobs:
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-use-https ${OBJSTORE_USE_HTTPS} "
               
               OBJSTORE_ENDPOINT="http://wesql-chaos-test-minio.default.svc:9000"
-              test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-region \"${OBJSTORE_ENDPOINT}\" "
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-endpoint \"${OBJSTORE_ENDPOINT}\" "
           fi
           
           OBJSTORE_REGION="${{ inputs.OBJSTORE_REGION }}"
