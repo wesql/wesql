@@ -50,6 +50,8 @@ spec:
             objectstore_provider=${OBJSTORE_PROVIDER}
             objectstore-region=${OBJSTORE_REGION}
             objectstore-bucket=${OBJSTORE_BUCKET}
+            objectstore-endpoint=${OBJSTORE_ENDPOINT}
+            objectstore-use-https=${OBJSTORE_USE_HTTPS}
             datadir=/data/mysql/data
             log-error=/data/mysql/log/mysqld-error.log
             max_connections=2000
@@ -257,6 +259,8 @@ spec:
             objectstore_provider=${OBJSTORE_PROVIDER}
             objectstore-region=${OBJSTORE_REGION}
             objectstore-bucket=${OBJSTORE_BUCKET}
+            objectstore-endpoint=${OBJSTORE_ENDPOINT}
+            objectstore-use-https=${OBJSTORE_USE_HTTPS}
             datadir=/data/mysql/data
             log-error=/data/mysql/log/mysqld-error.log
             max_connections=2000
@@ -381,6 +385,8 @@ spec:
             objectstore_provider=${OBJSTORE_PROVIDER}
             objectstore-region=${OBJSTORE_REGION}
             objectstore-bucket=${OBJSTORE_BUCKET}
+            objectstore-endpoint=${OBJSTORE_ENDPOINT}
+            objectstore-use-https=${OBJSTORE_USE_HTTPS}
             datadir=/data/mysql/data
             log-error=/data/mysql/log/mysqld-error.log
             max_connections=2000

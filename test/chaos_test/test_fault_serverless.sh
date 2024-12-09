@@ -14,9 +14,11 @@ DEFAULT_CLUSTER_NAME="wesql-cluster"
 DEFAULT_PROVIDER="aws"
 DEFAULT_REGION="cn-northwest-1"
 DEFAULT_BUCKET="wesql-chaos-test"
+DEFAULT_ENDPOINT=""
+DEFAULT_USE_HTTPS="false"
 DEFAULT_IMAGE="apecloud/wesql-server:8.0.35-0.1.0_beta3.38"
-DEFAULT_AK=$(echo -n ${AWS_ACCESS_KEY_ID} | base64)
-DEFAULT_SK=$(echo -n ${AWS_SECRET_ACCESS_KEY} | base64)
+DEFAULT_AK=$(echo -n "${AWS_ACCESS_KEY_ID}" | base64)
+DEFAULT_SK=$(echo -n "${AWS_SECRET_ACCESS_KEY}" | base64)
 
 runningToStopTime="null"
 stopToRunningTime="null"
@@ -1276,6 +1278,8 @@ main() {
     export OBJSTORE_PROVIDER=${DEFAULT_PROVIDER}
     export OBJSTORE_REGION=${DEFAULT_REGION}
     export OBJSTORE_BUCKET=${DEFAULT_BUCKET}
+    export OBJSTORE_ENDPOINT=${DEFAULT_ENDPOINT}
+    export OBJSTORE_USE_HTTPS=${DEFAULT_USE_HTTPS}
     export WESQL_IMAGE=${DEFAULT_IMAGE}
     export ACCESS_KEY=${DEFAULT_AK}
     export SECRET_KEY=${DEFAULT_SK}
@@ -1342,6 +1346,14 @@ parse_command_line() {
             ;;
         -ob|--objstore-bucket)
             OBJSTORE_BUCKET="$2"
+            shift
+            ;;
+        -oe|--objstore-endpoint)
+            OBJSTORE_ENDPOINT="$2"
+            shift
+            ;;
+        -ouh|--objstore-use-https)
+            OBJSTORE_USE_HTTPS="$2"
             shift
             ;;
         -wi|--wesql-image)
