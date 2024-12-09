@@ -63,8 +63,26 @@ jobs:
       RUNNER_NAMESPACE: "default"
     secrets: inherit
 
+  remove-s3-bucket:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "${{ inputs.OBJSTORE_REGION }}"
+
+      - name: Remove S3 bucket ${{ inputs.OBJSTORE_BUCKET }}
+        run: |
+          OBJSTORE_BUCKET="${{ inputs.OBJSTORE_BUCKET }}"
+          aws s3 rm --recursive "s3://${OBJSTORE_BUCKET}/"
+
   chaos-test-k3s:
-    needs: [ enable-k3s-runner ]
+    needs: [ enable-k3s-runner, remove-s3-bucket ]
     runs-on: [ self-hosted, k3s-runner ]
     outputs:
       wesql-image: ${{ steps.run_chaos_test.outputs.wesql-image }}
@@ -93,21 +111,6 @@ jobs:
       - name: install chaos mesh
         run: |
           bash testinfra/test/kbcli/install_minio_chaso_mesh.sh --region us-west-2
-
-      - uses: aws-actions/setup-sam@v2
-        with:
-          use-installer: true
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-region: "${{ inputs.OBJSTORE_REGION }}"
-
-      - name: Remove S3 bucket ${{ inputs.OBJSTORE_BUCKET }}
-        run: |
-          OBJSTORE_BUCKET="${{ inputs.OBJSTORE_BUCKET }}"
-          aws s3 rm --recursive "s3://${OBJSTORE_BUCKET}/"
 
       - name: run chaos test
         id: run_chaos_test
