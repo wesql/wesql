@@ -5,9 +5,21 @@ on:
     inputs:
       OBJSTORE_PROVIDER:
         description: 'Specify the object storage provider (e.g., aws, minio, r2)'
+        type: choice
+        required: true
+        default: 'minio'
+        options:
+          - 'aws'
+          - 'minio'
+          - 'r2'
+      OBJSTORE_USE_HTTPS:
+        description: 'Specify whether to use HTTPS for the object storage'
         type: string
-        required: false
-        default: 'aws'
+        required: true
+        default: 'true'
+        options:
+          - 'true'
+          - 'false'
       OBJSTORE_REGION:
         description: 'Specify the object storage region'
         type: string
@@ -65,6 +77,7 @@ jobs:
 
   remove-s3-bucket:
     runs-on: ubuntu-latest
+    if: ${{ inputs.OBJSTORE_PROVIDER == 'aws' && inputs.OBJSTORE_USE_HTTPS == 'false' }}
     steps:
       - uses: aws-actions/setup-sam@v2
         with:
@@ -83,6 +96,7 @@ jobs:
 
   chaos-test-k3s:
     needs: [ enable-k3s-runner, remove-s3-bucket ]
+    if: ${{ always() }}
     runs-on: [ self-hosted, k3s-runner ]
     outputs:
       wesql-image: ${{ steps.run_chaos_test.outputs.wesql-image }}
@@ -130,6 +144,14 @@ jobs:
           OBJSTORE_PROVIDER="${{ inputs.OBJSTORE_PROVIDER }}"
           if [ -n "${OBJSTORE_PROVIDER}" ]; then
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-provider ${OBJSTORE_PROVIDER} "
+          fi
+          
+          OBJSTORE_USE_HTTPS="${{ inputs.OBJSTORE_USE_HTTPS }}"
+          if [[ -n "${OBJSTORE_USE_HTTPS}" && "${OBJSTORE_USE_HTTPS}" == "true" ]]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-use-https ${OBJSTORE_USE_HTTPS} "
+              
+              OBJSTORE_ENDPOINT="http://wesql-chaos-test-minio.default.svc:9000"
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-region \"${OBJSTORE_ENDPOINT}\" "
           fi
           
           OBJSTORE_REGION="${{ inputs.OBJSTORE_REGION }}"

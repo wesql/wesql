@@ -65,19 +65,21 @@ eval_cmd() {
 show_help() {
     cat <<EOF
 Usage: $(basename "$0") <options>
-    -h, --help                Display this help message and exit
-    -n, --namespace           Specify the Kubernetes namespace (default: $DEFAULT_NAMESPACE)
-    -cn, --cluster-name        Specify the Kubernetes cluster name (default: $DEFAULT_CLUSTER_NAME-)
-    -op, --objstore-provider   Specify the object storage provider (e.g., AWS, MINIO, R2) (default: $DEFAULT_PROVIDER)
-    -or, --objstore-region     Specify the object storage region (default: $DEFAULT_REGION)
-    -ob, --objstore-bucket     Specify the object storage bucket (default: $DEFAULT_BUCKET)
-    -wi, --wesql-image         Specify the Wesql image to use (default: $DEFAULT_IMAGE)
+    -h, --help                  Display this help message and exit
+    -n, --namespace             Specify the Kubernetes namespace (default: $DEFAULT_NAMESPACE)
+    -cn, --cluster-name         Specify the Kubernetes cluster name (default: $DEFAULT_CLUSTER_NAME-)
+    -op, --objstore-provider    Specify the object storage provider (e.g., AWS, MINIO, R2) (default: $DEFAULT_PROVIDER)
+    -or, --objstore-region      Specify the object storage region (default: $DEFAULT_REGION)
+    -ob, --objstore-bucket      Specify the object storage bucket (default: $DEFAULT_BUCKET)
+    -oe, --objstore-endpoint    Specify the object storage endpoint (default: $DEFAULT_ENDPOINT)
+    -ouh, --objstore-use-https  Specify whether to use HTTPS for the object storage (default: $DEFAULT_USE_HTTPS)
+    -wi, --wesql-image          Specify the Wesql image to use (default: $DEFAULT_IMAGE)
     -ak64, --access-key-base64  Specify the Base64-encoded access key for the object storage (default: the environment variable AWS_ACCESS_KEY_ID)
     -sk64, --secret-key-base64  Specify the Base64-encoded secret key for the object storage (default: the environment variable AWS_SECRET_ACCESS_KEY)
-    -th, --threads             Specify the number of threads used for tpcc test (default: $TABLES)
-    -tb, --tables              Specify the tables to process used for tpcc test (default: $THREADS)
-    -sz, -sc, --size, --scale  Specify the size or scale factor used for tpcc test (default: $SIZE)
-    -d, --duration             Specify the duration (default: $DEFAULT_PROVIDER)
+    -th, --threads              Specify the number of threads used for tpcc test (default: $TABLES)
+    -tb, --tables               Specify the tables to process used for tpcc test (default: $THREADS)
+    -sz, -sc, --size, --scale   Specify the size or scale factor used for tpcc test (default: $SIZE)
+    -d, --duration              Specify the duration (default: $DEFAULT_PROVIDER)
 EOF
 }
 
