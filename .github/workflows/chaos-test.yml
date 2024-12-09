@@ -92,7 +92,7 @@ jobs:
 
       - name: install chaos mesh
         run: |
-          bash testinfra/test/kbcli/install_minio_chaso_mesh.sh
+          bash testinfra/test/kbcli/install_minio_chaso_mesh.sh --region us-west-2
 
       - uses: aws-actions/setup-sam@v2
         with:
