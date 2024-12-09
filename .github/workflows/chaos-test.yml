@@ -1,0 +1,241 @@
+name: Chaos Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      OBJSTORE_PROVIDER:
+        description: 'Specify the object storage provider (e.g., aws, minio, r2)'
+        type: string
+        required: false
+        default: 'aws'
+      OBJSTORE_REGION:
+        description: 'Specify the object storage region'
+        type: string
+        required: false
+        default: 'us-west-2'
+      OBJSTORE_BUCKET:
+        description: 'Specify the object storage bucket'
+        type: string
+        required: false
+        default: 'wesql-chaos-cicd'
+      WESQL_IMAGE:
+        description: 'Specify the Wesql image to use'
+        type: string
+        required: false
+        default: ''
+      THREADS:
+        description: 'Specify the number of threads used for tpcc test'
+        type: string
+        required: false
+        default: ''
+      TABLES:
+        description: 'Specify the tables to process used for tpcc test'
+        type: string
+        required: false
+        default: ''
+      SIZE:
+        description: 'Specify the size or scale factor used for tpcc test'
+        type: string
+        required: false
+        default: ''
+      DURATION:
+        description: 'Specify the duration'
+        type: string
+        required: false
+        default: ''
+
+run-name: Chaos Test ${{ inputs.WESQL_IMAGE }} Storage Provider:${{ inputs.OBJSTORE_PROVIDER }} Region:${{ inputs.OBJSTORE_REGION }} Bucket:${{ inputs.OBJSTORE_BUCKET }}
+
+env:
+  GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  K3D_NAME: default
+
+
+jobs:
+  enable-k3s-runner:
+    uses: ./.github/workflows/enable-self-runner.yml
+    with:
+      CLOUD_PROVIDER: "eks"
+      RUNNER_LABEL: "k3s-runner"
+    secrets: inherit
+
+  chaos-test-k3s:
+    needs: [ enable-k3s-runner ]
+    runs-on: [ self-hosted, k3d-runner ]
+    outputs:
+      wesql-image: ${{ steps.run_chaos_test.outputs.wesql-image }}
+      test-result: ${{ steps.run_chaos_test.outputs.test-result }}
+      runner-name: ${{ steps.get_runner_name.outputs.runner-name }}
+    steps:
+      - name: Checkout Wesql Code
+        uses: actions/checkout@v4
+
+      - name: checkout testinfra Code
+        uses: actions/checkout@v4
+        with:
+          repository: apecloud/testinfra
+          ref: "v0.9.0"
+          path: ./testinfra
+          token: ${{ env.GITHUB_TOKEN }}
+
+      - name: setup k3d k3s
+        uses: nolar/setup-k3d-k3s@v1
+        with:
+          k3d-name: "${{ env.K3D_NAME }}"
+          version: "v${{ inputs.K3S_VERSION }}"
+          github-token: ${{ env.GITHUB_TOKEN }}
+          k3d-args: --no-lb
+
+      - name: install chaos mesh
+        run: |
+          bash testinfra/test/kbcli/install_minio_chaso_mesh.sh
+
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "${{ inputs.OBJSTORE_REGION }}"
+
+      - name: Remove S3 bucket ${{ inputs.OBJSTORE_BUCKET }}
+        run: |
+          OBJSTORE_BUCKET="${{ inputs.OBJSTORE_BUCKET }}"
+          aws s3 rm --recursive "s3://${OBJSTORE_BUCKET}/"
+
+      - name: run chaos test
+        id: run_chaos_test
+        run: |
+          file_log="$(date +%Y-%m-%d-%T)".log
+          touch  ${file_log}
+          
+          cd test/chaos_test
+          
+          test_fault_serverless_cmd="bash test_fault_serverless.sh --access-key-base64 ${{ env.AWS_ACCESS_KEY_ID }} --secret-key-base64 ${{ env.AWS_SECRET_ACCESS_KEY }} "
+          
+          OBJSTORE_PROVIDER="${{ inputs.OBJSTORE_PROVIDER }}"
+          if [ -n "${OBJSTORE_PROVIDER}" ]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-provider ${OBJSTORE_PROVIDER} "
+          fi
+          
+          OBJSTORE_REGION="${{ inputs.OBJSTORE_REGION }}"
+          if [ -n "${OBJSTORE_REGION}" ]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-region ${OBJSTORE_REGION} "
+          fi
+          
+          OBJSTORE_BUCKET="${{ inputs.OBJSTORE_BUCKET }}"
+          if [ -n "${OBJSTORE_BUCKET}" ]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-bucket ${OBJSTORE_BUCKET} "
+          fi
+          
+          WESQL_IMAGE="${{ inputs.WESQL_IMAGE }}"
+          if [ -n "${WESQL_IMAGE}" ]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --wesql-image \"${WESQL_IMAGE}\" "
+          else
+              WESQL_IMAGE="$(cat test_fault_serverless.sh | grep "DEFAULT_IMAGE=")"
+              WESQL_IMAGE="$(echo ${WESQL_IMAGE#*=} | sed 's/"//g')"
+          fi
+          
+          echo wesql-image="${WESQL_IMAGE}" >> $GITHUB_OUTPUT
+          
+          THREADS="${{ inputs.THREADS }}"
+          if [ -n "${THREADS}" ]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --threads ${THREADS} "
+          fi
+          
+          TABLES="${{ inputs.TABLES }}"
+          if [ -n "${TABLES}" ]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --tables ${TABLES} "
+          fi
+          
+          SIZE="${{ inputs.SIZE }}"
+          if [ -n "${SIZE}" ]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --size ${SIZE} "
+          fi
+          
+          DURATION="${{ inputs.DURATION }}"
+          if [ -n "${DURATION}" ]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --duration ${DURATION} "
+          fi
+          
+          echo "${test_fault_serverless_cmd}"
+          eval "${test_fault_serverless_cmd}" | tee -a ${file_log}
+ 
+          test_ret="$( grep "【FAILED】" ${file_log} || true )"
+          if [[ -n "$test_ret" ]]; then
+              echo test-result=[FAILED] >> $GITHUB_OUTPUT
+              exit 1
+          else
+              echo test-result=[PASSED] >> $GITHUB_OUTPUT
+          fi
+
+      - name: get runner name
+        id: get_runner_name
+        if: ${{ always() }}
+        run: |
+          echo runner-name=${RUNNER_NAME} >> $GITHUB_OUTPUT
+
+  send-message:
+    needs: [ chaos-test-k3s ]
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - name: Checkout apecloud-cd Code
+        uses: actions/checkout@v4
+        with:
+          repository: apecloud/apecloud-cd
+
+      - name: send test result message
+        run: |
+          WESQL_IMAGE="${{ needs.cloud-test-k3d.outputs.wesql-image }}"
+          TEST_RESULT="${{ needs.cloud-test-k3d.outputs.test-result }}"
+          if [[ -z "${TEST_RESULT}" ]]; then
+              TEST_RESULT="[FAILED]"
+          fi
+        
+          TEST_RESULT="chaos-test-k3s|wesql-chaos-test|${TEST_RESULT}"
+          echo "${TEST_RESULT}" 
+          
+          TEST_RESULT=$( bash .github/utils/utils.sh --type 38 \
+              --github-repo "${{ github.repository }}" \
+              --github-token "${{ env.GITHUB_TOKEN }}" \
+              --test-result "${TEST_RESULT}" \
+              --run-id "$GITHUB_RUN_ID" )
+          
+          echo "${TEST_RESULT}" 
+          
+          date_ret=$(date +%Y-%m-%d-%T)
+          TEST_TITLE="[${WESQL_IMAGE}] Chaos Test on Env K3s [${date_ret}]"
+          ${{ github.workspace }}/.github/utils/send_mesage.py \
+              --url "${{ vars.TEST_BOT_WEBHOOK }}" \
+              --title "$TEST_TITLE" \
+              --result "$TEST_RESULT"
+
+  remove-k3s-runner:
+    runs-on: ubuntu-latest
+    needs: [ chaos-test-k3s ]
+    if: ${{ always() }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Delete self runner
+        continue-on-error: true
+        uses: './.github/actions/delete-runner'
+        with:
+          github-token: ${{ env.GITHUB_TOKEN }}
+          runner-name: ${{ needs.chaos-test-k3s.outputs.runner-name }}
+          access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+
+  disable-k3s-runner:
+    needs: [ chaos-test-k3s ]
+    if: ${{ always() }}
+    uses: ./.github/workflows/enable-self-runner.yml
+    with:
+      ENABLE: "disable"
+      RUNNER_LABEL: "k3s-runner"
+    secrets: inherit

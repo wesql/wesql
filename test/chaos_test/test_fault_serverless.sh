@@ -108,6 +108,26 @@ leader_exec_command() {
     return 0
 }
 
+check_cluster_connect() {
+    cmd="select 1"
+    while true; do
+        ready_num=0
+        for i in {0..2}; do
+            if res=$(pod_exec_command "$cmd" "$i"); then
+              if [[ "$res" == "1" ]]; then
+                ready_num=$(($ready_num + 1))
+              fi
+            fi
+        done
+        if [[ $ready_num -eq 3 ]]; then
+            echo "check cluster connect done"
+            break
+        fi
+        echo "check cluster connect ready num:$ready_num"
+        sleep 5
+    done
+}
+
 check_cluster_status_create() {
     while true; do
         pod0_status=$(kubectl get pod --namespace $NAMESPACE | (grep "${NAME_PODS[0]}" || true) | (grep "1/1" || true) | awk '{print $3}')
@@ -120,6 +140,7 @@ check_cluster_status_create() {
         fi
         sleep 1
     done
+    check_cluster_connect
 }
 
 create_cluster() {
@@ -1258,6 +1279,7 @@ main() {
     export WESQL_IMAGE=${DEFAULT_IMAGE}
     export ACCESS_KEY=${DEFAULT_AK}
     export SECRET_KEY=${DEFAULT_SK}
+    export LOWERS="abcdefghijklmnopqrstuvwxyz"
 
     parse_command_line "$@"
     echo "bash test_fault_serverless.sh --threads ${THREADS} \

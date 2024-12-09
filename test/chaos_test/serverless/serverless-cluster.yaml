@@ -188,11 +188,11 @@ spec:
           protocol: TCP
         resources:
           limits:
-            cpu: "4"
-            memory: 8Gi
+            cpu: "3"
+            memory: 6Gi
           requests:
-            cpu: "4"
-            memory: 8Gi
+            cpu: "3"
+            memory: 6Gi
         securityContext:
           capabilities:
             add:
@@ -211,7 +211,6 @@ spec:
       resources:
         requests:
           storage: 100Gi
-      storageClassName: gp2
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -338,7 +337,6 @@ spec:
       resources:
         requests:
           storage: 100Gi
-      storageClassName: gp2
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -463,7 +461,6 @@ spec:
       resources:
         requests:
           storage: 100Gi
-      storageClassName: gp2
 
 ---
 apiVersion: v1

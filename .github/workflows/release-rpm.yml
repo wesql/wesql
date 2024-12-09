@@ -109,7 +109,7 @@ jobs:
   release-rpm:
     name: release x86_64 rpm
     needs: [ enable-amd-runner ]
-    runs-on: [self-hosted, eks-oraclelinux8-amd64-runnerr ]
+    runs-on: [self-hosted, eks-oraclelinux8-amd64-runner ]
     outputs:
       runner-name: ${{ steps.get_runner_name.outputs.runner-name }}
       prerelease-image: ${{ steps.get_prerelease.outputs.prerelease-image }}
