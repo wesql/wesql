@@ -64,7 +64,7 @@ jobs:
 
   chaos-test-k3s:
     needs: [ enable-k3s-runner ]
-    runs-on: [ self-hosted, k3d-runner ]
+    runs-on: [ self-hosted, k3s-runner ]
     outputs:
       wesql-image: ${{ steps.run_chaos_test.outputs.wesql-image }}
       test-result: ${{ steps.run_chaos_test.outputs.test-result }}
