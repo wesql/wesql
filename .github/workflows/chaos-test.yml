@@ -139,7 +139,7 @@ jobs:
           
           cd test/chaos_test
           
-          test_fault_serverless_cmd="bash test_fault_serverless.sh --access-key-base64 ${{ env.AWS_ACCESS_KEY_ID }} --secret-key-base64 ${{ env.AWS_SECRET_ACCESS_KEY }} "
+          test_fault_serverless_cmd="bash test_fault_serverless.sh "
           
           OBJSTORE_PROVIDER="${{ inputs.OBJSTORE_PROVIDER }}"
           if [ -n "${OBJSTORE_PROVIDER}" ]; then
@@ -147,11 +147,18 @@ jobs:
           fi
           
           OBJSTORE_USE_HTTPS="${{ inputs.OBJSTORE_USE_HTTPS }}"
-          if [[ -n "${OBJSTORE_USE_HTTPS}" && "${OBJSTORE_USE_HTTPS}" == "true" ]]; then
+          if [[ "${OBJSTORE_USE_HTTPS}" == "true" ]]; then
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-use-https ${OBJSTORE_USE_HTTPS} "
               
               OBJSTORE_ENDPOINT="http://wesql-chaos-test-minio.default.svc:9000"
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-endpoint \"${OBJSTORE_ENDPOINT}\" "
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --access-key-base64 wesqlchaostest "
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --secret-key-base64 wesqlchaostest "
+          fi
+          
+          if [[ "${OBJSTORE_PROVIDER}" == "aws" && "${OBJSTORE_USE_HTTPS}" == "false" ]]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --access-key-base64 ${{ env.AWS_ACCESS_KEY_ID }} "
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --secret-key-base64 ${{ env.AWS_SECRET_ACCESS_KEY }} "
           fi
           
           OBJSTORE_REGION="${{ inputs.OBJSTORE_REGION }}"
