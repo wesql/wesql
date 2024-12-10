@@ -49,6 +49,7 @@ exit_program() {
 
     eval "rm -rf tmp"
     echo "Exiting..."
+    report_test_result
     exit 0
 }
 
@@ -273,6 +274,8 @@ tpcc_check() {
     while true; do
         check_pod_status=$(kubectl get pod | (grep "$pod_name" || true) | awk '{print $3}')
         if [[ "$check_pod_status" == "Completed" ]]; then
+            delete_tpcc_check_cmd="kubectl delete pod $pod_name"
+            eval "$delete_tpcc_check_cmd"
             break
         elif [[ "$check_pod_status" == "Running" || "$check_pod_status" == "ContainerCreating" ]]; then
             sleep 1
@@ -856,6 +859,7 @@ add_test_result() {
 }
 
 report_test_result() {
+    echo "report test result"
     for test_ret in $(echo "$TEST_RESULT" | sed 's/##/ /g'); do
         test_ret=$(echo "$test_ret" | sed 's/#/ /g')
         case $test_ret in
