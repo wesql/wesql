@@ -150,7 +150,17 @@ jobs:
           if [[ "${OBJSTORE_USE_HTTPS}" == "true" ]]; then
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-use-https ${OBJSTORE_USE_HTTPS} "
               
-              OBJSTORE_ENDPOINT="http://wesql-chaos-test-minio.default.svc:9000"
+              MINIO_POD_IP=""
+              for i in {1..3}; do
+                  MINIO_POD_IP=$(kubectl get pod -l app.kubernetes.io/instance=wesql-chaos-test-minio -ojsonpath='{.items[].status.podIP}')
+                  if [[ -n "${MINIO_POD_IP}" ]]; then
+                      echo "MINIO_POD_IP: ${MINIO_POD_IP}"
+                      break
+                  fi
+                  sleep 1
+              done
+              
+              OBJSTORE_ENDPOINT="http://${MINIO_POD_IP}:9000"
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-endpoint \"${OBJSTORE_ENDPOINT}\" "
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --access-key-base64 wesqlchaostest "
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --secret-key-base64 wesqlchaostest "
@@ -161,14 +171,14 @@ jobs:
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --secret-key-base64 ${{ env.AWS_SECRET_ACCESS_KEY }} "
           fi
           
-          OBJSTORE_REGION="${{ inputs.OBJSTORE_REGION }}"
-          if [ -n "${OBJSTORE_REGION}" ]; then
-              test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-region ${OBJSTORE_REGION} "
-          fi
-          
           OBJSTORE_BUCKET="${{ inputs.OBJSTORE_BUCKET }}"
           if [ -n "${OBJSTORE_BUCKET}" ]; then
               test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-bucket ${OBJSTORE_BUCKET} "
+          fi
+          
+          OBJSTORE_REGION="${{ inputs.OBJSTORE_REGION }}"
+          if [ -n "${OBJSTORE_REGION}" ]; then
+              test_fault_serverless_cmd="${test_fault_serverless_cmd} --objstore-region ${OBJSTORE_REGION} "
           fi
           
           WESQL_IMAGE="${{ inputs.WESQL_IMAGE }}"
@@ -178,7 +188,7 @@ jobs:
               WESQL_IMAGE="$(cat test_fault_serverless.sh | grep "DEFAULT_IMAGE=")"
               WESQL_IMAGE="$(echo ${WESQL_IMAGE#*=} | sed 's/"//g')"
           fi
-          echo "WESQL_IMAGE:${WESQL_IMAGE}"
+          echo "WESQL_IMAGE: ${WESQL_IMAGE}"
           echo wesql-image="${WESQL_IMAGE}" >> $GITHUB_OUTPUT
           
           THREADS="${{ inputs.THREADS }}"
