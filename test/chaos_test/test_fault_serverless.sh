@@ -311,6 +311,7 @@ tpcc_run() {
             break
         else
             echo "Tpcc run starts failed!!"
+            add_test_result_failed "Tpcc#run#starts#failed"
             exit_program
         fi
     done
@@ -339,6 +340,7 @@ tpcc_prepare() {
             else
                 if [[ "$time_cnt" -gt 10 ]]; then
                     echo "Tpcc prepare failed!!"
+                    add_test_result_failed "Tpcc#prepare#failed"
                     exit_program
                 else
                     time_cnt=$(($time_cnt + 1))
@@ -355,6 +357,7 @@ tpcc_prepare() {
         fi
     else
         echo "cleanup tpcc failed!!"
+        add_test_result_failed "Tpcc#cleanup#failed"
         exit_program
     fi
     return 0
@@ -847,6 +850,7 @@ connect_cluster() {
         echo "$res---$DEFAULT_VALUE"
         RPO="Data lost"
         echo "Data lost"
+        add_test_result_failed "Data#lost"
         exit_program
     fi
 }
@@ -860,6 +864,15 @@ add_test_result() {
     else
         test_result="【FAILED】|【"$test_result"】|【RTO:"$RTO"#RPO:"$RPO"】|【FullRecovery:"$fullrecov"】"
     fi
+    if [[ "$TEST_RESULT" != *"$test_result"* ]]; then
+        TEST_RESULT="$TEST_RESULT##$test_result"
+        RET_FLAG=1
+    fi
+}
+
+add_test_result_failed() {
+    test_result=${1:-""}
+    test_result="【FAILED】|【"$test_result"】"
     if [[ "$TEST_RESULT" != *"$test_result"* ]]; then
         TEST_RESULT="$TEST_RESULT##$test_result"
         RET_FLAG=1
@@ -1205,6 +1218,7 @@ check_rto_rpo() {
                         echo "tpcc check pass"
                         RPO=0
                     else
+                        add_test_result_failed "Tpcc#check#failed"
                         exit_program
                     fi
                     podrunningToStopTime="null"
@@ -1242,6 +1256,7 @@ check_rto_rpo() {
                 else
                     RPO="Data inconsistent"
                     echo "Data inconsistent!!"
+                    add_test_result_failed "Data#inconsistent"
                     exit_program
                 fi
                 break
