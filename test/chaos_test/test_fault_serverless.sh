@@ -819,9 +819,17 @@ connect_cluster() {
     component="mysql"
 
     cmd="use mydb; SELECT value FROM tmp_table WHERE id = 1;"
-    if ! res=$(leader_exec_command "$cmd"); then
-        return 1
-    fi
+    res=""
+    for i in {1..30}; do
+        if ! res=$(leader_exec_command "$cmd"); then
+            return 1
+        fi
+
+        if [ -n "$res" ]; then
+            break
+        fi
+        sleep 1
+    done
     echo "$res---$DEFAULT_VALUE"
     if [ "$res" == "$DEFAULT_VALUE" ]; then
         cmd="use mydb; UPDATE tmp_table SET value = value + 1 WHERE id = 1;"

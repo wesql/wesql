@@ -4,6 +4,7 @@ on:
   pull_request:
     paths-ignore:
       - '.github/**'
+      - 'test/chaos_test/**'
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
