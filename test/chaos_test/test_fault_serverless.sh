@@ -1242,6 +1242,7 @@ check_rto_rpo() {
                 break
             fi
         done
+        report_test_result
     done
 
 }
