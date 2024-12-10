@@ -20,16 +20,16 @@ on:
         options:
           - 'true'
           - 'false'
-      OBJSTORE_REGION:
-        description: 'Specify the object storage region'
-        type: string
-        required: false
-        default: 'us-west-2'
       OBJSTORE_BUCKET:
         description: 'Specify the object storage bucket'
         type: string
         required: false
         default: 'wesql-chaos-cicd'
+      OBJSTORE_REGION:
+        description: 'Specify the object storage region'
+        type: string
+        required: false
+        default: 'us-west-2'
       WESQL_IMAGE:
         description: 'Specify the Wesql image to use'
         type: string
@@ -56,7 +56,7 @@ on:
         required: false
         default: ''
 
-run-name: Chaos Test ${{ inputs.WESQL_IMAGE }} Storage Provider:${{ inputs.OBJSTORE_PROVIDER }} Region:${{ inputs.OBJSTORE_REGION }} Bucket:${{ inputs.OBJSTORE_BUCKET }}
+run-name: Chaos Test ${{ inputs.WESQL_IMAGE }} Storage Provider:${{ inputs.OBJSTORE_PROVIDER }} Bucket:${{ inputs.OBJSTORE_BUCKET }} Region:${{ inputs.OBJSTORE_REGION }}
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
