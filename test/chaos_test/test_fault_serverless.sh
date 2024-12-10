@@ -908,8 +908,25 @@ check_rto_rpo() {
         everstopped="false"
         podeverstopped="false"
         fullrecov=0
-        running_pod_name=$(tpcc_run)
+        running_pod_name=""
         continue_flag=0
+        case $fault_rand in
+        27|28|29|30|59)
+            continue_flag=1
+            ;;
+        48|49|50)
+            OBJSTORE_PROVIDER_LOWER=$(echo "$OBJSTORE_PROVIDER" | tr '[:upper:]' '[:lower:]')
+            if [ "$OBJSTORE_PROVIDER_LOWER" == "minio" ]; then
+                continue_flag=1
+            fi
+            ;;
+        esac
+
+        if [ "$continue_flag" -eq 1 ]; then
+            continue
+        fi
+
+        running_pod_name=$(tpcc_run)
 
         case $fault_rand in
         1)
@@ -1019,22 +1036,18 @@ check_rto_rpo() {
         27)
             test_fault_name="test_network_follower_partition"
             # test_network_follower partition
-            continue_flag=1
             ;;
         28)
             test_fault_name="test_network_2follower_partition"
             # test_network_2follower partition
-            continue_flag=1
             ;;
         29)
             test_fault_name="test_network_1leader1follower_partition"
             # test_network_1leader1follower partition
-            continue_flag=1
             ;;
         30)
             test_fault_name="test_network_all_partition"
             # test_network_all partition
-            continue_flag=1
             ;;
         31)
             test_fault_name="test_network_leader_loss100"
@@ -1151,7 +1164,6 @@ check_rto_rpo() {
         59)
             test_fault_name="test_data_lost_2follower"
             # test_data_lost_2follower
-            continue_flag=1
             ;;
         60)
             test_fault_name="test_data_lost_1leader_1follower"
@@ -1163,10 +1175,6 @@ check_rto_rpo() {
             ;;
 
         esac
-
-        if [ "$continue_flag" -eq 1 ]; then
-            continue
-        fi
 
         injectFaultTime=$(date +'%Y-%m-%d %H:%M:%S')
         while true; do
