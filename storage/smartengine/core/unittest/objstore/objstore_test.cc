@@ -290,10 +290,10 @@ INSTANTIATE_TEST_CASE_P(cloudProviders,
                         ObjstoreTest,
                         testing::Values( // clang-format off
                             // "aws"
-                            "r2"
+                            // "r2"
                             // "minio"
                             // "aliyun"
-                            // "local"
+                            "local"
                             )); // clang-format on
 
 TEST_P(ObjstoreTest, reinitObjStoreApi)

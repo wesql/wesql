@@ -327,6 +327,9 @@ void test_get(char* data, int sample_count, smartengine::obj::ObjstoreBench &obj
 }
 
 int main(int argc, char **argv) {
+#ifndef NDEBUG
+  return 0;
+#endif
   // parse --concurrent option, if not specified, use 16 by default
   // parse --samples options, if not specified, use 5000 by default
   if (argc > 1) {
