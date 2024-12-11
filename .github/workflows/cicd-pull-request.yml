@@ -84,17 +84,44 @@ jobs:
           echo "export PATH=/usr/local/mysql/bin:$PATH" >> ~/.bashrc && source ~/.bashrc
           echo "export LD_LIBRARY_PATH=/usr/local/mysql/lib:$LD_LIBRARY_PATH" >> ~/.bashrc && source ~/.bashrc
 
+      - name: install and start minio service
+        run: |
+          sudo dnf install ./extra/minio.rpm
+          export MINIO_ROOT_USER="minio123"
+          export MINIO_ROOT_PASSWORD="minio123"
+          export MINIO_DATA_DIR=/home/mysql/wesql-mtr-mino-data
+          mkdir -p $MINIO_DATA_DIR
+          nohup /usr/local/bin/minio server $MINIO_DATA_DIR --console-address :9001 &
+
       - name: run mtr on serverless
         run: |
+          sudo yum install awscli
           cd ./build/mysql-test
           CUR_DIR=`pwd`
+          export AWS_ACCESS_KEY_ID=minio123
+          export AWS_SECRET_ACCESS_KEY=minio123
+          export AWS_DEFAULT_OUTPUT=json
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+          aws configure set output $AWS_DEFAULT_OUTPUT
+          aws configure set default.s3.signature_version s3v4
+
+          ####
+          #aws --endpoint-url http://127.0.0.1:9000 s3 rm s3://wesql-mtr-tests --recursive
+          #aws --endpoint-url http://127.0.0.1:9000 s3 rb s3://wesql-mtr-tests
+          ####
+          aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://wesql-mtr-tests
+
           ./mysql-test-run.pl --suite=smartengine_consistent_snapshot  --nowarnings --retry=3  --parallel=6 --force --report-unstable-tests \
               --initialize="--serverless=true" \
               --initialize="--objectstore_provider=local" \
               --skip-test-list=collections/disabled-smartengine-serverless.def
           ./mysql-test-run.pl --suite=smartengine  --nowarnings --retry=3  --parallel=6 --force --report-unstable-tests \
               --initialize="--serverless=true" \
-              --initialize="--objectstore_provider=local" \
+              --initialize="--objectstore_provider=minio" \
+              --initialize="--objectstore_region=" \
+              --initialize="--objectstore_bucket=wesql-mtr-tests" \
+              --initialize="--objectstore_endpoint=http://127.0.0.1:9000" \
               --initialize="--snapshot_archive_smartengine_tar_mode=TAR" \
               --initialize="--snapshot_archive_innodb_tar_mode=TAR" \
               --skip-test-list=collections/disabled-smartengine-serverless.def

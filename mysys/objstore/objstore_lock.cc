@@ -56,10 +56,10 @@ int ensure_object_store_lock(const std::string_view &provider,
     error = 1;
   } else if (should_exist &&
              status.error_code() == objstore::Errors::SE_NO_SUCH_KEY) {
-    err_msg = data_lock + ": lock file should exist but not";
+    err_msg = data_lock_path + ": lock file should exist but not";
     error = 1;
   } else if (!should_exist && status.is_succ()) {
-    err_msg = data_lock + ": lock file should not exist";
+    err_msg = data_lock_path + ": lock file should not exist";
     error = 1;
   } else if (!should_exist) {
     status = objstore->put_object(bucket_dir, branch_path, "");

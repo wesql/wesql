@@ -3,6 +3,7 @@
 let $ddir = $MYSQL_TMP_DIR/.smartengine_datadir.test.install.db;
 let $rdb_ddir = $MYSQL_TMP_DIR/.smartengine_datadir.test;
 let $sql_file = $MYSQL_TMP_DIR/smartengine_datadir.sql;
+let $repo_id = "objectstore_smartengine_datadir_not_exists";
 
 --write_file $sql_file
 DROP DATABASE IF EXISTS mysqltest;
@@ -19,7 +20,7 @@ EOF
 mkdir $ddir;
 
 # Launch mysqld with non-standard smartengine_datadir
-exec $MYSQLD_BOOTSTRAP_CMD --datadir=$ddir --smartengine_data_dir=$rdb_ddir --default-storage-engine=SMARTENGINE --default-tmp-storage-engine=MyISAM --smartengine < $sql_file;
+exec $MYSQLD_BOOTSTRAP_CMD --repo_objectstore_id=$repo_id --datadir=$ddir --smartengine_data_dir=$rdb_ddir --default-storage-engine=SMARTENGINE --default-tmp-storage-engine=MyISAM --smartengine < $sql_file;
 
 #not used MANIFEST
 --echo Check for the number of MANIFEST files

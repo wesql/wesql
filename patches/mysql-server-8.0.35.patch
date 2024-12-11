@@ -988,7 +988,7 @@ index d03842d66ad..d47fa4de7df 100644
  sub mtr_match_extension ($$) {
    my $file = shift;
 diff --git a/mysql-test/mysql-test-run.pl b/mysql-test/mysql-test-run.pl
-index 26e6c92cf64..16455a83c0e 100755
+index 26e6c92cf64..97cbe5923f6 100755
 --- a/mysql-test/mysql-test-run.pl
 +++ b/mysql-test/mysql-test-run.pl
 @@ -142,7 +142,7 @@ my $opt_include_ndbcluster = 0;
@@ -1000,16 +1000,19 @@ index 26e6c92cf64..16455a83c0e 100755
  my $opt_mysqlx_baseport    = $ENV{'MYSQLXPLUGIN_PORT'} || "auto";
  my $opt_port_base          = $ENV{'MTR_PORT_BASE'} || "auto";
  my $opt_port_exclude       = $ENV{'MTR_PORT_EXCLUDE'} || "none";
-@@ -225,6 +225,8 @@ our $opt_summary_report;
+@@ -225,6 +225,11 @@ our $opt_summary_report;
  our $opt_vardir;
  our $opt_xml_report;
  our $ports_per_thread   = 30;
 +our $opt_objectstore_provider = "";
++our $opt_objectstore_region = "";
 +our $opt_objectstore_bucket = "";
++our $opt_objectstore_endpoint = "";
++our $opt_repo_objstore_id = "";
  
  #
  # Suites run by default (i.e. when invoking ./mtr without parameters)
-@@ -299,6 +301,10 @@ our $opt_user                      = "root";
+@@ -299,6 +304,10 @@ our $opt_user                      = "root";
  our $opt_valgrind                  = 0;
  our $opt_valgrind_secondary_engine = 0;
  our $opt_verbose                   = 0;
@@ -1020,16 +1023,25 @@ index 26e6c92cf64..16455a83c0e 100755
  # Visual Studio produces executables in different sub-directories
  # based on the configuration used to build them. To make life easier,
  # an environment variable or command-line option may be specified to
-@@ -923,6 +929,8 @@ sub main {
+@@ -446,6 +455,8 @@ sub main {
+ 
+   command_line_setup();
+ 
++  clean_objectstore_test_dir("", "all");
++
+   # Create build thread id directory
+   create_unique_id_dir();
+ 
+@@ -923,6 +934,8 @@ sub main {
  
    remove_vardir_subs() if $opt_clean_vardir;
  
-+  clean_objectstore_bucket_dir("all");
++  clean_objectstore_test_dir("", "all");
 +
    exit(0);
  }
  
-@@ -1166,10 +1174,10 @@ sub run_test_server ($$$) {
+@@ -1166,10 +1179,10 @@ sub run_test_server ($$$) {
            # Unknown message from worker
            mtr_error("Unknown response: '$line' from client");
          }
@@ -1044,7 +1056,7 @@ index 26e6c92cf64..16455a83c0e 100755
          # Find next test to schedule
          # - Try to use same configuration as worker used last time
          # - Limit number of parallel ndb tests
-@@ -1789,6 +1797,8 @@ sub command_line_setup {
+@@ -1789,6 +1802,8 @@ sub command_line_setup {
      'user-args'             => \$opt_user_args,
      'user=s'                => \$opt_user,
      'verbose'               => \$opt_verbose,
@@ -1053,7 +1065,7 @@ index 26e6c92cf64..16455a83c0e 100755
      'verbose-restart'       => \&report_option,
      'wait-all'              => \$opt_wait_all,
      'warnings!'             => \$opt_warnings,
-@@ -1802,6 +1812,21 @@ sub command_line_setup {
+@@ -1802,6 +1817,33 @@ sub command_line_setup {
  
    GetOptions(%options) or usage("Can't read options");
  
@@ -1062,20 +1074,32 @@ index 26e6c92cf64..16455a83c0e 100755
 +    if ($arg =~ /^--objectstore_provider=(.*)$/) {
 +      $opt_objectstore_provider = $1;
 +    }
++    if ($arg =~ /^--objectstore_region=(.*)$/) {
++      $opt_objectstore_region = $1;
++    }
 +    if ($arg =~ /^--objectstore_bucket=(.*)$/) {
 +      $opt_objectstore_bucket = $1;
++    }
++    if ($arg =~ /^--objectstore_endpoint=(.*)$/) {
++      $opt_objectstore_endpoint= $1;
++    }
++    if ($arg =~ /^--repo_objectstore_id=(.*)$/) {
++      $opt_repo_objstore_id = $1;
 +    }
 +  }
 +
 +  if ($opt_objectstore_provider) {
 +    mtr_report("opt_objectstore_provider:$opt_objectstore_provider");
++    mtr_report("opt_objectstore_region:$opt_objectstore_region");
 +    mtr_report("opt_objectstore_bucket:$opt_objectstore_bucket");
++    mtr_report("opt_objectstore_endpoint:$opt_objectstore_endpoint");
++    mtr_report("opt_repo_objstore_id:$opt_repo_objstore_id");
 +  }
 +
    usage("") if $opt_usage;
    list_options(\%options) if $opt_list_options;
  
-@@ -1906,7 +1931,10 @@ sub command_line_setup {
+@@ -1906,7 +1948,10 @@ sub command_line_setup {
      }
    }
  
@@ -1087,34 +1111,29 @@ index 26e6c92cf64..16455a83c0e 100755
    foreach my $arg (@opt_extra_mysqld_opt) {
      if ($arg =~ /binlog[-_]format=(\S+)/) {
        # Save this for collect phase
-@@ -2325,6 +2353,140 @@ sub command_line_setup {
+@@ -2325,6 +2370,142 @@ sub command_line_setup {
    check_fips_support();
  }
  
 +sub clean_aliyun_bucket_dir($)
 +{
-+  my ($bucket_dir) = @_;
-+
 +  if (!$opt_objectstore_bucket) {
 +    return;
 +  }
-+  if ($bucket_dir and !($bucket_dir =~ /\/$/)) {
-+    mtr_error("bucket dir should end with an /");
-+    return;
-+  }
++  my ($objectstore_test_dir) = @_;
 +  my $objectstore_bucket = $opt_objectstore_bucket;
 +
-+  my $objectstore_cmd = "aliyun oss rm -f oss://$objectstore_bucket/$bucket_dir  --recursive";
++  my $objectstore_cmd = "aliyun oss rm -f oss://$objectstore_test_dir  --recursive";
 +
 +  my $objectstore_cmd_output = `$objectstore_cmd`;
 +  if ($? != 0) {
-+    mtr_error("Failed to clean up object store bucket dir oss://$objectstore_bucket/$bucket_dir");
++    mtr_error("Failed to clean up object store bucket dir oss://$objectstore_test_dir");
 +    mtr_error("Command: $objectstore_cmd");
 +    mtr_error("Output: $objectstore_cmd_output");
 +    return;
 +  } else {
 +    # make sure the bucket is empty
-+    $objectstore_cmd = "aliyun oss ls oss://$objectstore_bucket/$bucket_dir";
++    $objectstore_cmd = "aliyun oss ls oss://$objectstore_test_dir";
 +    # wait for the bucket to be empty
 +    my $timeout = 60;
 +    while ($timeout > 0) {
@@ -1126,7 +1145,7 @@ index 26e6c92cf64..16455a83c0e 100755
 +        last;
 +      }
 +      if ($? != 0) {
-+        mtr_error("Failed to list object store bucket oss://$objectstore_bucket/$bucket_dir");
++        mtr_error("Failed to list object store bucket oss://$objectstore_test_dir");
 +        mtr_error("Command: $objectstore_cmd");
 +        mtr_error("Output: $objectstore_cmd_output");
 +        return;
@@ -1134,39 +1153,42 @@ index 26e6c92cf64..16455a83c0e 100755
 +    }
 +    # print "objectstore_cmd_output: $objectstore_cmd_output\n";
 +    if ($objectstore_cmd_output !~ /Object Number is: 0/) {
-+      mtr_error("Failed to clean up object store bucket dir oss://$objectstore_bucket/$bucket_dir");
++      mtr_error("Failed to clean up object store bucket dir oss://$objectstore_test_dir");
 +      mtr_error("Bucket is not empty");
 +      return;
 +    } else {
-+      #print "Object store bucket oss://$objectstore_bucket/$bucket_dir cleaned up\n";
++      #print "Object store bucket oss://$objectstore_test_dir cleaned up\n";
 +    }
 +  }
 +}
 +
 +sub clean_aws_bucket_dir($)
 +{
-+  my ($bucket_dir) = @_;
-+
 +  if (!$opt_objectstore_bucket) {
 +    return;
 +  }
-+  if ($bucket_dir and !($bucket_dir =~ /\/$/)) {
-+    mtr_error("bucket dir should end with an /");
-+    return;
-+  }
 +  my $objectstore_bucket = $opt_objectstore_bucket;
++  my $objectstore_endpoint = $opt_objectstore_endpoint; 
 +
-+  my $objectstore_cmd = "aws s3 rm s3://$objectstore_bucket/$bucket_dir --recursive";
++  my $objectstore_test_dir = shift;
++  my $objectstore_cmd = "aws s3 rm s3://$objectstore_test_dir  --recursive";
++  if ($opt_objectstore_endpoint) {
++    $objectstore_cmd = "aws --endpoint-url $objectstore_endpoint s3 rm s3://$objectstore_test_dir  --recursive"; 
++  }
 +
 +  my $objectstore_cmd_output = `$objectstore_cmd`;
 +  if ($? != 0) {
-+    mtr_error("Failed to clean up object store bucket dir $objectstore_bucket/$bucket_dir");
++    mtr_error("Failed to clean up object store bucket dir $objectstore_test_dir");
 +    mtr_error("Command: $objectstore_cmd");
 +    mtr_error("Output: $objectstore_cmd_output");
 +    return;
 +  } else {
 +    # make sure the bucket is empty
-+    $objectstore_cmd = "aws s3 ls s3://$objectstore_bucket/$bucket_dir";
++    $objectstore_cmd = "aws s3 ls s3://$objectstore_test_dir";
++    if ($opt_objectstore_endpoint) {
++      $objectstore_cmd = "aws --endpoint-url $objectstore_endpoint s3 ls s3://$objectstore_test_dir";
++    }
++    
 +    # wait for the bucket to be empty
 +    my $timeout = 60;
 +    while ($timeout > 0) {
@@ -1178,45 +1200,49 @@ index 26e6c92cf64..16455a83c0e 100755
 +      }
 +      # 1 means no such directory
 +      if ($? != 0 && $? != 1) {
-+        mtr_error("Failed to list object store bucket $objectstore_bucket/$bucket_dir");
++        mtr_error("Failed to list object store bucket $objectstore_test_dir");
 +        mtr_error("Command: $objectstore_cmd");
 +        mtr_error("Output: $objectstore_cmd_output");
 +        return;
 +      }
 +    }
 +    if ($objectstore_cmd_output ne "") {
-+      mtr_error("Failed to clean up object store bucket dir $objectstore_bucket/$bucket_dir");
++      mtr_error("Failed to clean up object store bucket dir $objectstore_test_dir");
 +      mtr_error("Bucket is not empty");
 +      return;
 +    } else {
-+      #print "Object store bucket $objectstore_bucket/$bucket_dir cleaned up\n";
++      #print "Object store bucket $objectstore_test_dir cleaned up\n";
 +    }
 +  }
 +}
 +
-+sub clean_objectstore_bucket_dir($)
++sub clean_objectstore_test_dir($$)
 +{
-+  my ($test_name) = @_;
-+
 +  if (!$opt_objectstore_provider || !$opt_objectstore_bucket) {
 +    return;
 +  }
-+  my $objectstore_provider = $opt_objectstore_provider;
-+  my $objectstore_bucket = $opt_objectstore_bucket;
-+
++  my $objectstore_test_dir = shift;
++  my $test_name = shift;
 +  if (!$test_name || $test_name eq "shutdown_report") {
 +    return;
 +  }
-+  my $bucket_dir = "";
++  my $objectstore_provider = $opt_objectstore_provider;
++  my $objectstore_region = $opt_objectstore_region;
++  my $objectstore_bucket = $opt_objectstore_bucket;
++  my $objectstore_endpoint = $opt_objectstore_endpoint;
++  my $objectstore_repo_id = $opt_repo_objstore_id;
++
 +  if ($test_name eq "all") {
-+    $test_name = "";
++    $objectstore_test_dir = "$objectstore_bucket";
 +  } else {
-+    $bucket_dir = "$test_name/";
++    $objectstore_test_dir = "$objectstore_bucket/$objectstore_test_dir ";
 +  }
 +  if ($objectstore_provider eq 'aws') {
-+    clean_aws_bucket_dir($bucket_dir);
++    clean_aws_bucket_dir($objectstore_test_dir );
++  } elsif ($objectstore_provider eq 'minio') {
++    clean_aws_bucket_dir($objectstore_test_dir);
 +  } elsif ($objectstore_provider eq 'aliyun') {
-+    clean_aliyun_bucket_dir($bucket_dir);
++    clean_aliyun_bucket_dir($objectstore_test_dir);
 +  } elsif ($objectstore_provider eq 'local') {
 +    return;
 +  } else {
@@ -1228,7 +1254,7 @@ index 26e6c92cf64..16455a83c0e 100755
  sub check_fips_support() {
    # Run $exe_mysqltest to see if FIPS mode is supported.
    my $args;
-@@ -3128,6 +3290,7 @@ sub environment_setup {
+@@ -3128,6 +3309,7 @@ sub environment_setup {
    $ENV{'MYSQL_TMP_DIR'}       = $opt_tmpdir;
    $ENV{'MYSQLTEST_VARDIR'}    = $opt_vardir;
    $ENV{'USE_RUNNING_SERVER'}  = using_extern();
@@ -1236,7 +1262,7 @@ index 26e6c92cf64..16455a83c0e 100755
  
    if (IS_WINDOWS) {
      $ENV{'SECURE_LOAD_PATH'}      = $glob_mysql_test_dir . "\\std_data";
-@@ -4179,7 +4342,7 @@ sub default_mysqld {
+@@ -4179,7 +4361,7 @@ sub default_mysqld {
  # thus created will later be used for a quick "boot" whenever the
  # server is restarted.
  sub mysql_install_db {
@@ -1245,25 +1271,28 @@ index 26e6c92cf64..16455a83c0e 100755
  
    my $install_basedir = $mysqld->value('#mtr_basedir');
    my $install_chsdir  = $mysqld->value('character-sets-dir');
-@@ -4216,6 +4379,17 @@ sub mysql_install_db {
+@@ -4216,6 +4398,20 @@ sub mysql_install_db {
    mtr_add_arg($args,
                "--loose-caching_sha2_password_auto_generate_rsa_keys=OFF");
  
-+  # set --objectstore_mtr_test_bucket_dir to the name of the mysqld instance, aovid key(extent id) conflicts in object store.
-+  if ($opt_objectstore_provider ne '' and $opt_objectstore_provider ne 'local') {
-+    my $mysqld_name = $mysqld->name();
-+    my $test_name = $tinfo->{name} if $tinfo;
-+    my $bucket_dir = $mysqld_name;
-+    $bucket_dir = "$test_name/$mysqld_name" if $tinfo;
-+    @opt_extra_bootstrap_opt = grep { $_ !~ /--objectstore_mtr_test_bucket_dir=/ } @opt_extra_bootstrap_opt;
-+    push(@opt_extra_bootstrap_opt, "--objectstore_mtr_test_bucket_dir=$bucket_dir");
-+    # print "opt_extra_bootstrap_opt: @opt_extra_bootstrap_opt\n";
++  if ($tinfo && $tinfo->{name} && !$opt_repo_objstore_id && 
++  $opt_objectstore_provider ne '' && $opt_objectstore_provider ne 'local') {
++    my $test_name = $tinfo->{name};
++    my $objstore_test_dir = $test_name;
++    $objstore_test_dir =~ s/\./-/g;
++    if (!$tinfo->{'objectstore_test_dir'}) {
++      $tinfo->{'objectstore_test_dir'} = $objstore_test_dir;
++    }
++    mtr_add_arg($args, "--repo_objectstore_id=$objstore_test_dir");
++    @opt_extra_bootstrap_opt = grep { $_ !~ /--repo_objectstore_id=/ } @opt_extra_bootstrap_opt;
++    push(@opt_extra_bootstrap_opt, "--repo_objectstore_id=$objstore_test_dir");
++    #print "opt_extra_bootstrap_opt: @opt_extra_bootstrap_opt\n";
 +  }
 +
    # Arguments to bootstrap process.
    my $init_file;
    foreach my $extra_opt (@opt_extra_bootstrap_opt) {
-@@ -4227,6 +4401,7 @@ sub mysql_install_db {
+@@ -4227,6 +4423,7 @@ sub mysql_install_db {
      mtr_add_arg($args, $extra_opt);
    }
  
@@ -1271,7 +1300,7 @@ index 26e6c92cf64..16455a83c0e 100755
    # Add bootstrap arguments from the opt file, if any
    push(@$args, @$bootstrap_opts) if $bootstrap_opts;
  
-@@ -4251,6 +4426,9 @@ sub mysql_install_db {
+@@ -4251,6 +4448,9 @@ sub mysql_install_db {
  
    # Create the bootstrap.sql file
    my $bootstrap_sql_file = "$opt_vardir/tmp/bootstrap.sql";
@@ -1281,7 +1310,7 @@ index 26e6c92cf64..16455a83c0e 100755
  
    #Add the init-file to --initialize-insecure process
    mtr_add_arg($args, "--init-file=$bootstrap_sql_file");
-@@ -4274,14 +4452,22 @@ sub mysql_install_db {
+@@ -4274,14 +4474,22 @@ sub mysql_install_db {
      # Add the official mysql system tables in a production system.
      mtr_tofile($bootstrap_sql_file, "use mysql;\n");
  
@@ -1306,7 +1335,7 @@ index 26e6c92cf64..16455a83c0e 100755
    }
  
    if ($opt_skip_sys_schema) {
-@@ -4292,9 +4478,9 @@ sub mysql_install_db {
+@@ -4292,9 +4500,9 @@ sub mysql_install_db {
    mtr_tofile(
      $bootstrap_sql_file,
      "UPDATE mysql.tables_priv SET
@@ -1319,7 +1348,7 @@ index 26e6c92cf64..16455a83c0e 100755
  
    # Make sure no anonymous accounts exists as a safety precaution
    mtr_tofile($bootstrap_sql_file, "DELETE FROM mysql.user where user= '';\n");
-@@ -4302,33 +4488,30 @@ sub mysql_install_db {
+@@ -4302,33 +4510,30 @@ sub mysql_install_db {
    # Create test database
    if (defined $opt_charset_for_testdb) {
      mtr_tofile($bootstrap_sql_file,
@@ -1362,7 +1391,7 @@ index 26e6c92cf64..16455a83c0e 100755
  
    if (defined $init_file) {
      # Append the contents of the init-file to the end of bootstrap.sql
-@@ -4358,11 +4541,35 @@ sub mysql_install_db {
+@@ -4358,11 +4563,35 @@ sub mysql_install_db {
      exit(0);
    }
  
@@ -1398,7 +1427,7 @@ index 26e6c92cf64..16455a83c0e 100755
    my $res = My::SafeProcess->run(name    => "initialize",
                                   path    => $exe_mysqld_bootstrap,
                                   args    => \$args,
-@@ -4383,6 +4590,10 @@ sub mysql_install_db {
+@@ -4383,6 +4612,10 @@ sub mysql_install_db {
    if (-f "$datadir/auto.cnf") {
      unlink "$datadir/auto.cnf";
    }
@@ -1409,7 +1438,7 @@ index 26e6c92cf64..16455a83c0e 100755
  }
  
  sub run_testcase_check_skip_test($) {
-@@ -4417,7 +4628,6 @@ sub run_query {
+@@ -4417,7 +4650,6 @@ sub run_query {
                                   args   => \$args,
                                   output => $outfile,
                                   error  => $errfile);
@@ -1417,7 +1446,7 @@ index 26e6c92cf64..16455a83c0e 100755
    return $res;
  }
  
-@@ -4455,9 +4665,16 @@ sub check_testcase($$) {
+@@ -4455,9 +4687,16 @@ sub check_testcase($$) {
    my %started;
    foreach my $mysqld (mysqlds()) {
      # Skip if server has been restarted with additional options
@@ -1437,7 +1466,7 @@ index 26e6c92cf64..16455a83c0e 100755
      }
    }
  
-@@ -4865,6 +5082,13 @@ sub find_bootstrap_opts {
+@@ -4865,6 +5104,13 @@ sub find_bootstrap_opts {
      unshift(@$opt_file_options, @$bootstrap_opts);
    }
  
@@ -1451,7 +1480,7 @@ index 26e6c92cf64..16455a83c0e 100755
    # Command line mysqld options should not have precedence over the opt
    # file options.
    unshift(@$opt_file_options, @opt_extra_mysqld_opt);
-@@ -4889,6 +5113,14 @@ sub run_testcase ($) {
+@@ -4889,6 +5135,14 @@ sub run_testcase ($) {
    mtr_verbose("Running test:", $tinfo->{name});
    resfile_report_test($tinfo) if $opt_resfile;
  
@@ -1466,7 +1495,7 @@ index 26e6c92cf64..16455a83c0e 100755
    # Skip secondary engine tests if the support doesn't exist.
    if (defined $tinfo->{'secondary-engine'} and !$secondary_engine_support) {
      $tinfo->{'skip'}    = 1;
-@@ -5008,6 +5240,59 @@ sub run_testcase ($) {
+@@ -5008,6 +5262,59 @@ sub run_testcase ($) {
    }
    mark_time_used('restart');
  
@@ -1526,7 +1555,7 @@ index 26e6c92cf64..16455a83c0e 100755
    # If '--start' or '--start-dirty' given, stop here to let user manually
    # run tests. If '--wait-all' is also given, do the same, but don't die
    # if one server exits.
-@@ -5160,6 +5445,18 @@ sub run_testcase ($) {
+@@ -5160,6 +5467,18 @@ sub run_testcase ($) {
      if ($proc eq $test) {
        my $res = $test->exit_status();
  
@@ -1545,7 +1574,7 @@ index 26e6c92cf64..16455a83c0e 100755
        if ($res == MYSQLTEST_NOSKIP_PASS or $res == MYSQLTEST_NOSKIP_FAIL) {
          $tinfo->{'skip_ignored'} = 1;    # Mark test as noskip pass or fail
        }
-@@ -5867,19 +6164,26 @@ sub check_warnings ($) {
+@@ -5867,19 +6186,26 @@ sub check_warnings ($) {
    # it possible to wait for any process to exit during the check.
    my %started;
    foreach my $mysqld (mysqlds()) {
@@ -1585,7 +1614,7 @@ index 26e6c92cf64..16455a83c0e 100755
        }
      }
    }
-@@ -5984,8 +6288,10 @@ sub check_expected_crash_and_restart($$) {
+@@ -5984,8 +6310,10 @@ sub check_expected_crash_and_restart($$) {
          }
  
          # Start server with same settings as last time
@@ -1598,15 +1627,18 @@ index 26e6c92cf64..16455a83c0e 100755
  
          if ($tinfo->{'secondary-engine'}) {
            my $restart_flag = 1;
-@@ -6064,6 +6370,7 @@ sub clean_datadir {
+@@ -6064,7 +6392,9 @@ sub clean_datadir {
        rmtree($mysqld_dir);
      }
    }
-+  clean_objectstore_bucket_dir($tinfo->{name});
- 
+-
++  if ($tinfo->{'objectstore_test_dir'}) {
++    clean_objectstore_test_dir($tinfo->{'objectstore_test_dir'}, $tinfo->{name});
++  }
    # Remove all files in tmp and var/tmp
    clean_dir("$opt_vardir/tmp");
-@@ -6147,7 +6454,7 @@ sub report_failure_and_restart ($) {
+   if ($opt_tmpdir ne "$opt_vardir/tmp") {
+@@ -6147,7 +6477,7 @@ sub report_failure_and_restart ($) {
      $tinfo->{'dont_kill_server'} = 1;
    }
  
@@ -1615,7 +1647,7 @@ index 26e6c92cf64..16455a83c0e 100755
    stop_all_servers($tinfo->{'dont_kill_server'} ? $opt_shutdown_timeout : 0);
  
    $tinfo->{'result'} = 'MTR_RES_FAILED';
-@@ -6375,6 +6682,10 @@ sub mysqld_arguments ($$$) {
+@@ -6375,6 +6705,10 @@ sub mysqld_arguments ($$$) {
      mtr_add_arg($args, "%s", "--core-file");
    }
  
@@ -1626,7 +1658,7 @@ index 26e6c92cf64..16455a83c0e 100755
    return $args;
  }
  
-@@ -6406,6 +6717,18 @@ sub mysqld_start ($$$$) {
+@@ -6406,6 +6740,18 @@ sub mysqld_start ($$$$) {
  
    foreach my $arg (@$extra_opts) {
      $daemonize_mysqld = 1 if ($arg eq "--daemonize");
@@ -1645,7 +1677,7 @@ index 26e6c92cf64..16455a83c0e 100755
    }
  
    if ($opt_valgrind_mysqld) {
-@@ -6731,10 +7054,15 @@ sub servers_need_restart($) {
+@@ -6731,10 +7077,15 @@ sub servers_need_restart($) {
    my @slaves;
  
    foreach my $server (mysqlds()) {
@@ -1664,7 +1696,7 @@ index 26e6c92cf64..16455a83c0e 100755
      }
    }
  
-@@ -6743,7 +7071,19 @@ sub servers_need_restart($) {
+@@ -6743,7 +7094,19 @@ sub servers_need_restart($) {
    foreach my $master (@masters) {
      if (server_need_restart($tinfo, $master, $master_restarted)) {
        $master_restarted = 1;
@@ -1685,7 +1717,7 @@ index 26e6c92cf64..16455a83c0e 100755
      }
    }
  
-@@ -6888,6 +7228,18 @@ sub start_servers($) {
+@@ -6888,6 +7251,18 @@ sub start_servers($) {
  
    my $server_id = 0;
    # Start mysqlds
@@ -1704,7 +1736,7 @@ index 26e6c92cf64..16455a83c0e 100755
  
    foreach my $mysqld (mysqlds()) {
      # Group Replication requires a local port to be open on each server
-@@ -6907,6 +7259,10 @@ sub start_servers($) {
+@@ -6907,6 +7282,10 @@ sub start_servers($) {
        $ENV{$xcom_server} = $xcom_port;
      }
  
@@ -1715,7 +1747,7 @@ index 26e6c92cf64..16455a83c0e 100755
      if ($mysqld->{proc}) {
        # Already started, write start of testcase to log file
        mark_testcase_start_in_logs($mysqld, $tinfo);
-@@ -6944,34 +7300,46 @@ sub start_servers($) {
+@@ -6944,34 +7323,46 @@ sub start_servers($) {
      if ($basedir eq $mysqld_basedir) {
        # If dirty, keep possibly grown system db
        if (!$opt_start_dirty) {
@@ -1774,7 +1806,7 @@ index 26e6c92cf64..16455a83c0e 100755
        $tinfo->{'reinitialized'} = 1;
        # Remove the bootstrap.sql file so that a duplicate set of
        # SQL statements do not get written to the same file.
-@@ -6985,16 +7353,19 @@ sub start_servers($) {
+@@ -6985,16 +7376,19 @@ sub start_servers($) {
  
      # Run <tname>-master.sh
      if ($mysqld->option('#!run-master-sh') and
@@ -1798,7 +1830,7 @@ index 26e6c92cf64..16455a83c0e 100755
      }
  
      # It's safe to not write log mark if the above sh scripts failed and
-@@ -7005,7 +7376,10 @@ sub start_servers($) {
+@@ -7005,7 +7399,10 @@ sub start_servers($) {
      mark_testcase_start_in_logs($mysqld, $tinfo);
  
      my $extra_opts = get_extra_opts($mysqld, $tinfo);
@@ -1810,7 +1842,7 @@ index 26e6c92cf64..16455a83c0e 100755
  
      # Save this test case information, so next can examine it
      $mysqld->{'started_tinfo'} = $tinfo;
-@@ -7086,7 +7460,11 @@ sub start_check_testcase ($$$) {
+@@ -7086,7 +7483,11 @@ sub start_check_testcase ($$$) {
    mtr_add_arg($args, "--defaults-file=%s",         $path_config_file);
    mtr_add_arg($args, "--defaults-group-suffix=%s", $mysqld->after('mysqld'));
    mtr_add_arg($args, "--result-file=%s", "$opt_vardir/tmp/$name.result");
