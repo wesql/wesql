@@ -109,7 +109,7 @@ jobs:
   release-rpm:
     name: release x86_64 rpm
     needs: [ enable-amd-runner ]
-    runs-on: [self-hosted, eks-oraclelinux8-amd64-runnerr ]
+    runs-on: [self-hosted, eks-oraclelinux8-amd64-runner ]
     outputs:
       runner-name: ${{ steps.get_runner_name.outputs.runner-name }}
       prerelease-image: ${{ steps.get_prerelease.outputs.prerelease-image }}
@@ -290,6 +290,7 @@ jobs:
         with:
           github-token: ${{ env.GITHUB_TOKEN }}
           runner-name: ${{ needs.release-rpm.outputs.runner-name }}
+          runner-namespace: "github-runner"
           access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
           secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
 
@@ -306,11 +307,12 @@ jobs:
         with:
           github-token: ${{ env.GITHUB_TOKEN }}
           runner-name: ${{ needs.release-arm-rpm.outputs.runner-name }}
+          runner-namespace: "github-runner"
           access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
           secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
 
   disable-runner:
-    needs: [ release-rpm, release-arm-rpm  ]
+    needs: [ release-rpm, release-arm-rpm ]
     if: ${{ always() }}
     uses: ./.github/workflows/enable-self-runner.yml
     with:

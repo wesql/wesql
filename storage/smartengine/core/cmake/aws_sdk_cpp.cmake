@@ -28,6 +28,7 @@ SET(OBJSTORE_LIBRARY_PATH "system default lib path")
 SET(OBJSTORE_S3_LIBRARIES "aws-cpp-sdk-s3;aws-cpp-sdk-core")
 SET(OBJSTORE_OSS_LIBRARIES "alibabacloud-oss-cpp-sdk")
 SET(OBJSTORE_PLATFORM_DEPS "pthread;curl")
+SET(OBJSTORE_OSS_TARGET "cpp-sdk")
 
 MACRO(SHOW_OBJSTORE_INFO)
   MESSAGE(STATUS "OBJSTORE_INCLUDE_DIR: ${OBJSTORE_INCLUDE_DIR}")
@@ -109,12 +110,14 @@ MACRO (MYSQL_BUILD_OBJSTORE)
       ${OBJSTORE_S3_LIBRARIES}
       ${OBJSTORE_OSS_LIBRARIES}
       ${OBJSTORE_PLATFORM_DEPS})
+    add_dependencies(myobjstore_objlib ${OBJSTORE_OSS_TARGET})
   ENDIF()
   TARGET_LINK_LIBRARIES(myobjstore
     PRIVATE
     ${OBJSTORE_S3_LIBRARIES}
     ${OBJSTORE_OSS_LIBRARIES}
     ${OBJSTORE_PLATFORM_DEPS})
+  add_dependencies(myobjstore ${OBJSTORE_OSS_TARGET})
 
   # shut up the compile warning when encountering aws-sdk-cpp header files.
   SET_SOURCE_FILES_PROPERTIES(${OBJSTORE_SRC}/objstore/s3.cc ${OBJSTORE_SRC}/objstore/objstore.cc PROPERTIES COMPILE_FLAGS

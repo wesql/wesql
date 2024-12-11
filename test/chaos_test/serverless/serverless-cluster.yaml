@@ -50,6 +50,8 @@ spec:
             objectstore_provider=${OBJSTORE_PROVIDER}
             objectstore-region=${OBJSTORE_REGION}
             objectstore-bucket=${OBJSTORE_BUCKET}
+            objectstore-endpoint=${OBJSTORE_ENDPOINT}
+            objectstore-use-https=${OBJSTORE_USE_HTTPS}
             datadir=/data/mysql/data
             log-error=/data/mysql/log/mysqld-error.log
             max_connections=2000
@@ -211,7 +213,6 @@ spec:
       resources:
         requests:
           storage: 100Gi
-      storageClassName: gp2
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -258,6 +259,8 @@ spec:
             objectstore_provider=${OBJSTORE_PROVIDER}
             objectstore-region=${OBJSTORE_REGION}
             objectstore-bucket=${OBJSTORE_BUCKET}
+            objectstore-endpoint=${OBJSTORE_ENDPOINT}
+            objectstore-use-https=${OBJSTORE_USE_HTTPS}
             datadir=/data/mysql/data
             log-error=/data/mysql/log/mysqld-error.log
             max_connections=2000
@@ -338,7 +341,6 @@ spec:
       resources:
         requests:
           storage: 100Gi
-      storageClassName: gp2
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -383,6 +385,8 @@ spec:
             objectstore_provider=${OBJSTORE_PROVIDER}
             objectstore-region=${OBJSTORE_REGION}
             objectstore-bucket=${OBJSTORE_BUCKET}
+            objectstore-endpoint=${OBJSTORE_ENDPOINT}
+            objectstore-use-https=${OBJSTORE_USE_HTTPS}
             datadir=/data/mysql/data
             log-error=/data/mysql/log/mysqld-error.log
             max_connections=2000
@@ -463,7 +467,6 @@ spec:
       resources:
         requests:
           storage: 100Gi
-      storageClassName: gp2
 
 ---
 apiVersion: v1
