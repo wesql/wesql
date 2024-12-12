@@ -285,32 +285,34 @@ static int se_init_func(void *const p)
 
     db::GlobalContext::set_env(main_opts.env);
 
-    int ret = se_renewal_objstore_lease_lock_thread.create_thread(RENEW_LEASE_LOCK_THREAD_NAME
+    if (opt_objstore_lease_lock_timeout > 0) {
+      int ret = se_renewal_objstore_lease_lock_thread.create_thread(RENEW_LEASE_LOCK_THREAD_NAME
 #ifdef HAVE_PSI_INTERFACE
                                                                   ,
                                                                   se_renewal_objstore_lease_lock_psi_thread_key
 #endif
-    );
-    if (ret != 0) {
-      sql_print_error("SE: Couldn't start the renewal object store lease lock thread: (errno=%d)", ret);
-      se_open_tables.free_hash();
-      DBUG_RETURN(HA_EXIT_FAILURE);
-    }
+      );
+      if (ret != 0) {
+        sql_print_error("SE: Couldn't start the renewal object store lease lock thread: (errno=%d)", ret);
+        se_open_tables.free_hash();
+        DBUG_RETURN(HA_EXIT_FAILURE);
+      }
 
-    sql_print_warning("SE: This node is not the owner of the lease lock, waiting...");
-    // retry 1 minute to get single data node lease lock.
-    int retry = 60000;
-    while (!objstore::is_lease_lock_owner_node() && retry > 0) {
-      // if this node is not the owner of the lease lock, can't do anything but wait
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      retry--;
+      sql_print_warning("SE: This node is not the owner of the lease lock, waiting...");
+      // retry 1 minute to get single data node lease lock.
+      int retry = 60000;
+      while (!objstore::is_lease_lock_owner_node() && retry > 0) {
+        // if this node is not the owner of the lease lock, can't do anything but wait
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        retry--;
+      }
+      if (!objstore::is_lease_lock_owner_node()) {
+        sql_print_error("SE: Couldn't get object store lease lock: other node may be running");
+        se_open_tables.free_hash();
+        DBUG_RETURN(HA_EXIT_FAILURE);
+      }
+      sql_print_warning("SE: This node becomes the owner of the lease lock, go on");
     }
-    if (!objstore::is_lease_lock_owner_node()) {
-      sql_print_error("SE: Couldn't get object store lease lock: other node may be running");
-      se_open_tables.free_hash();
-      DBUG_RETURN(HA_EXIT_FAILURE);
-    }
-    sql_print_warning("SE: This node becomes the owner of the lease lock, go on");
   }
 
   util::TransactionDBOptions tx_db_options;
