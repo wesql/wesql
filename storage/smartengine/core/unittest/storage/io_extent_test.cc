@@ -155,7 +155,7 @@ public:
     int ret = Status::kOk;
     ::objstore::Status object_status;
 
-    ret = Env::Default()->InitObjectStore("local", object_base_path_, nullptr, false, bucket_name_, "repo/branch", "").code();
+    ret = Env::Default()->InitObjectStore("local", object_base_path_, nullptr, false, bucket_name_, "repo/branch", 0).code();
     ASSERT_EQ(Status::kOk, ret);
     ret = Env::Default()->GetObjectStore(object_store_).code();
     ASSERT_EQ(Status::kOk, ret);

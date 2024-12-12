@@ -323,6 +323,7 @@ void SeRenewLeaseLockThread::run()
 {
   const std::string_view objstore_bucket = db::GlobalContext::env_->GetObjectStoreBucket();
   const std::string_view cluster_objstore_id = db::GlobalContext::env_->GetClusterObjstoreId();
+  const uint32_t objstore_lease_lock_timeout = db::GlobalContext::env_->GetObjstoreLeaseLockTimeout();
   objstore::ObjectStore *objstore = nullptr;
   if (0 != db::GlobalContext::env_->GetObjectStore(objstore).code()) {
     sql_print_error("Failed to get object store in renewal lease lock thread");
@@ -338,8 +339,11 @@ void SeRenewLeaseLockThread::run()
     abort_with_stack_traces();
   }
   const std::chrono::seconds retry_lock_interval = std::chrono::seconds(1); // 1s
-  const std::chrono::seconds renewal_schedule_interval = std::chrono::duration_cast<std::chrono::seconds>(
-      objstore::single_data_node_lock_renewal_interval); // default 3s
+    
+  objstore::LeaseLockSettings lease_lock_settings;
+  lease_lock_settings.lease_timeout = std::chrono::milliseconds(objstore_lease_lock_timeout*1000);
+  lease_lock_settings.renewal_timeout = std::chrono::milliseconds(lease_lock_settings.lease_timeout.count() * 3 / 4);
+  lease_lock_settings.renewal_interval = std::chrono::milliseconds(lease_lock_settings.renewal_timeout.count()/2);
 
   SE_MUTEX_LOCK_CHECK(m_signal_mutex);
   for (;;) {
@@ -351,6 +355,7 @@ void SeRenewLeaseLockThread::run()
     int err = objstore::try_single_data_node_lease_lock(objstore,
                                                         objstore_bucket,
                                                         cluster_objstore_id,
+                                                        lease_lock_settings,
                                                         err_msg,
                                                         important_msg,
                                                         need_abort);
@@ -372,7 +377,8 @@ void SeRenewLeaseLockThread::run()
     timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     if (objstore::is_lease_lock_owner_node()) {
-      ts.tv_sec += renewal_schedule_interval.count();
+      ts.tv_sec += lease_lock_settings.renewal_interval.count()/1000;
+      ts.tv_nsec += (lease_lock_settings.renewal_interval.count()%1000) * 1000000;
     } else {
       ts.tv_sec += retry_lock_interval.count();
     }

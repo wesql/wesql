@@ -33,16 +33,14 @@ static std::atomic<bool> should_abort_if_not_owner = false;
 static std::chrono::milliseconds lease_lock_last_lease_time = std::chrono::milliseconds(0);
 
 // renewal interval is 2.5s(2500ms)
-const std::chrono::milliseconds single_data_node_lock_renewal_interval = std::chrono::milliseconds(2500);
+// const std::chrono::milliseconds single_data_node_lock_renewal_interval = std::chrono::milliseconds(2500);
 
 #ifdef NDEBUG
 namespace {
 #endif
 
-// lease timeout is 8s(8000ms)
-const std::chrono::milliseconds single_data_node_lock_lease_timeout = std::chrono::milliseconds(8000);
 // renewal timeout is 5s(5000ms), we can't renew the lock after this time
-const std::chrono::milliseconds single_data_node_lock_renewal_timeout = std::chrono::milliseconds(5000);
+// const std::chrono::milliseconds single_data_node_lock_renewal_timeout = std::chrono::milliseconds(5000);
 
 int get_single_data_node_lease_lock_expire_time(ObjectStore *objstore,
                                                 const std::string_view bucket_dir,
@@ -85,6 +83,7 @@ int get_single_data_node_lease_lock_expire_time(ObjectStore *objstore,
 int try_single_data_node_lease_lock_if_expired(ObjectStore *objstore,
                                                const std::string_view bucket_dir,
                                                const std::string_view cluster_objstore_id,
+                                               const LeaseLockSettings& lease_lock_settings,
                                                std::string &err_msg,
                                                std::chrono::milliseconds &new_lease_time)
 {
@@ -158,7 +157,7 @@ int try_single_data_node_lease_lock_if_expired(ObjectStore *objstore,
         // caculate new lease time and update the lease lock file
         std::chrono::milliseconds now = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch());
-        std::chrono::milliseconds lease_time = now + single_data_node_lock_lease_timeout;
+        std::chrono::milliseconds lease_time = now + lease_lock_settings.lease_timeout;
         std::string lease_lock_key = util::get_lease_lock_key(cluster_objstore_id);
         status = objstore->put_object(bucket_dir, lease_lock_key, std::to_string(lease_time.count()), false);
         if (!status.is_succ()) {
@@ -192,6 +191,7 @@ int try_single_data_node_lease_lock_if_expired(ObjectStore *objstore,
 int check_if_lease_time_expired(ObjectStore *objstore,
                                 const std::string_view bucket_dir,
                                 const std::string_view cluster_objstore_id,
+                                const LeaseLockSettings &lease_lock_settings,
                                 std::string &err_msg,
                                 std::chrono::milliseconds &expire_time,
                                 bool &lease_expired)
@@ -209,7 +209,7 @@ int check_if_lease_time_expired(ObjectStore *objstore,
     if (now.count() >= expire_time.count()) {
       // lease time is expired
       lease_expired = true;
-    } else if (now + single_data_node_lock_lease_timeout < expire_time) {
+    } else if (now + lease_lock_settings.lease_timeout < expire_time) {
       err_msg = "lease lock has an unexpected expire time:" + std::to_string(expire_time.count()) +
                 ", now:" + std::to_string(now.count());
       ret = Errors::SE_UNEXPECTED;
@@ -224,18 +224,20 @@ int check_if_lease_time_expired(ObjectStore *objstore,
 int check_lease_and_try_lease_lock_if_expired(ObjectStore *objstore,
                                               const std::string_view bucket_dir,
                                               const std::string_view cluster_objstore_id,
+                                              const LeaseLockSettings& lease_lock_settings,
                                               std::chrono::milliseconds &new_lease_time,
                                               std::string &err_msg)
 {
   std::chrono::milliseconds expire_time;
   bool lease_expired = false;
-  int ret = check_if_lease_time_expired(objstore, bucket_dir, cluster_objstore_id, err_msg, expire_time, lease_expired);
+  int ret = check_if_lease_time_expired(objstore, bucket_dir, cluster_objstore_id, lease_lock_settings, err_msg, expire_time, lease_expired);
   if (ret != 0) {
     err_msg = "fail to check lease time:" + err_msg;
   } else if (lease_expired) {
     ret = try_single_data_node_lease_lock_if_expired(objstore,
                                                      bucket_dir,
                                                      cluster_objstore_id,
+                                                     lease_lock_settings,
                                                      err_msg,
                                                      new_lease_time);
     if (ret != 0) {
@@ -263,6 +265,7 @@ int check_lease_and_try_lease_lock_if_expired(ObjectStore *objstore,
 int renewal_single_data_node_lease_lock(ObjectStore *objstore,
                                         const std::string_view bucket_dir,
                                         const std::string_view cluster_objstore_id,
+                                        const LeaseLockSettings &lease_lock_settings,
                                         std::chrono::milliseconds &new_lease_time,
                                         std::string &err_msg)
 {
@@ -274,20 +277,20 @@ int renewal_single_data_node_lease_lock(ObjectStore *objstore,
   } else if (!is_lease_lock_owner) {
     err_msg = "this node is not lease lock owner";
     ret = Errors::SE_INVALID;
-  } else if (last_lease_time.count() < single_data_node_lock_lease_timeout.count()) {
+  } else if (last_lease_time.count() < lease_lock_settings.lease_timeout.count()) {
     err_msg = "last lease time is invalid:" + std::to_string(last_lease_time.count());
     ret = Errors::SE_INVALID;
   } else {
     auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch());
-    const std::chrono::milliseconds last_renewal_time = last_lease_time - single_data_node_lock_lease_timeout;
+    const std::chrono::milliseconds last_renewal_time = last_lease_time - lease_lock_settings.lease_timeout;
     if (now.count() < last_renewal_time.count()) {
       err_msg = "current time:" + std::to_string(now.count()) +
                 "is less than last renewal time:" + std::to_string(last_renewal_time.count()) + ", impossible";
       ret = Errors::SE_INVALID;
-    } else if (now.count() - last_renewal_time.count() < single_data_node_lock_renewal_timeout.count()) {
+    } else if (now.count() - last_renewal_time.count() < lease_lock_settings.renewal_timeout.count()) {
       // lease lock renewal interval is not reached
-      new_lease_time = now + single_data_node_lock_lease_timeout;
+      new_lease_time = now + lease_lock_settings.lease_timeout;
       std::string new_lease_time_str = std::to_string(new_lease_time.count());
       std::string lease_lock_key = util::get_lease_lock_key(cluster_objstore_id);
       Status status = objstore->put_object(bucket_dir, lease_lock_key, new_lease_time_str, false);
@@ -302,6 +305,7 @@ int renewal_single_data_node_lease_lock(ObjectStore *objstore,
       ret = check_lease_and_try_lease_lock_if_expired(objstore,
                                                       bucket_dir,
                                                       cluster_objstore_id,
+                                                      lease_lock_settings,
                                                       new_lease_time,
                                                       err_msg);
       if (ret != 0) {
@@ -329,6 +333,7 @@ bool is_lease_lock_owner_node() { return is_lease_lock_owner; }
 int try_single_data_node_lease_lock(ObjectStore *objstore,
                                     const std::string_view bucket_dir,
                                     const std::string_view cluster_objstore_id,
+                                    const LeaseLockSettings &lease_lock_settings,
                                     std::string &err_msg,
                                     std::string &important_msg,
                                     bool &need_abort)
@@ -338,12 +343,12 @@ int try_single_data_node_lease_lock(ObjectStore *objstore,
 
   need_abort = false;
   if (is_lease_lock_owner) {
-    ret = renewal_single_data_node_lease_lock(objstore, bucket_dir, cluster_objstore_id, new_lease_time, err_msg);
+    ret = renewal_single_data_node_lease_lock(objstore, bucket_dir, cluster_objstore_id, lease_lock_settings, new_lease_time, err_msg);
 #ifndef NDEBUG
     TEST_SYNC_POINT_CALLBACK("objstore::try_single_data_node_lease_lock", &ret);
 #endif
   } else {
-    ret = check_lease_and_try_lease_lock_if_expired(objstore, bucket_dir, cluster_objstore_id, new_lease_time, err_msg);
+    ret = check_lease_and_try_lease_lock_if_expired(objstore, bucket_dir, cluster_objstore_id, lease_lock_settings, new_lease_time, err_msg);
   }
 
   if (ret == 0) {

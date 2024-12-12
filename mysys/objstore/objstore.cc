@@ -347,25 +347,6 @@ ObjectStore *create_dest_object_store(const std::string_view &provider,
   }
 }
 
-ObjectStore *create_object_store_for_test(const std::string_view &provider,
-                                          const std::string_view region,
-                                          const std::string_view *endpoint,
-                                          bool use_https,
-                                          const std::string_view bucket_dir,
-                                          std::string &err_msg) {
-  if (ObjectStore::use_s3_sdk(provider)) {
-    return create_s3_objstore_for_test(region, endpoint, use_https, bucket_dir,
-                                       err_msg);
-  } else if (provider == "aliyun") {
-    return create_aliyun_oss_objstore_for_test(region, endpoint, bucket_dir,
-                                               err_msg);
-  } else if (provider == "local") {
-    return create_local_objstore(region, endpoint, use_https);
-  } else {
-    return nullptr;
-  }
-}
-
 void destroy_object_store(ObjectStore *obj_store) {
   // provide a register mechanism to create/destroy the object store
   delete obj_store;
@@ -373,7 +354,7 @@ void destroy_object_store(ObjectStore *obj_store) {
 
 int init_object_store(const std::string_view &provider,
                       const std::string_view &region,
-                      const std::string_view &bucket_dir, std::string &err_msg,
+                      std::string &err_msg,
                       ObjectStore *&objstore) {
   Status status;
   int ret = 0;

@@ -411,7 +411,7 @@ class Env {
                                          bool use_https,
                                          const std::string_view bucket,
                                          const std::string &cluster_objstore_id,
-                                         const std::string_view bucket_subdir_for_test)
+                                         const uint32_t lease_lock_timeout)
   {
     return common::Status::NotSupported("Not supported.");
   }
@@ -442,6 +442,8 @@ class Env {
     static std::string kNotSupportedStr("Not supported.");
     return kNotSupportedStr;
   }
+
+  virtual uint32_t GetObjstoreLeaseLockTimeout() { return 0; }
 
  protected:
   // The pointer to an internal structure that will update the

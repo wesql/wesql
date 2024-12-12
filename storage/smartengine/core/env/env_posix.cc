@@ -573,28 +573,20 @@ class PosixEnv : public Env
                                          bool use_https,
                                          const std::string_view bucket,
                                          const std::string &cluster_objstore_id,
-                                         const std::string_view bucket_subdir_for_test) override
+                                         const uint32_t lease_lock_timeout) override
   {
     Status result;
 
     objstore::init_objstore_provider(provider);
 
     std::string obj_err_msg;
-    if (bucket_subdir_for_test == "") {
-      obj_store_ = objstore::create_object_store(provider, region, endpoint, use_https, obj_err_msg);
-    } else {
-      obj_store_ = objstore::create_object_store_for_test(provider,
-                                                          region,
-                                                          endpoint,
-                                                          use_https,
-                                                          bucket_subdir_for_test,
-                                                          obj_err_msg);
-    }
+    obj_store_ = objstore::create_object_store(provider, region, endpoint, use_https, obj_err_msg);
     if (obj_store_ == nullptr) {
       result = common::Status::InvalidArgument(obj_err_msg);
     } else {
       obj_store_bucket_ = bucket;
       cluster_objstore_id_ = cluster_objstore_id;
+      objstore_lease_lock_timeout_ = lease_lock_timeout;
     }
     return result;
   }
@@ -625,6 +617,8 @@ class PosixEnv : public Env
   }
 
   virtual std::string &GetClusterObjstoreId() override { return cluster_objstore_id_; }
+
+  virtual uint32_t GetObjstoreLeaseLockTimeout() override { return objstore_lease_lock_timeout_; }
 
   virtual uint64_t NowMicros() override {
     struct timeval tv;
@@ -815,6 +809,7 @@ private:
   objstore::ObjectStore* obj_store_;
   std::string obj_store_bucket_;
   std::string cluster_objstore_id_;
+  uint32_t objstore_lease_lock_timeout_;
 };
 
 PosixEnv::PosixEnv() : thread_pools_(Priority::TOTAL)

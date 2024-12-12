@@ -21,7 +21,11 @@
 namespace smartengine {
 namespace objstore {
 
-extern const std::chrono::milliseconds single_data_node_lock_renewal_interval;
+struct LeaseLockSettings {
+   std::chrono::milliseconds lease_timeout;
+   std::chrono::milliseconds renewal_timeout;
+   std::chrono::milliseconds renewal_interval;
+};
 
 using ObjectStore = ::objstore::ObjectStore;
 
@@ -35,14 +39,12 @@ bool is_lease_lock_owner_node();
 int try_single_data_node_lease_lock(ObjectStore *objstore,
                                     const std::string_view bucket_dir,
                                     const std::string_view cluster_objstore_id,
+                                    const LeaseLockSettings &lease_lock_settings,
                                     std::string &err_msg,
                                     std::string &important_msg,
                                     bool &need_abort);
 
 #ifndef NDEBUG
-
-extern const std::chrono::milliseconds single_data_node_lock_lease_timeout;
-extern const std::chrono::milliseconds single_data_node_lock_renewal_timeout;
 
 int get_single_data_node_lease_lock_expire_time(ObjectStore *objstore,
                                                 const std::string_view bucket_dir,
@@ -53,18 +55,21 @@ int get_single_data_node_lease_lock_expire_time(ObjectStore *objstore,
 int check_lease_and_try_lease_lock_if_expired(ObjectStore *objstore,
                                               const std::string_view bucket_dir,
                                               const std::string_view cluster_objstore_id,
+                                              const LeaseLockSettings& lease_lock_settings,
                                               std::chrono::milliseconds &new_lease_time,
                                               std::string &err_msg);
 
 int try_single_data_node_lease_lock_if_expired(ObjectStore *objstore,
                                                const std::string_view bucket_dir,
                                                const std::string_view cluster_objstore_id,
+                                               const LeaseLockSettings& lease_lock_settings,
                                                std::string &err_msg,
                                                std::chrono::milliseconds &new_lease_time);
 
 int renewal_single_data_node_lease_lock(ObjectStore *objstore,
                                         const std::string_view bucket_dir,
                                         const std::string_view cluster_objstore_id,
+                                        const LeaseLockSettings &lease_lock_settings,
                                         std::chrono::milliseconds &new_lease_time,
                                         std::string &err_msg);
 

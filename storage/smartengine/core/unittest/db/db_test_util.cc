@@ -67,7 +67,7 @@ DBTestBase::DBTestBase(const std::string path, bool use_objstore)
   options.env = env_;
   if (env_->IsObjectStoreSupported() && use_objstore) {
     std::string_view endpoint = "";
-    EXPECT_EQ(common::Status::kOk, env_->InitObjectStore("local", "test", &endpoint, false, "", "", "").code());
+    EXPECT_EQ(common::Status::kOk, env_->InitObjectStore("local", "test", &endpoint, false, "", "", 0).code());
   }
   auto delete_options = options;
   delete_options.wal_dir = alternative_wal_dir_;

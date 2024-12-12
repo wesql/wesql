@@ -205,16 +205,9 @@ ObjectStore *create_dest_object_store(const std::string_view &provider,
                                       const std::string_view *endpoint,
                                       bool use_https, std::string &err_msg);
 
-ObjectStore *create_object_store_for_test(const std::string_view &provider,
-                                          const std::string_view region,
-                                          const std::string_view *endpoint,
-                                          bool use_https,
-                                          const std::string_view bucket_dir,
-                                          std::string &err_msg);
-
 int init_object_store(const std::string_view &provider,
                       const std::string_view &region,
-                      const std::string_view &bucket_dir, std::string &err_msg,
+                      std::string &err_msg,
                       ObjectStore *&objstore);
 
 void cleanup_object_store(ObjectStore *&objstore);

@@ -227,7 +227,7 @@ class CompactionTest : public testing::Test {
     env_->NewDirectory(dbname_, db_dir);
 
     if (FLAGS_use_objstore) {
-      auto s = env_->InitObjectStore("local", dbname_ + "/local_obs", nullptr, false, FLAGS_bucket, "repo/branch", "");
+      auto s = env_->InitObjectStore("local", dbname_ + "/local_obs", nullptr, false, FLAGS_bucket, "repo/branch", 0);
       assert(s.ok());
       objstore::ObjectStore *object_store = nullptr;
       s = env_->GetObjectStore(object_store);

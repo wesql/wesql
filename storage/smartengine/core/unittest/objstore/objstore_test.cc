@@ -82,7 +82,7 @@ public:
       bucket_ = bucket_local_;
     }
 
-    auto s = env_->InitObjectStore(provider_, region_, endpoint_, false, bucket_, "repo/branch", "");
+    auto s = env_->InitObjectStore(provider_, region_, endpoint_, false, bucket_, "repo/branch", 0);
     ASSERT_OK(s);
     s = env_->GetObjectStore(obs);
     ASSERT_OK(s);
@@ -318,7 +318,7 @@ TEST_P(ObjstoreTest, reinitObjStoreApi)
   env_->GetObjectStore(obs);
   ASSERT_TRUE(obs == nullptr);
 
-  auto s = env_->InitObjectStore(provider_, region_, endpoint_, false, bucket_, "repo/branch", "");
+  auto s = env_->InitObjectStore(provider_, region_, endpoint_, false, bucket_, "repo/branch", 0);
   ASSERT_OK(s);
   s = env_->GetObjectStore(obs);
   ASSERT_OK(s);
@@ -951,16 +951,22 @@ TEST_P(ObjstoreTest, lease_lock)
   int ret = delete_object(lease_lock_key).error_code();
   ASSERT_TRUE(ret == 0 || ret == ::objstore::SE_NO_SUCH_KEY);
 
+  objstore::LeaseLockSettings lease_lock_settings;
+  lease_lock_settings.lease_timeout = std::chrono::milliseconds(2000);
+  lease_lock_settings.renewal_timeout = std::chrono::milliseconds(1500);
+  lease_lock_settings.renewal_interval = std::chrono::milliseconds(750);
+
   auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
-  auto new_lease_time = now + objstore::single_data_node_lock_lease_timeout;
+  auto new_lease_time = now + lease_lock_settings.lease_timeout;
 
   // objstore is not initialized
-  ret = objstore::renewal_single_data_node_lease_lock(nullptr, bucket_, cluster_objstore_id, new_lease_time, err_msg);
+  ret = objstore::renewal_single_data_node_lease_lock(nullptr, bucket_, cluster_objstore_id, lease_lock_settings, new_lease_time, err_msg);
   ASSERT_EQ(ret, ::objstore::SE_INVALID);
   // not lease lock owner, can not renew lease
   ret = objstore::renewal_single_data_node_lease_lock(obj_store_,
                                                       bucket_,
                                                       cluster_objstore_id,
+                                                      lease_lock_settings,
                                                       new_lease_time,
                                                       err_msg);
   ASSERT_EQ(ret, ::objstore::SE_INVALID);
@@ -968,6 +974,7 @@ TEST_P(ObjstoreTest, lease_lock)
   ret = objstore::try_single_data_node_lease_lock(obj_store_,
                                                   bucket_,
                                                   cluster_objstore_id,
+                                                  lease_lock_settings,
                                                   err_msg,
                                                   important_msg,
                                                   need_abort);
@@ -986,6 +993,7 @@ TEST_P(ObjstoreTest, lease_lock)
   ret = objstore::renewal_single_data_node_lease_lock(obj_store_,
                                                       bucket_,
                                                       cluster_objstore_id,
+                                                      lease_lock_settings,
                                                       new_lease_time,
                                                       err_msg);
   ASSERT_EQ(ret, 0);
@@ -995,6 +1003,7 @@ TEST_P(ObjstoreTest, lease_lock)
   ret = objstore::try_single_data_node_lease_lock(obj_store_,
                                                   bucket_,
                                                   cluster_objstore_id,
+                                                  lease_lock_settings,
                                                   err_msg,
                                                   important_msg,
                                                   need_abort);
@@ -1015,15 +1024,17 @@ TEST_P(ObjstoreTest, lease_lock)
   ret = objstore::try_single_data_node_lease_lock(obj_store_,
                                                   bucket_,
                                                   cluster_objstore_id,
+                                                  lease_lock_settings,
                                                   err_msg,
                                                   important_msg,
                                                   need_abort);
   ASSERT_EQ(ret, ::objstore::SE_OHTER_DATA_NODE_MAYBE_RUNNING);
   // wait for a lease timeout when the lease lock is owned by another node
-  std::this_thread::sleep_for(objstore::single_data_node_lock_lease_timeout + std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(lease_lock_settings.lease_timeout + std::chrono::milliseconds(100));
   ret = objstore::try_single_data_node_lease_lock(obj_store_,
                                                   bucket_,
                                                   cluster_objstore_id,
+                                                  lease_lock_settings,
                                                   err_msg,
                                                   important_msg,
                                                   need_abort);
@@ -1041,21 +1052,23 @@ TEST_P(ObjstoreTest, lease_lock)
             << std::endl;
 
   // wait for a renewal timeout
-  std::this_thread::sleep_for(objstore::single_data_node_lock_renewal_timeout + std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(lease_lock_settings.renewal_timeout + std::chrono::milliseconds(100));
   // should renew failed if the lease lock is not renewed in renewal timeout
   ret = objstore::try_single_data_node_lease_lock(obj_store_,
                                                   bucket_,
                                                   cluster_objstore_id,
+                                                  lease_lock_settings,
                                                   err_msg,
                                                   important_msg,
                                                   need_abort);
   ASSERT_EQ(ret, ::objstore::SE_LEASE_LOCK_RENEWAL_TIMEOUT);
 
-  std::this_thread::sleep_for(objstore::single_data_node_lock_lease_timeout -
-                              objstore::single_data_node_lock_renewal_timeout);
+  std::this_thread::sleep_for(lease_lock_settings.lease_timeout -
+                              lease_lock_settings.renewal_timeout);
   ret = objstore::try_single_data_node_lease_lock(obj_store_,
                                                   bucket_,
                                                   cluster_objstore_id,
+                                                  lease_lock_settings,
                                                   err_msg,
                                                   important_msg,
                                                   need_abort);
@@ -1071,6 +1084,7 @@ TEST_P(ObjstoreTest, lease_lock)
   ret = objstore::try_single_data_node_lease_lock(obj_store_,
                                                   bucket_,
                                                   cluster_objstore_id,
+                                                  lease_lock_settings,
                                                   err_msg,
                                                   important_msg,
                                                   need_abort);
@@ -1081,10 +1095,11 @@ TEST_P(ObjstoreTest, lease_lock)
   SyncPoint::GetInstance()->DisableProcessing();
 
   // wait for a lease timeout when the lease lock is owned by me
-  std::this_thread::sleep_for(objstore::single_data_node_lock_lease_timeout + std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(lease_lock_settings.lease_timeout + std::chrono::milliseconds(100));
   ret = objstore::try_single_data_node_lease_lock(obj_store_,
                                                   bucket_,
                                                   cluster_objstore_id,
+                                                  lease_lock_settings,
                                                   err_msg,
                                                   important_msg,
                                                   need_abort);
@@ -1110,7 +1125,7 @@ TEST_P(ObjstoreTest, lease_lock)
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   // emulate the case that the lease lock is owned by another node
   objstore::TEST_unset_lease_lock_owner();
-  new_lease_time = now + objstore::single_data_node_lock_lease_timeout;
+  new_lease_time = now + lease_lock_settings.lease_timeout;
   new_lease_time_str = std::to_string(new_lease_time.count());
   ret = put_object(lease_lock_key, new_lease_time_str).error_code();
   ASSERT_EQ(ret, 0);
@@ -1118,6 +1133,7 @@ TEST_P(ObjstoreTest, lease_lock)
   ret = objstore::try_single_data_node_lease_lock(obj_store_,
                                                   bucket_,
                                                   cluster_objstore_id,
+                                                  lease_lock_settings,
                                                   err_msg,
                                                   important_msg,
                                                   need_abort);

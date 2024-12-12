@@ -58,7 +58,7 @@ public:
                                              false,
                                              test_local_obs_bucket,
                                              "repo/branch",
-                                             "");
+                                             0);
       ASSERT_OK(s);
       s = options_.env->GetObjectStore(obs);
       ASSERT_OK(s);

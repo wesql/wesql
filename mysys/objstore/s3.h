@@ -28,9 +28,8 @@ namespace objstore {
 class S3ObjectStore : public ObjectStore {
  public:
   explicit S3ObjectStore(const std::string_view region,
-                         Aws::S3::S3Client &&s3_client,
-                         const std::string_view bucket_dir)
-      : region_(region), s3_client_(s3_client), bucket_dir_(bucket_dir) {}
+                         Aws::S3::S3Client &&s3_client)
+      : region_(region), s3_client_(s3_client) {}
   virtual ~S3ObjectStore() = default;
 
   Status create_bucket(const std::string_view &bucket) override;
@@ -90,8 +89,6 @@ class S3ObjectStore : public ObjectStore {
   static constexpr int kDeleteObjsNumEach = 1000;
   std::string region_;
   Aws::S3::S3Client s3_client_;
-  // now for mtr test only
-  const std::string bucket_dir_;
   // TODO(ljc): may add an configuration setting
   int retry_times_on_error_ = 10;
 };
@@ -113,12 +110,6 @@ S3ObjectStore *create_source_s3_objstore(const std::string_view region,
 S3ObjectStore *create_dest_s3_objstore(const std::string_view region,
                                        const std::string_view *endpoint,
                                        bool use_https, std::string &err_msg);
-
-S3ObjectStore *create_s3_objstore_for_test(const std::string_view region,
-                                           const std::string_view *endpoint,
-                                           bool use_https,
-                                           const std::string_view bucket_dir,
-                                           std::string &err_msg);
 
 void destroy_s3_objstore(S3ObjectStore *s3_obj_store);
 

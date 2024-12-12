@@ -145,12 +145,8 @@ Status S3ObjectStore::put_object_from_file(
     const std::string_view &bucket, const std::string_view &key,
     const std::string_view &data_file_path) {
   Aws::S3::Model::PutObjectRequest request;
-  Aws::String full_key;
-  if (bucket_dir_.empty()) {
-    full_key = key;
-  } else {
-    full_key.append(bucket_dir_).append("/").append(key);
-  }
+  Aws::String full_key(key);
+
   request.SetKey(full_key);
   request.SetBucket(Aws::String(bucket));
 
@@ -217,12 +213,7 @@ Status S3ObjectStore::put_object(const std::string_view &bucket,
     return Status(Errors::SE_INVALID, EINVAL, "invalid key");
   }
   Aws::S3::Model::PutObjectRequest request;
-  Aws::String full_key;
-  if (bucket_dir_.empty()) {
-    full_key = key;
-  } else {
-    full_key.append(bucket_dir_).append("/").append(key);
-  }
+  Aws::String full_key(key);
   request.SetKey(full_key);
   request.SetBucket(Aws::String(bucket));
   if (forbid_overwrite) {
@@ -270,12 +261,7 @@ Status S3ObjectStore::get_object(const std::string_view &bucket,
                                  const std::string_view &key,
                                  std::string &body) {
   Aws::S3::Model::GetObjectRequest request;
-  Aws::String full_key;
-  if (bucket_dir_.empty()) {
-    full_key = key;
-  } else {
-    full_key.append(bucket_dir_).append("/").append(key);
-  }
+  Aws::String full_key(key);
   request.SetKey(full_key);
   request.SetBucket(Aws::String(bucket));
 
@@ -318,12 +304,7 @@ Status S3ObjectStore::get_object(const std::string_view &bucket,
                                  const std::string_view &key, size_t off,
                                  size_t len, std::string &body) {
   Aws::S3::Model::GetObjectRequest request;
-  Aws::String full_key;
-  if (bucket_dir_.empty()) {
-    full_key = key;
-  } else {
-    full_key.append(bucket_dir_).append("/").append(key);
-  }
+  Aws::String full_key(key);
   request.SetKey(full_key);
   request.SetBucket(Aws::String(bucket));
   std::string byte_range =
@@ -367,12 +348,7 @@ Status S3ObjectStore::get_object_meta(const std::string_view &bucket,
                                       const std::string_view &key,
                                       ObjectMeta &meta) {
   Aws::S3::Model::HeadObjectRequest request;
-  Aws::String full_key;
-  if (bucket_dir_.empty()) {
-    full_key = key;
-  } else {
-    full_key.append(bucket_dir_).append("/").append(key);
-  }
+  Aws::String full_key(key);
   request.SetKey(full_key);
   request.SetBucket(Aws::String(bucket));
 
@@ -408,12 +384,7 @@ Status S3ObjectStore::list_object(const std::string_view &bucket,
                                   bool &finished,
                                   std::vector<ObjectMeta> &objects) {
   Aws::S3::Model::ListObjectsV2Request request;
-  Aws::String full_prefix;
-  if (bucket_dir_.empty()) {
-    full_prefix = prefix;
-  } else {
-    full_prefix.append(bucket_dir_).append("/").append(prefix);
-  }
+  Aws::String full_prefix(prefix);
   request.SetBucket(Aws::String(bucket));
   request.SetPrefix(full_prefix);
   if (!start_after.empty()) {
@@ -472,12 +443,7 @@ Status S3ObjectStore::list_object(const std::string_view &bucket,
 Status S3ObjectStore::delete_object(const std::string_view &bucket,
                                     const std::string_view &key) {
   Aws::S3::Model::DeleteObjectRequest request;
-  Aws::String full_key;
-  if (bucket_dir_.empty()) {
-    full_key = key;
-  } else {
-    full_key.append(bucket_dir_).append("/").append(key);
-  }
+  Aws::String full_key(key);
   request.SetKey(full_key);
   request.SetBucket(Aws::String(bucket));
 
@@ -508,22 +474,11 @@ Status S3ObjectStore::delete_objects(
     const std::vector<std::string_view> &object_keys) {
   Aws::String full_key;
   Aws::String common_prefix;
-  
-  if (!bucket_dir_.empty()) {
-    common_prefix = bucket_dir_;
-    common_prefix.append("/");
-  }
-
   Aws::Vector<Aws::S3::Model::ObjectIdentifier> object_identifiers;
 
   for (size_t i = 0; i < object_keys.size(); i++) {
     const std::string_view &object_key = object_keys[i];
-    if (bucket_dir_.empty()) {
-      full_key = object_key;
-    } else {
-      full_key = common_prefix;
-      full_key.append(object_key);
-    }
+    full_key = object_key;
     object_identifiers.emplace_back(
         Aws::S3::Model::ObjectIdentifier().WithKey(full_key));
     if (object_identifiers.size() == kDeleteObjsNumEach || i == object_keys.size() - 1) {
@@ -594,7 +549,7 @@ char *get_s3_access_secret_key() {
 S3ObjectStore *create_s3_objstore_helper(
     const std::string_view region, const std::string_view *endpoint,
     char *access_key_id, char *access_secret_key, bool use_https,
-    const std::string_view bucket_dir, std::string &err_msg) {
+    std::string &err_msg) {
   Aws::Client::ClientConfiguration clientConfig;
   clientConfig.region = region;
   if (endpoint != nullptr) {
@@ -611,7 +566,7 @@ S3ObjectStore *create_s3_objstore_helper(
     Aws::Auth::AWSCredentials credentials(access_key_id_str,
                                           access_secret_key_str);
     Aws::S3::S3Client client(credentials, nullptr, clientConfig);
-    return new S3ObjectStore(region, std::move(client), bucket_dir);
+    return new S3ObjectStore(region, std::move(client));
   } else if (access_key_id || access_secret_key) {
     // if one of the access_key_id and access_secret_key is empty, we treat it
     // as an invalid input.
@@ -625,7 +580,7 @@ S3ObjectStore *create_s3_objstore_helper(
     // https://github.com/aws/aws-sdk-cpp/blob/main/docs/Credentials_Providers.md
     // for details
     Aws::S3::S3Client client(clientConfig);
-    return new S3ObjectStore(region, std::move(client), bucket_dir);
+    return new S3ObjectStore(region, std::move(client));
   }
 }
 
@@ -636,7 +591,7 @@ S3ObjectStore *create_s3_objstore(const std::string_view region,
   char *access_secret_key = get_s3_access_secret_key();
   S3ObjectStore *s3_objstore =
       create_s3_objstore_helper(region, endpoint, access_key_id,
-                                access_secret_key, use_https, "", err_msg);
+                                access_secret_key, use_https, err_msg);
   if (!s3_objstore) {
     err_msg = "failed to create s3 object store:" + err_msg;
   }
@@ -650,7 +605,7 @@ S3ObjectStore *create_source_s3_objstore(const std::string_view region,
   char *source_access_secret_key = get_src_access_secret_key();
   S3ObjectStore *s3_objstore = create_s3_objstore_helper(
       region, endpoint, source_access_key_id, source_access_secret_key,
-      use_https, "", err_msg);
+      use_https, err_msg);
   if (!s3_objstore) {
     err_msg = "failed to create source s3 object store:" + err_msg;
   }
@@ -664,25 +619,9 @@ S3ObjectStore *create_dest_s3_objstore(const std::string_view region,
   char *dest_access_secret_key = get_dest_access_secret_key();
   S3ObjectStore *s3_objstore =
       create_s3_objstore_helper(region, endpoint, dest_access_key_id,
-                                dest_access_secret_key, use_https, "", err_msg);
+                                dest_access_secret_key, use_https, err_msg);
   if (!s3_objstore) {
     err_msg = "failed to create destination s3 object store:" + err_msg;
-  }
-  return s3_objstore;
-}
-
-S3ObjectStore *create_s3_objstore_for_test(const std::string_view region,
-                                           const std::string_view *endpoint,
-                                           bool use_https,
-                                           const std::string_view bucket_dir,
-                                           std::string &err_msg) {
-  char *access_key_id = get_s3_access_key_id();
-  char *access_secret_key = get_s3_access_secret_key();
-  S3ObjectStore *s3_objstore = create_s3_objstore_helper(
-      region, endpoint, access_key_id, access_secret_key, use_https, bucket_dir,
-      err_msg);
-  if (!s3_objstore) {
-    err_msg = "failed to create s3 object store for test:" + err_msg;
   }
   return s3_objstore;
 }

@@ -175,10 +175,10 @@ class SpecialEnv : public util::EnvWrapper {
                                          bool use_https,
                                          const std::string_view bucket,
                                          const std::string &cluster_objstore_id,
-                                         const std::string_view bucket_subdir_for_test) override
+                                         const uint32_t lease_lock_timeout) override
   {
     return target()
-        ->InitObjectStore(provider, region, endpoint, use_https, bucket, cluster_objstore_id, bucket_subdir_for_test);
+        ->InitObjectStore(provider, region, endpoint, use_https, bucket, cluster_objstore_id, lease_lock_timeout);
   }
 
   virtual common::Status DestroyObjectStore() override {

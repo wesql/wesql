@@ -270,7 +270,7 @@ static int se_init_func(void *const p)
                                                            opt_objstore_use_https,
                                                            opt_objstore_bucket,
                                                            se_tbl_options.cluster_id,
-                                                           mtr_test_bucket_subdir);
+                                                           opt_objstore_lease_lock_timeout);
     if (!status.ok()) {
       std::string err_text = status.ToString();
       sql_print_error("SE: fail to create object store: %s", err_text.c_str());
