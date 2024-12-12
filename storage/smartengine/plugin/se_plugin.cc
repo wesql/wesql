@@ -256,14 +256,6 @@ static int se_init_func(void *const p)
 
     std::string_view endpoint(opt_objstore_endpoint ? std::string_view(opt_objstore_endpoint) : "");
 
-    std::string mtr_test_bucket_subdir = "";
-    if (opt_objstore_mtr_test_bucket_dir) {
-      mtr_test_bucket_subdir = opt_objstore_mtr_test_bucket_dir;
-      // remove possible '/' at the beginning and end of the string
-      mtr_test_bucket_subdir.erase(0, mtr_test_bucket_subdir.find_first_not_of("/"));
-      mtr_test_bucket_subdir.erase(mtr_test_bucket_subdir.find_last_not_of("/") + 1);
-    }
-
     common::Status status = main_opts.env->InitObjectStore(std::string_view(opt_objstore_provider),
                                                            std::string_view(opt_objstore_region),
                                                            opt_objstore_endpoint ? &endpoint : nullptr,

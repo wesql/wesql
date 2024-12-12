@@ -43,9 +43,8 @@ enum class AliyunOSSErrorCode {
 class AliyunOssObjectStore : public ObjectStore {
  public:
   explicit AliyunOssObjectStore(const std::string_view region,
-                                AlibabaCloud::OSS::OssClient &&oss_client,
-                                const std::string_view bucket_dir)
-      : region_(region), oss_client_(oss_client), bucket_dir_(bucket_dir) {}
+                                AlibabaCloud::OSS::OssClient &&oss_client)
+      : region_(region), oss_client_(oss_client) {}
   virtual ~AliyunOssObjectStore() = default;
 
   Status create_bucket(const std::string_view &bucket) override;
@@ -89,9 +88,6 @@ class AliyunOssObjectStore : public ObjectStore {
 
   std::string region_;
   AlibabaCloud::OSS::OssClient oss_client_;
-  // now for mtr test only
-  const std::string bucket_dir_;
-
   static constexpr int LIST_MAX_KEYS = 1000;
 };
 
@@ -110,10 +106,6 @@ AliyunOssObjectStore *create_source_aliyun_oss_objstore(
 AliyunOssObjectStore *create_dest_aliyun_oss_objstore(
     const std::string_view region, const std::string_view *endpoint,
     std::string &err_msg);
-
-AliyunOssObjectStore *create_aliyun_oss_objstore_for_test(
-    const std::string_view region, const std::string_view *endpoint,
-    const std::string_view bucket_dir, std::string &err_msg);
 
 void destroy_aliyun_oss_objstore(AliyunOssObjectStore *oss_obj_store);
 

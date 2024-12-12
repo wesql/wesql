@@ -332,8 +332,7 @@ char *get_oss_access_secret_key() {
 
 AliyunOssObjectStore *create_aliyun_oss_objstore_helper(
     const std::string_view region, const std::string_view *endpoint,
-    char *access_key_id, char *access_secret_key,
-    const std::string_view bucket_dir, std::string &err_msg) {
+    char *access_key_id, char *access_secret_key, std::string &err_msg) {
   if (endpoint == nullptr) {
     err_msg =
         "endpoint is not set for aliyun oss, should check your "
@@ -346,7 +345,7 @@ AliyunOssObjectStore *create_aliyun_oss_objstore_helper(
     std::string access_key_id_str(access_key_id);
     std::string access_secret_key_str(access_secret_key);
     AlibabaCloud::OSS::OssClient client(std::string(*endpoint), access_key_id_str, access_secret_key_str, conf);
-    return new AliyunOssObjectStore(region, std::move(client), bucket_dir);
+    return new AliyunOssObjectStore(region, std::move(client));
   } else {
     err_msg =
         "Failed to get access key id or access secret key, you should set "
@@ -361,7 +360,7 @@ AliyunOssObjectStore *create_aliyun_oss_objstore(
   char *access_key_id = get_oss_access_key_id();
   char *access_secret_key = get_oss_access_secret_key();
   AliyunOssObjectStore *oss_obj_store = create_aliyun_oss_objstore_helper(
-      region, endpoint, access_key_id, access_secret_key, "", err_msg);
+      region, endpoint, access_key_id, access_secret_key, err_msg);
   if (!oss_obj_store) {
     err_msg = "Failed to create aliyun oss object store: " + err_msg;
   }
@@ -374,7 +373,7 @@ AliyunOssObjectStore *create_source_aliyun_oss_objstore(
   char *src_access_key_id = get_src_access_key_id();
   char *src_access_secret_key = get_src_access_secret_key();
   AliyunOssObjectStore *oss_obj_store = create_aliyun_oss_objstore_helper(
-      region, endpoint, src_access_key_id, src_access_secret_key, "", err_msg);
+      region, endpoint, src_access_key_id, src_access_secret_key, err_msg);
   if (!oss_obj_store) {
     err_msg = "Failed to create source aliyun oss object store: " + err_msg;
   }
@@ -388,23 +387,10 @@ AliyunOssObjectStore *create_dest_aliyun_oss_objstore(
   char *dest_access_secret_key = get_dest_access_secret_key();
   AliyunOssObjectStore *oss_obj_store =
       create_aliyun_oss_objstore_helper(region, endpoint, dest_access_key_id,
-                                        dest_access_secret_key, "", err_msg);
+                                        dest_access_secret_key, err_msg);
   if (!oss_obj_store) {
     err_msg =
         "Failed to create destination aliyun oss object store: " + err_msg;
-  }
-  return oss_obj_store;
-}
-
-AliyunOssObjectStore *create_aliyun_oss_objstore_for_test(
-    const std::string_view region, const std::string_view *endpoint,
-    const std::string_view bucket_dir, std::string &err_msg) {
-  char *access_key_id = get_oss_access_key_id();
-  char *access_secret_key = get_oss_access_secret_key();
-  AliyunOssObjectStore *oss_obj_store = create_aliyun_oss_objstore_helper(
-      region, endpoint, access_key_id, access_secret_key, bucket_dir, err_msg);
-  if (!oss_obj_store) {
-    err_msg = "Failed to create aliyun oss object store for test: " + err_msg;
   }
   return oss_obj_store;
 }
