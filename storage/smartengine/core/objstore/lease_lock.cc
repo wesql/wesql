@@ -318,6 +318,23 @@ int renewal_single_data_node_lease_lock(ObjectStore *objstore,
   return ret;
 }
 
+int remove_lease_lock_key(ObjectStore *objstore, const std::string_view bucket, const std::string_view cluster_objstore_id, std::string &err_msg) 
+{
+  int ret = 0;
+  if (objstore == nullptr) {
+    ret = Errors::SE_INVALID;
+    err_msg = "object store is not initialized";
+  } else {
+    std::string lease_lock_key = util::get_lease_lock_key(cluster_objstore_id);
+    Status status = objstore->delete_object(bucket, lease_lock_key);
+    if (!status.is_succ()) {
+      ret = status.error_code();
+      err_msg = status.error_message();
+    }
+  }
+  return ret;
+}
+
 void TEST_unset_lease_lock_owner()
 {
   is_lease_lock_owner = false;

@@ -67,11 +67,16 @@ static int se_init_func(void *const p)
   se_bg_thread.init(se_signal_bg_psi_mutex_key, se_signal_bg_psi_cond_key);
   se_drop_idx_thread.init(se_signal_drop_idx_psi_mutex_key,
                            se_signal_drop_idx_psi_cond_key);
-  se_renewal_objstore_lease_lock_thread.init(se_renewal_objstore_lease_lock_psi_mutex_key,
+  if (opt_objstore_lease_lock_timeout > 0) {
+    se_renewal_objstore_lease_lock_thread.init(se_renewal_objstore_lease_lock_psi_mutex_key,
                                              se_renewal_objstore_lease_lock_psi_cond_key);
+  }
 #else
   se_bg_thread.init();
   se_drop_idx_thread.init();
+  if (opt_objstore_lease_lock_timeout > 0) {
+    se_renewal_objstore_lease_lock_thread.init();
+  }
 #endif
   mysql_mutex_init(se_collation_data_mutex_key, &se_collation_data_mutex,
                    MY_MUTEX_INIT_FAST);
@@ -442,10 +447,12 @@ static int se_done_func(void *const p)
   se_bg_thread.signal(true);
 
   if (opt_table_on_objstore && opt_serverless) {
-    // Signal the renewal object store lease lock thread to stop.
-    se_renewal_objstore_lease_lock_thread.signal(true);
-    // Wait for the renewal object store lease lock thread to finish.
-    se_renewal_objstore_lease_lock_thread.join();
+    if (opt_objstore_lease_lock_timeout > 0) {
+      // Signal the renewal object store lease lock thread to stop.
+      se_renewal_objstore_lease_lock_thread.signal(true);
+      // Wait for the renewal object store lease lock thread to finish.
+      se_renewal_objstore_lease_lock_thread.join();
+    }
   }
 
   // Wait for the background thread to finish.
@@ -493,6 +500,20 @@ static int se_done_func(void *const p)
 
   util::Env *env = se_db->GetEnv();
   if (env) {
+    objstore::ObjectStore *se_objstore = nullptr;
+    env->GetObjectStore(se_objstore);
+    if (se_objstore) {
+      int ret = 0;
+      std::string err_msg;
+      const std::string& bucket = env->GetObjectStoreBucket();
+      const std::string& cluster_objstore_id = env->GetClusterObjstoreId();
+      ret = objstore::remove_lease_lock_key(se_objstore, bucket, cluster_objstore_id, err_msg);
+      if (0 == ret) {
+        sql_print_warning("SE: remove lease lock key success");
+      } else {
+        sql_print_error("SE: fail to remove lease lock key, error code: %s", err_msg.c_str());
+      }
+    }
     env->DestroyObjectStore();
   }
 

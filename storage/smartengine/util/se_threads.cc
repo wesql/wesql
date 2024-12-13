@@ -377,8 +377,10 @@ void SeRenewLeaseLockThread::run()
     timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     if (objstore::is_lease_lock_owner_node()) {
-      ts.tv_sec += lease_lock_settings.renewal_interval.count()/1000;
-      ts.tv_nsec += (lease_lock_settings.renewal_interval.count()%1000) * 1000000;
+      time_t inc_sec = lease_lock_settings.renewal_interval.count() / 1000;
+      long inc_nsec = ts.tv_nsec + lease_lock_settings.renewal_interval.count() % 1000 * 1000000;
+      ts.tv_sec += inc_sec + inc_nsec / 1000000000;
+      ts.tv_nsec = inc_nsec % 1000000000;
     } else {
       ts.tv_sec += retry_lock_interval.count();
     }
