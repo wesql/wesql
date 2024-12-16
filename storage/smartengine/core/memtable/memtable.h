@@ -295,7 +295,6 @@ class MemTable {
 
   uint64_t GetMinLogContainingPrepSection();
 
-  uint64_t get_temp_log_contain_prepsec();
   // Notify the underlying storage that no more items will be added.
   // REQUIRES: external synchronization to prevent simultaneous
   // operations on the same MemTable.
@@ -419,5 +418,6 @@ class MemTable {
 };
 
 extern const char* EncodeKey(std::string* scratch, const common::Slice& target);
-}
-}  // namespace smartengine
+
+} // namespace db
+} // namespace smartengine

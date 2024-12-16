@@ -453,6 +453,7 @@ int MemTableList::purge_flushed_memtable(const util::autovector<MemTable *> &flu
     }
   }
   return ret;
-  }
-  }
-}  // namespace smartengine
+}
+
+} // namespace db
+} // namespace smartengine

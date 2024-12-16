@@ -3690,6 +3690,9 @@ int ha_smartengine::build_table_schema(const TABLE *table,
       
     if (FAILED(build_column_schemas(table, field_decoders, table_schema.get_column_schemas()))) {
       SE_LOG(WARN, "fail to build column schemas", K(ret));
+    } else {
+      SE_LOG(INFO, "success to build table schema for table", "database_name", table_def->base_dbname(),
+          "table_name", table_def->base_tablename());
     }
   }
 

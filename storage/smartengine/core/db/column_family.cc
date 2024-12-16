@@ -409,45 +409,52 @@ ColumnFamilyOptions ColumnFamilyData::GetLatestCFOptions() const {
   return BuildColumnFamilyOptions(initial_cf_options_, mutable_cf_options_);
 }
 
-uint64_t ColumnFamilyData::OldestLogToKeep() {
-  uint64_t current_log = static_cast<uint64_t>(get_recovery_point().log_file_number_);
+uint64_t ColumnFamilyData::OldestLogToKeep()
+{
+  uint64_t oldest_log_file_number = static_cast<uint64_t>(get_recovery_point().log_file_number_);
 
   if (allow_2pc_) {
-    auto imm_prep_log = imm()->GetMinLogContainingPrepSection();
-    auto mem_prep_log = mem()->GetMinLogContainingPrepSection();
-    auto temp_prep_log = mem()->get_temp_min_prep_log();
-    if (imm_prep_log > 0 && imm_prep_log < current_log) {
-      current_log = imm_prep_log;
+    uint64_t imm_prep_log = imm()->GetMinLogContainingPrepSection();
+    uint64_t mem_prep_log = mem()->GetMinLogContainingPrepSection();
+    uint64_t temp_prep_log = mem()->get_temp_min_prep_log();
+
+    if (imm_prep_log > 0 && imm_prep_log < oldest_log_file_number) {
+      oldest_log_file_number = imm_prep_log;
     }
 
-    if (mem_prep_log > 0 && mem_prep_log < current_log) {
-      current_log = mem_prep_log;
+    if (mem_prep_log > 0 && mem_prep_log < oldest_log_file_number) {
+      oldest_log_file_number = mem_prep_log;
     }
 
-    if (temp_prep_log > 0 && temp_prep_log < current_log) {
-      current_log = temp_prep_log;
+    if (temp_prep_log > 0 && temp_prep_log < oldest_log_file_number) {
+      oldest_log_file_number = temp_prep_log;
     }
   }
 
-  return current_log;
+  return oldest_log_file_number;
 }
 
-uint64_t ColumnFamilyData::OldestLogMemToKeep() {
-  uint64_t min_lognumber = imm_.get_largest_lognumber();
-  if (min_lognumber == UINT64_MAX) {
-    min_lognumber = static_cast<uint64_t>(get_recovery_point().log_file_number_);
+uint64_t ColumnFamilyData::OldestLogMemToKeep()
+{
+  uint64_t oldest_log_file_number = imm_.get_largest_lognumber();
+
+  if (UINT64_MAX == oldest_log_file_number) {
+    oldest_log_file_number = static_cast<uint64_t>(get_recovery_point().log_file_number_);
   }
+
   if (allow_2pc_) {
-    auto min_log_prep = mem()->GetMinLogContainingPrepSection();
-    if (min_log_prep && min_log_prep < min_lognumber) {
-      min_lognumber = min_log_prep;
+    uint64_t min_log_prep = mem()->GetMinLogContainingPrepSection();
+    if (min_log_prep > 0 && min_log_prep < oldest_log_file_number) {
+      oldest_log_file_number = min_log_prep;
     }
-    auto temp_prep_log = mem()->get_temp_min_prep_log();
-    if (temp_prep_log && temp_prep_log < min_lognumber) {
-      min_lognumber = temp_prep_log;
+
+    uint64_t temp_prep_log = mem()->get_temp_min_prep_log();
+    if (temp_prep_log > 0 && temp_prep_log < oldest_log_file_number) {
+      oldest_log_file_number = temp_prep_log;
     }
   }
-  return min_lognumber;
+
+  return oldest_log_file_number;
 }
 
 const EnvOptions* ColumnFamilyData::soptions() const {

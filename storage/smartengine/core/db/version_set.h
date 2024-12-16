@@ -128,27 +128,35 @@ public:
 
   // Returns the minimum log number such that all
   // log numbers less than or equal to it can be deleted
-  uint64_t MinLogNumber() const {
-    uint64_t min_log_num = std::numeric_limits<uint64_t>::max();
-    for (auto cfd : *column_family_set_) {
-      if (0 == cfd->GetID()) {
+  uint64_t MinLogNumber() const
+  {
+    uint64_t log_number = UINT64_MAX;
+    uint64_t min_log_number = UINT64_MAX;
+    int64_t index_id = 0;
+
+    for (auto sub_table : *column_family_set_) {
+      log_number = static_cast<uint64_t>(sub_table->get_recovery_point().log_file_number_);
+      if (0 == sub_table->GetID()) {
         //default cf is only used in unittest,
         //so the normal recyle wal point need not include the default_cf's recovery point
-      } else if (min_log_num > static_cast<uint64_t>(cfd->get_recovery_point().log_file_number_)
-          && !cfd->IsDropped()) {
+      } else if (!sub_table->IsDropped() && min_log_number > log_number) {
         // It's safe to ignore dropped column families here:
         // cfd->IsDropped() becomes true after the drop is persisted in manifest.
-        min_log_num = static_cast<uint64_t>(cfd->get_recovery_point().log_file_number_);
+        min_log_number = log_number;
+        index_id = sub_table->GetID();
       }
     }
 
-    if (std::numeric_limits<uint64_t>::max() == min_log_num) {
+    SE_LOG(INFO, "CK_INFO: min log number", K(index_id), K(min_log_number));
+  
+    if (UINT64_MAX == min_log_number) {
       //reach here, indicate that only default_cf exist
       //only occur when bootstrap, because system_cf will been created after bootstrap
       //here, reset the min_log_number to zero, prevent recycle all wal files
-      min_log_num = 0;
+      min_log_number = 0;
     }
-    return min_log_num;
+  
+    return min_log_number;
   }
 
   // Return the approximate size of data to be scanned for range [start, end)

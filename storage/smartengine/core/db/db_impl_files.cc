@@ -212,7 +212,8 @@ uint64_t DBImpl::MinLogNumberToKeep() {
 // force = false -- don't force the full scan, except every
 //  mutable_db_options_.delete_obsolete_files_period_micros
 // force = true -- force the full scan
-void DBImpl::FindObsoleteFiles(JobContext* job_context, bool force,
+void DBImpl::FindObsoleteFiles(JobContext* job_context,
+                               bool force,
                                bool no_full_scan) {
   mutex_.AssertHeld();
 
@@ -273,6 +274,11 @@ void DBImpl::FindObsoleteFiles(JobContext* job_context, bool force,
   if (!alive_log_files_.empty() && IS_NOTNULL(curr_log_writer_)) {
     uint64_t min_log_number = job_context->log_number;
     size_t num_alive_log_files = alive_log_files_.size();
+
+    SE_LOG(INFO, "CK_INFO: find obsolete files",
+        K(min_log_number), K(num_alive_log_files),
+        "oldest_log_file_number", alive_log_files_.front().number,
+        "newest_log_file_number", alive_log_files_.back().number);
     // find newly obsoleted log files
     while (!alive_log_files_.empty() && alive_log_files_.begin()->number < min_log_number) {
       auto& earliest = *alive_log_files_.begin();

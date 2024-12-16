@@ -909,6 +909,9 @@ int DBImpl::handle_single_wal_full(WriteContext* write_context) {
   }
 
   if (nullptr != pick_sub_table) {
+    SE_LOG(INFO, "CK_INFO: picked this subtable to switch",
+        "index_id", pick_sub_table->GetID(), "oldest_log_to_keep", pick_sub_table->OldestLogToKeep(),
+        K(oldest_alive_log));
     LogFileNumberSize &last_file = alive_log_files_.back();
     last_file.switch_flag = true;
     if (FAILED(trigger_switch_memtable(pick_sub_table, write_context))) {
@@ -945,24 +948,24 @@ int DBImpl::get_all_sub_table(AllSubTable *&all_sub_table, GlobalContext *&globa
 
 int DBImpl::find_subtables_to_switch(const uint64_t oldest_alive_log, WriteContext* write_context, bool force_switch) {
   mutex_.AssertHeld();
-  int ret = 0;
+  int ret = Status::kOk;
   SubTableMap& all_subtables = write_context->all_sub_table_->sub_table_map_;
   SubTable* sub_table = nullptr;
-  uint64_t seq = 0;
-  for (auto iter = all_subtables.begin();
-       Status::kOk == ret && iter != all_subtables.end(); ++iter) {
+
+  for (auto iter = all_subtables.begin(); SUCCED(ret) && all_subtables.end() != iter; ++iter) {
     if (IS_NULL(sub_table = iter->second)) {
       ret = Status::kCorruption;
       SE_LOG(WARN, "subtable must not nullptr", K(ret), K(iter->first));
     } else if (sub_table->IsDropped()) {
       // subtable has been dropped, do nothing
-      SE_LOG(INFO, "subtable has been dropped", K(iter->first));
     } else if (0 == sub_table->mem()->GetFirstSequenceNumber() &&
                0 == sub_table->imm()->NumNotFlushed()) {
       // do nothing
     } else {
       uint64_t min_lognumber = sub_table->OldestLogMemToKeep();
       if (min_lognumber <= oldest_alive_log) {
+        SE_LOG(INFO, "CK_INFO: pick this subtable to switch or dump",
+            "index_id", sub_table->GetID(), K(min_lognumber), K(oldest_alive_log), K(force_switch));
         if (force_switch) {
           if (FAILED(trigger_switch_memtable(sub_table, write_context))) {
             SE_LOG(WARN, "failed to trigger switch memtable", K(ret), K(sub_table->GetID()));
@@ -973,6 +976,7 @@ int DBImpl::find_subtables_to_switch(const uint64_t oldest_alive_log, WriteConte
       }
     }
   }
+
   return ret;
 }
 
@@ -991,6 +995,8 @@ int DBImpl::force_handle_wal_full(WriteContext* write_context) {
       FAILED(global_ctx->release_thread_local_all_sub_table(write_context->all_sub_table_))) {
     SE_LOG(WARN, "fail to release all sub table", K(ret), K(tmp_ret));
   }
+
+  advance_recovery_point_without_flush();
   mutex_.Unlock();
   return ret;
 }
@@ -1052,9 +1058,9 @@ Status DBImpl::HandleWALFull(WriteContext* write_context) {
   }
   maybe_schedule_dump();
   MaybeScheduleFlushOrCompaction();
+  advance_recovery_point_without_flush();
   SE_LOG(INFO, "CK_INFO: find all cfds to do dump/switch",
-              K(oldest_alive_log),
-              K(GetMaxTotalWalSize()), K(total_log_size_.load()));
+      K(oldest_alive_log), K(GetMaxTotalWalSize()), K(total_log_size_.load()));
   return status;
 }
 
@@ -1293,6 +1299,8 @@ Status DBImpl::HandleTotalWriteBufferFull(WriteContext* write_context) {
     // flushing is ongoing, nothing to do here. do throttling if necessary?
   }
 
+  advance_recovery_point_without_flush();
+
   if (trim_num == 0) {
     trim_mem_flush_waited_ = kFlushWaited;
   }
@@ -1372,6 +1380,8 @@ Status DBImpl::HandleWriteBufferFull(WriteContext* write_context) {
   if (nullptr != global_ctx && FAILED(global_ctx->release_thread_local_all_sub_table(all_sub_table))) {
     SE_LOG(WARN, "fail to release all sub table", K(ret), K(tmp_ret));
   }
+
+  advance_recovery_point_without_flush();
 
   return Status(ret);
 }
