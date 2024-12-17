@@ -312,6 +312,18 @@ int renewal_single_data_node_lease_lock(ObjectStore *objstore,
   return ret;
 }
 
+void TEST_unset_lease_lock_owner()
+{
+  is_lease_lock_owner = false;
+  lease_lock_last_lease_time = std::chrono::milliseconds(0);
+}
+
+#ifdef NDEBUG
+} // namespace
+#endif
+
+bool is_lease_lock_owner_node() { return is_lease_lock_owner; }
+
 int remove_lease_lock_key(ObjectStore *objstore, const std::string_view bucket, const std::string_view cluster_objstore_id, std::string &err_msg) 
 {
   int ret = 0;
@@ -328,18 +340,6 @@ int remove_lease_lock_key(ObjectStore *objstore, const std::string_view bucket, 
   }
   return ret;
 }
-
-void TEST_unset_lease_lock_owner()
-{
-  is_lease_lock_owner = false;
-  lease_lock_last_lease_time = std::chrono::milliseconds(0);
-}
-
-#ifdef NDEBUG
-} // namespace
-#endif
-
-bool is_lease_lock_owner_node() { return is_lease_lock_owner; }
 
 int try_single_data_node_lease_lock(ObjectStore *objstore,
                                     const std::string_view bucket_dir,

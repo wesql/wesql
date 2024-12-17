@@ -44,6 +44,11 @@ int try_single_data_node_lease_lock(ObjectStore *objstore,
                                     std::string &important_msg,
                                     bool &need_abort);
 
+int remove_lease_lock_key(ObjectStore *objstore, 
+                          const std::string_view bucket, 
+                          const std::string_view cluster_objstore_id,
+                          std::string& err_msg);
+
 #ifndef NDEBUG
 
 int get_single_data_node_lease_lock_expire_time(ObjectStore *objstore,
@@ -72,11 +77,6 @@ int renewal_single_data_node_lease_lock(ObjectStore *objstore,
                                         const LeaseLockSettings &lease_lock_settings,
                                         std::chrono::milliseconds &new_lease_time,
                                         std::string &err_msg);
-
-int remove_lease_lock_key(ObjectStore *objstore, 
-                          const std::string_view bucket, 
-                          const std::string_view cluster_objstore_id,
-                          std::string& err_msg);
 
 void TEST_unset_lease_lock_owner();
 
