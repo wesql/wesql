@@ -269,7 +269,8 @@ void *Binlog_archive_worker::worker_thread() {
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_WORKER_LOG, m_worker_id,
          "thread running");
   while (true) {
-    uint32_t retry = 5;
+    int failure_trials =
+        Binlog_archive::MAX_RETRIES_FOR_OBJECT_MANIPULATION_FAILURE;
     Binlog_expected_slice slice;
     bool is_slice_persisted = false;
     uint64_t slice_queue_map_term = 0;
@@ -307,7 +308,7 @@ void *Binlog_archive_worker::worker_thread() {
     m_current_slice = slice;
 
     // Persist the slice to the object store.
-    while (retry-- > 0) {
+    while (failure_trials-- > 0) {
       bool error = false;
       DBUG_EXECUTE_IF("fault_injection_put_slice_to_objstore", {
         LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_WORKER_LOG, m_worker_id,

@@ -63,14 +63,16 @@ let $MYSQLD_EXTRA_ARGS = --server-id=$ro_server_id --port=$ro_port --socket=$MYS
 
 --write_file $tmp_dir/snapshot_clone_ro_test/my.cnf
 [mysqld]
-binlog_archive_replica=ON
-relay_log_recovery=on
-binlog_archive=OFF
-snapshot_archive=OFF
 sync_binlog=1
 sync_relay_log=1
 relay_log=relay-bin
 binlog_format=ROW
+relay_log_recovery=on
+objectstore_lease_lock_timeout=0
+binlog_archive_replica=ON
+snapshot_archive_expire_auto_purge=false
+binlog_archive_expire_auto_purge=false
+binlog_archive_period=1000
 EOF
 
 let $ro_cluster_info= '127.0.0.1:19981@1';

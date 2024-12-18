@@ -182,13 +182,24 @@ class Binlog_archive_replica_io_worker {
         ->worker_thread();
   }
   void *worker_thread();
-  void thread_set_created() { m_thd_state.set_created(); }
-  bool is_thread_alive_not_running() const {
-    return m_thd_state.is_alive_not_running();
+  bool is_thread_dead() {
+    mysql_mutex_lock(&m_worker_run_lock);
+    bool ret = m_thd_state.is_thread_dead();
+    mysql_mutex_unlock(&m_worker_run_lock);
+    return ret;
   }
-  bool is_thread_dead() const { return m_thd_state.is_thread_dead(); }
-  bool is_thread_alive() const { return m_thd_state.is_thread_alive(); }
-  bool is_thread_running() const { return m_thd_state.is_running(); }
+  bool is_thread_alive() {
+    mysql_mutex_lock(&m_worker_run_lock);
+    bool ret = m_thd_state.is_thread_alive();
+    mysql_mutex_unlock(&m_worker_run_lock);
+    return ret;
+  }
+  bool is_thread_running() {
+    mysql_mutex_lock(&m_worker_run_lock);
+    bool ret = m_thd_state.is_running();
+    mysql_mutex_unlock(&m_worker_run_lock);
+    return ret;
+  }
   int terminate_binlog_archive_replica_io_worker_thread();
   bool is_binlog_archive_replica_io_worker_waiting() const {
     return atomic_binlog_archive_replica_io_worker_waiting.load(
@@ -203,7 +214,6 @@ class Binlog_archive_replica_io_worker {
   Binlog_archive_replica *m_archive;
   my_thread_handle m_thread;
   int m_worker_id;
-  Binlog_expected_pull_slice m_current_slice;
   THD *m_thd;
   /* thread state */
   thread_state m_thd_state;
@@ -230,26 +240,25 @@ class Binlog_archive_replica_relay_worker {
         ->worker_thread();
   }
   void *worker_thread();
-  void thread_set_created() { m_thd_state.set_created(); }
-  bool is_thread_alive_not_running() const {
-    return m_thd_state.is_alive_not_running();
+  bool is_thread_dead() {
+    mysql_mutex_lock(&m_worker_run_lock);
+    bool ret = m_thd_state.is_thread_dead();
+    mysql_mutex_unlock(&m_worker_run_lock);
+    return ret;
   }
-  bool is_thread_dead() const { return m_thd_state.is_thread_dead(); }
-  bool is_thread_alive() const { return m_thd_state.is_thread_alive(); }
-  bool is_thread_running() const { return m_thd_state.is_running(); }
+  bool is_thread_alive() {
+    mysql_mutex_lock(&m_worker_run_lock);
+    bool ret = m_thd_state.is_thread_alive();
+    mysql_mutex_unlock(&m_worker_run_lock);
+    return ret;
+  }
+  bool is_thread_running() {
+    mysql_mutex_lock(&m_worker_run_lock);
+    bool ret = m_thd_state.is_running();
+    mysql_mutex_unlock(&m_worker_run_lock);
+    return ret;
+  }
   int terminate_binlog_archive_replica_relay_worker();
-  bool is_relay_failed() const {
-    return atomic_relay_failed.load(std::memory_order_acquire);
-  }
-  void set_relay_failed(bool failed) {
-    atomic_relay_failed.store(failed, std::memory_order_release);
-  }
-  bool is_relay_waiting() const {
-    return atomic_relay_waiting.load(std::memory_order_acquire);
-  }
-  void set_relay_waiting(bool waiting) {
-    atomic_relay_waiting.store(waiting, std::memory_order_release);
-  }
 
  private:
   Binlog_archive_replica *m_archive;
@@ -259,8 +268,6 @@ class Binlog_archive_replica_relay_worker {
   thread_state m_thd_state;
   mysql_mutex_t m_worker_run_lock;
   mysql_cond_t m_worker_run_cond;
-  std::atomic<bool> atomic_relay_failed;
-  std::atomic<bool> atomic_relay_waiting;
   void calc_event_checksum(uchar *event_ptr, size_t event_len);
   int fake_rotate_event(const char *next_log_file, my_off_t log_pos,
                         ulong server_id,
@@ -367,11 +374,14 @@ class Binlog_archive_replica {
   int channel_start();
   int channel_stop();
   bool channel_is_running();
+  int start_worker_threads();
+  int stop_worker_threads();
+  bool worker_threads_are_running();
+  bool reinitiate_archive_replica();
   char m_binlog_archive_file_name[FN_REFLEN + 1];
   char m_binlog_archive_dir[FN_REFLEN + 1];
   char m_mysql_archive_dir[FN_REFLEN + 1];
   char m_mysql_binlog_archive_dir[FN_REFLEN + 1];
-  Format_description_event m_description_event;
   objstore::ObjectStore *binlog_objstore;
   int archive_init();
   int archive_cleanup();

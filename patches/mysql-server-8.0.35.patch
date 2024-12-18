@@ -2751,7 +2751,7 @@ index e010b378799..a6f94f8f194 100644
  ################################################################################
  # DO NOT add messages for the error-log to this file;
 diff --git a/share/messages_to_error_log.txt b/share/messages_to_error_log.txt
-index cdef214ae5f..2f1f0545876 100644
+index cdef214ae5f..8010a9a6236 100644
 --- a/share/messages_to_error_log.txt
 +++ b/share/messages_to_error_log.txt
 @@ -12293,6 +12293,459 @@ ER_WARN_DEPRECATED_OR_BLOCKED_CIPHER
@@ -3172,7 +3172,7 @@ index cdef214ae5f..2f1f0545876 100644
 +  eng "Binlog archive replica: %s."
 +
 +ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER
-+  eng "Binlog archive replica replay worker: %s."
++  eng "Binlog archive replica relay worker: %s."
 +
 +ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER
 +  eng "Binlog archive replica io worker %d: %s."
@@ -4684,7 +4684,7 @@ index c288026b810..22d6c7b9d24 100644
  
  #endif /* _log_event_h */
 diff --git a/sql/mysqld.cc b/sql/mysqld.cc
-index 3f94e768956..17d146270c6 100644
+index 3f94e768956..7c554929ddb 100644
 --- a/sql/mysqld.cc
 +++ b/sql/mysqld.cc
 @@ -774,15 +774,19 @@ MySQL clients support the protocol:
@@ -4732,7 +4732,7 @@ index 3f94e768956..17d146270c6 100644
  bool opt_initialize = false;
  bool opt_skip_replica_start = false;  ///< If set, slave is not autostarted
  bool opt_enable_named_pipe = false;
-@@ -1500,6 +1511,68 @@ char server_version[SERVER_VERSION_LENGTH];
+@@ -1500,6 +1511,69 @@ char server_version[SERVER_VERSION_LENGTH];
  const char *mysqld_unix_port;
  char *opt_mysql_tmpdir;
  
@@ -4756,6 +4756,7 @@ index 3f94e768956..17d146270c6 100644
 +ulonglong opt_binlog_archive_period = 0;
 +ulong opt_binlog_archive_parallel_workers = 0;
 +bool opt_binlog_archive_replica = false;
++ulong opt_binlog_archive_replica_flush_period = 0;
 +char *opt_binlog_archive_replica_source_log_file = nullptr;
 +ulong opt_binlog_archive_replica_source_log_pos = 0;
 +char *opt_consistent_snapshot_archive_dir = nullptr;
@@ -4801,7 +4802,7 @@ index 3f94e768956..17d146270c6 100644
  char *opt_authentication_policy;
  std::vector<std::string> authentication_policy_list;
  /*
-@@ -2362,6 +2435,12 @@ static void close_connections(void) {
+@@ -2362,6 +2436,12 @@ static void close_connections(void) {
    Call_close_conn call_close_conn(true);
    thd_manager->do_for_all_thd(&call_close_conn);
  
@@ -4814,7 +4815,7 @@ index 3f94e768956..17d146270c6 100644
    (void)RUN_HOOK(server_state, after_server_shutdown, (nullptr));
  
    /*
-@@ -2493,6 +2572,9 @@ void clean_up_mysqld_mutexes() { clean_up_mutexes(); }
+@@ -2493,6 +2573,9 @@ void clean_up_mysqld_mutexes() { clean_up_mutexes(); }
  static void mysqld_exit(int exit_code) {
    assert((exit_code >= MYSQLD_SUCCESS_EXIT && exit_code <= MYSQLD_ABORT_EXIT) ||
           exit_code == MYSQLD_RESTART_EXIT);
@@ -4824,7 +4825,7 @@ index 3f94e768956..17d146270c6 100644
    mysql_audit_finalize();
    Srv_session::module_deinit();
    delete_optimizer_cost_module();
-@@ -4272,6 +4354,10 @@ SHOW_VAR com_status_vars[] = {
+@@ -4272,6 +4355,10 @@ SHOW_VAR com_status_vars[] = {
       (char *)offsetof(System_status_var,
                        com_stat[(uint)SQLCOM_SHOW_BINLOG_EVENTS]),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
@@ -4835,7 +4836,7 @@ index 3f94e768956..17d146270c6 100644
      {"show_binlogs",
       (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_SHOW_BINLOGS]),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-@@ -4443,6 +4529,14 @@ SHOW_VAR com_status_vars[] = {
+@@ -4443,6 +4530,14 @@ SHOW_VAR com_status_vars[] = {
       (char *)offsetof(System_status_var,
                        com_stat[(uint)SQLCOM_STOP_GROUP_REPLICATION]),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
@@ -4850,7 +4851,7 @@ index 3f94e768956..17d146270c6 100644
      {"stmt_execute", (char *)offsetof(System_status_var, com_stmt_execute),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
      {"stmt_close", (char *)offsetof(System_status_var, com_stmt_close),
-@@ -4498,6 +4592,16 @@ SHOW_VAR com_status_vars[] = {
+@@ -4498,6 +4593,16 @@ SHOW_VAR com_status_vars[] = {
      {"xa_start",
       (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_XA_START]),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
@@ -4867,7 +4868,7 @@ index 3f94e768956..17d146270c6 100644
      {NullS, NullS, SHOW_LONG, SHOW_SCOPE_ALL}};
  
  LEX_CSTRING sql_statement_names[(uint)SQLCOM_END + 1];
-@@ -4817,6 +4921,10 @@ int init_common_variables() {
+@@ -4817,6 +4922,10 @@ int init_common_variables() {
    */
    mysql_bin_log.init_pthread_objects();
  
@@ -4878,7 +4879,7 @@ index 3f94e768956..17d146270c6 100644
    /* TODO: remove this when my_time_t is 64 bit compatible */
    if (!is_time_t_valid_for_timestamp(server_start_time)) {
      LogErr(ERROR_LEVEL, ER_UNSUPPORTED_DATE);
-@@ -4859,6 +4967,12 @@ int init_common_variables() {
+@@ -4859,6 +4968,12 @@ int init_common_variables() {
    default_storage_engine = "InnoDB";
    default_tmp_storage_engine = default_storage_engine;
  
@@ -4891,7 +4892,7 @@ index 3f94e768956..17d146270c6 100644
    /*
      Add server status variables to the dynamic list of
      status variables that is shown by SHOW STATUS.
-@@ -6286,6 +6400,14 @@ static int init_server_components() {
+@@ -6286,6 +6401,14 @@ static int init_server_components() {
        opt_bin_logname = my_strdup(key_memory_opt_bin_logname, buf, MYF(0));
      }
  
@@ -4906,7 +4907,7 @@ index 3f94e768956..17d146270c6 100644
      /*
        Skip opening the index file if we start with --help. This is necessary
        to avoid creating the file in an otherwise empty datadir, which will
-@@ -6503,6 +6625,33 @@ static int init_server_components() {
+@@ -6503,6 +6626,33 @@ static int init_server_components() {
        LogErr(ERROR_LEVEL, ER_CANT_INITIALIZE_BUILTIN_PLUGINS);
      unireg_abort(1);
    }
@@ -4940,7 +4941,7 @@ index 3f94e768956..17d146270c6 100644
  
    /*
      Needs to be done before dd::init() which runs DDL commands (for real)
-@@ -6785,6 +6934,27 @@ static int init_server_components() {
+@@ -6785,6 +6935,27 @@ static int init_server_components() {
      unireg_abort(1);
    }
  
@@ -4968,7 +4969,7 @@ index 3f94e768956..17d146270c6 100644
    if (opt_initialize) log_output_options = LOG_FILE;
  
    /*
-@@ -6818,6 +6988,20 @@ static int init_server_components() {
+@@ -6818,6 +6989,20 @@ static int init_server_components() {
    /*
      Set the default storage engines
    */
@@ -4989,7 +4990,7 @@ index 3f94e768956..17d146270c6 100644
    if (initialize_storage_engine(default_storage_engine, "",
                                  &global_system_variables.table_plugin))
      unireg_abort(MYSQLD_ABORT_EXIT);
-@@ -6890,7 +7074,22 @@ static int init_server_components() {
+@@ -6890,7 +7075,22 @@ static int init_server_components() {
      unireg_abort(MYSQLD_ABORT_EXIT);
    }
  
@@ -5013,7 +5014,7 @@ index 3f94e768956..17d146270c6 100644
      /*
        Configures what object is used by the current log to store processed
        gtid(s). This is necessary in the MYSQL_BIN_LOG::MYSQL_BIN_LOG to
-@@ -7531,6 +7730,11 @@ int mysqld_main(int argc, char **argv)
+@@ -7531,6 +7731,11 @@ int mysqld_main(int argc, char **argv)
    */
    init_server_psi_keys();
  
@@ -5025,7 +5026,7 @@ index 3f94e768956..17d146270c6 100644
    /*
      Now that some instrumentation is in place,
      recreate objects which were initialised early,
-@@ -7818,6 +8022,16 @@ int mysqld_main(int argc, char **argv)
+@@ -7818,6 +8023,16 @@ int mysqld_main(int argc, char **argv)
      unireg_abort(exit_state);
    }
  
@@ -5042,7 +5043,7 @@ index 3f94e768956..17d146270c6 100644
    /*
     We have enough space for fiddling with the argv, continue
    */
-@@ -7830,6 +8044,63 @@ int mysqld_main(int argc, char **argv)
+@@ -7830,6 +8045,63 @@ int mysqld_main(int argc, char **argv)
      unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
    }
  
@@ -5106,7 +5107,7 @@ index 3f94e768956..17d146270c6 100644
    /*
     The subsequent calls may take a long time : e.g. innodb log read.
     Thus set the long running service control manager timeout
-@@ -7879,6 +8150,16 @@ int mysqld_main(int argc, char **argv)
+@@ -7879,6 +8151,16 @@ int mysqld_main(int argc, char **argv)
      if (gtid_state->read_gtid_executed_from_table() == -1) unireg_abort(1);
    }
  
@@ -5123,7 +5124,7 @@ index 3f94e768956..17d146270c6 100644
    if (opt_bin_log) {
      /*
        Initialize GLOBAL.GTID_EXECUTED and GLOBAL.GTID_PURGED from
-@@ -7998,6 +8279,14 @@ int mysqld_main(int argc, char **argv)
+@@ -7998,6 +8280,14 @@ int mysqld_main(int argc, char **argv)
      (void)RUN_HOOK(server_state, after_engine_recovery, (nullptr));
    }
  
@@ -5138,7 +5139,7 @@ index 3f94e768956..17d146270c6 100644
    if (init_ssl_communication()) unireg_abort(MYSQLD_ABORT_EXIT);
    if (network_init()) unireg_abort(MYSQLD_ABORT_EXIT);
  
-@@ -8133,8 +8422,22 @@ int mysqld_main(int argc, char **argv)
+@@ -8133,8 +8423,22 @@ int mysqld_main(int argc, char **argv)
  
    initialize_information_schema_acl();
  
@@ -5161,7 +5162,7 @@ index 3f94e768956..17d146270c6 100644
    if (Events::init(opt_noacl || opt_initialize))
      unireg_abort(MYSQLD_ABORT_EXIT);
  
-@@ -8158,6 +8461,13 @@ int mysqld_main(int argc, char **argv)
+@@ -8158,6 +8462,13 @@ int mysqld_main(int argc, char **argv)
      return 1;
    }
  
@@ -5175,7 +5176,7 @@ index 3f94e768956..17d146270c6 100644
    /*
      Invoke the bootstrap thread, if required.
    */
-@@ -9267,6 +9577,12 @@ struct my_option my_long_options[] = {
+@@ -9267,6 +9578,12 @@ struct my_option my_long_options[] = {
       &opt_upgrade_mode, &opt_upgrade_mode, &upgrade_mode_typelib, GET_ENUM,
       REQUIRED_ARG, UPGRADE_AUTO, 0, 0, nullptr, 0, nullptr},
  
@@ -5188,7 +5189,7 @@ index 3f94e768956..17d146270c6 100644
      {nullptr, 0, nullptr, nullptr, nullptr, nullptr, GET_NO_ARG, NO_ARG, 0, 0,
       0, nullptr, 0, nullptr}};
  
-@@ -11131,6 +11447,7 @@ static int get_options(int *argc_ptr, char ***argv_ptr) {
+@@ -11131,6 +11448,7 @@ static int get_options(int *argc_ptr, char ***argv_ptr) {
  #ifndef _WIN32
    if (mysqld_chroot) set_root(mysqld_chroot);
  #endif
@@ -5196,7 +5197,7 @@ index 3f94e768956..17d146270c6 100644
    if (fix_paths()) return 1;
  
    /*
-@@ -11184,6 +11501,11 @@ static void set_server_version(void) {
+@@ -11184,6 +11502,11 @@ static void set_server_version(void) {
  #ifndef NDEBUG
    if (!strstr(MYSQL_SERVER_SUFFIX_STR, "-debug"))
      end = my_stpcpy(end, "-debug");
@@ -5208,7 +5209,7 @@ index 3f94e768956..17d146270c6 100644
  #endif
  #ifdef HAVE_VALGRIND
    if (SERVER_VERSION_LENGTH - (end - server_version) >
-@@ -11795,6 +12117,13 @@ PSI_mutex_key key_monitor_info_run_lock;
+@@ -11795,6 +12118,13 @@ PSI_mutex_key key_monitor_info_run_lock;
  PSI_mutex_key key_LOCK_delegate_connection_mutex;
  PSI_mutex_key key_LOCK_group_replication_connection_mutex;
  
@@ -5222,7 +5223,7 @@ index 3f94e768956..17d146270c6 100644
  /* clang-format off */
  static PSI_mutex_info all_server_mutexes[]=
  {
-@@ -11861,6 +12190,12 @@ static PSI_mutex_info all_server_mutexes[]=
+@@ -11861,6 +12191,12 @@ static PSI_mutex_info all_server_mutexes[]=
    { &key_mutex_slave_parallel_pend_jobs, "Relay_log_info::pending_jobs_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_mutex_slave_parallel_worker_count, "Relay_log_info::exit_count_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_mutex_slave_parallel_worker, "Worker_info::jobs_lock", 0, 0, PSI_DOCUMENT_ME},
@@ -5235,7 +5236,7 @@ index 3f94e768956..17d146270c6 100644
    { &key_TABLE_SHARE_LOCK_ha_data, "TABLE_SHARE::LOCK_ha_data", 0, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_error_messages, "LOCK_error_messages", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_log_throttle_qni, "LOCK_log_throttle_qni", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
-@@ -11887,7 +12222,7 @@ static PSI_mutex_info all_server_mutexes[]=
+@@ -11887,7 +12223,7 @@ static PSI_mutex_info all_server_mutexes[]=
    { &key_monitor_info_run_lock, "Source_IO_monitor::run_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_delegate_connection_mutex, "LOCK_delegate_connection_mutex", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_LOCK_group_replication_connection_mutex, "LOCK_group_replication_connection_mutex", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
@@ -5244,7 +5245,7 @@ index 3f94e768956..17d146270c6 100644
    { &key_LOCK_global_conn_mem_limit, "LOCK_global_conn_mem_limit", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME}
  };
  /* clang-format on */
-@@ -11906,6 +12241,14 @@ PSI_rwlock_key key_rwlock_Binlog_transmit_delegate_lock;
+@@ -11906,6 +12242,14 @@ PSI_rwlock_key key_rwlock_Binlog_transmit_delegate_lock;
  PSI_rwlock_key key_rwlock_Binlog_relay_IO_delegate_lock;
  PSI_rwlock_key key_rwlock_resource_group_mgr_map_lock;
  
@@ -5259,7 +5260,7 @@ index 3f94e768956..17d146270c6 100644
  /* clang-format off */
  static PSI_rwlock_info all_server_rwlocks[]=
  {
-@@ -11922,6 +12265,13 @@ static PSI_rwlock_info all_server_rwlocks[]=
+@@ -11922,6 +12266,13 @@ static PSI_rwlock_info all_server_rwlocks[]=
    { &key_rwlock_Trans_delegate_lock, "Trans_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_Server_state_delegate_lock, "Server_state_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_Binlog_storage_delegate_lock, "Binlog_storage_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
@@ -5273,7 +5274,7 @@ index 3f94e768956..17d146270c6 100644
    { &key_rwlock_receiver_sid_lock, "gtid_retrieved", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_rpl_filter_lock, "rpl_filter_lock", 0, 0, PSI_DOCUMENT_ME},
    { &key_rwlock_channel_to_filter_lock, "channel_to_filter_lock", 0, 0, PSI_DOCUMENT_ME},
-@@ -11960,6 +12310,12 @@ PSI_cond_key key_cond_slave_worker_hash;
+@@ -11960,6 +12311,12 @@ PSI_cond_key key_cond_slave_worker_hash;
  PSI_cond_key key_monitor_info_run_cond;
  PSI_cond_key key_COND_delegate_connection_cond_var;
  PSI_cond_key key_COND_group_replication_connection_cond_var;
@@ -5286,7 +5287,7 @@ index 3f94e768956..17d146270c6 100644
  
  /* clang-format off */
  static PSI_cond_info all_server_conds[]=
-@@ -11997,6 +12353,12 @@ static PSI_cond_info all_server_conds[]=
+@@ -11997,6 +12354,12 @@ static PSI_cond_info all_server_conds[]=
    { &key_cond_slave_parallel_pend_jobs, "Relay_log_info::pending_jobs_cond", 0, 0, PSI_DOCUMENT_ME},
    { &key_cond_slave_parallel_worker, "Worker_info::jobs_cond", 0, 0, PSI_DOCUMENT_ME},
    { &key_cond_mta_gaq, "Relay_log_info::mta_gaq_cond", 0, 0, PSI_DOCUMENT_ME},
@@ -5300,7 +5301,7 @@ index 3f94e768956..17d146270c6 100644
    { &key_COND_compress_gtid_table, "COND_compress_gtid_table", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
    { &key_commit_order_manager_cond, "Commit_order_manager::m_workers.cond", 0, 0, PSI_DOCUMENT_ME},
 diff --git a/sql/mysqld.h b/sql/mysqld.h
-index 8b5a842b54b..32ac050fe84 100644
+index 8b5a842b54b..cd8153d8e89 100644
 --- a/sql/mysqld.h
 +++ b/sql/mysqld.h
 @@ -180,6 +180,9 @@ extern MYSQL_PLUGIN_IMPORT std::atomic<int32>
@@ -5336,7 +5337,7 @@ index 8b5a842b54b..32ac050fe84 100644
  #endif /* HAVE_PSI_INTERFACE */
  
  /*
-@@ -698,6 +717,59 @@ extern MYSQL_PLUGIN_IMPORT char pidfile_name[];
+@@ -698,6 +717,60 @@ extern MYSQL_PLUGIN_IMPORT char pidfile_name[];
  
  #define mysql_tmpdir (my_tmpdir(&mysql_tmpdir_list))
  
@@ -5358,6 +5359,7 @@ index 8b5a842b54b..32ac050fe84 100644
 +extern ulonglong opt_binlog_archive_period;
 +extern ulong opt_binlog_archive_parallel_workers;
 +extern bool opt_binlog_archive_replica;
++extern ulong opt_binlog_archive_replica_flush_period;
 +extern char *opt_binlog_archive_replica_source_log_file;
 +extern ulong opt_binlog_archive_replica_source_log_pos;
 +extern char *opt_consistent_snapshot_archive_dir;
@@ -9323,7 +9325,7 @@ index 6c3dd85db23..8c43a67cd52 100644
          | HASH_SYM
          | HISTOGRAM_SYM
 diff --git a/sql/sys_vars.cc b/sql/sys_vars.cc
-index b16cb1830e4..9924d84a1b7 100644
+index b16cb1830e4..8f4f68feae9 100644
 --- a/sql/sys_vars.cc
 +++ b/sql/sys_vars.cc
 @@ -93,11 +93,13 @@
@@ -9419,7 +9421,7 @@ index b16cb1830e4..9924d84a1b7 100644
  
  static bool check_set_require_row_format(sys_var *, THD *thd, set_var *var) {
    /*
-@@ -7718,3 +7764,306 @@ static Sys_var_enum Sys_explain_format(
+@@ -7718,3 +7764,313 @@ static Sys_var_enum Sys_explain_format(
      SESSION_VAR(explain_format), CMD_LINE(OPT_ARG), explain_format_names,
      DEFAULT(static_cast<ulong>(Explain_format_type::TRADITIONAL)),
      NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(nullptr));
@@ -9485,9 +9487,16 @@ index b16cb1830e4..9924d84a1b7 100644
 +    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive_replica), CMD_LINE(OPT_ARG),
 +    DEFAULT(false));
 +
++static Sys_var_ulong Sys_binlog_archive_replica_flush_period(
++    "binlog_archive_replica_flush_period",
++    "The time period for binlog archive replica thread flushing incremental "
++    "binlogs from the source binlog object storage",
++    GLOBAL_VAR(opt_binlog_archive_replica_flush_period), CMD_LINE(REQUIRED_ARG),
++    VALID_RANGE(1, ULONG_MAX), DEFAULT(1), BLOCK_SIZE(1));
++
 +static Sys_var_charptr Sys_binlog_archive_replica_source_log_file(
 +    "binlog_archive_replica_source_log_file",
-+    "The start source binlog file for snapshot archive replica",
++    "The start source binlog file for binlog archive replica",
 +    GLOBAL_VAR(opt_binlog_archive_replica_source_log_file),
 +    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(nullptr));
 +

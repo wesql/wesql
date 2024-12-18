@@ -426,6 +426,7 @@ class Binlog_archive {
                               bool is_slice_persisted,
                               uint64_t slice_queue_map_term);
   bool update_index_file(bool need_slice_lock);
+  static const int MAX_RETRIES_FOR_OBJECT_MANIPULATION_FAILURE = 5;
 
  private:
   // the binlog archive THD handle.
