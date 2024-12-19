@@ -3341,7 +3341,7 @@ index 5e20e06024e..5d5eebbcb4a 100644
    IO_CACHE m_io_cache;
  };
 diff --git a/sql/binlog.cc b/sql/binlog.cc
-index de76909ed3b..f9f14586ae3 100644
+index de76909ed3b..33b0c60b229 100644
 --- a/sql/binlog.cc
 +++ b/sql/binlog.cc
 @@ -40,6 +40,7 @@
@@ -3567,7 +3567,7 @@ index de76909ed3b..f9f14586ae3 100644
 +      // If binlog_archive is enabled, check if log file is persisted by
 +      // binlog_archive thread before purging it.
 +      if (compare_log_name(last_persisted_log_info.log_file_name,
-+                           log_info.log_file_name) > 0) {
++                           log_info.log_file_name) <= 0) {
 +        if (!auto_purge)
 +          push_warning_printf(
 +              thd, Sql_condition::SL_WARNING, ER_WARN_PURGE_LOG_NOT_PERSISTED,

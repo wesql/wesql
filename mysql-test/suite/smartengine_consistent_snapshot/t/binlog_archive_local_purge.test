@@ -1,0 +1,92 @@
+#
+# BUG#57
+# Test local binlog purge for binlog archive to object store.
+#
+--let $MYSQLD_DATADIR= `SELECT @@datadir`
+--let $saved_binlog_expire_logs_seconds= `SELECT @@GLOBAL.binlog_expire_logs_seconds`
+--let $saved_binlog_expire_logs_auto_purge= `SELECT @@GLOBAL.binlog_expire_logs_auto_purge`
+
+# set a low expiration window
+--let $retention_time_in_seconds = 3
+--let $sleep_time_in_seconds = `SELECT $retention_time_in_seconds * 2`
+--eval SET GLOBAL binlog_expire_logs_seconds=$retention_time_in_seconds
+
+# disable automatic purge
+SET @@global.binlog_expire_logs_auto_purge = OFF;
+
+CREATE DATABASE db1;
+CREATE TABLE t1(c1 int, c2 char(200)) ENGINE=SMARTENGINE ;
+INSERT INTO t1 values(1,'abcd');
+FLUSH logs;
+INSERT INTO t1 values(6,'abcd');
+FLUSH logs;
+INSERT INTO t1 values(8,'abcd');
+
+# sleep and last binlog should be persisted.
+--sleep $sleep_time_in_seconds
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+--replace_column 2 # 3 #
+SHOW CONSENSUS LOGS;
+
+SET @@global.binlog_expire_logs_auto_purge = ON;
+# Trigger consensus binlog auto purge.
+FLUSH logs;
+INSERT INTO t1 values(8,'abcd');
+
+--sleep $sleep_time_in_seconds
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+--replace_column 2 # 3 #
+SHOW CONSENSUS LOGS;
+
+#
+# ASSERT: If binlog_expire_logs_auto_purge is set to OFF, 
+# CALL DBMS_CONSENSUS.PURGE_LOG(1000) TO SHALL NOT be 
+# affected by the option.
+#
+SET @@global.binlog_expire_logs_auto_purge = OFF;
+FLUSH LOGS;
+INSERT INTO t1 values(16,'abcd');
+--sleep $sleep_time_in_seconds
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+--replace_column 2 # 3 #
+SHOW CONSENSUS LOGS;
+
+# Force purge binlog.
+--eval CALL DBMS_CONSENSUS.PURGE_LOG(10000000);
+--sleep $sleep_time_in_seconds
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+--replace_column 2 # 3 #
+SHOW CONSENSUS LOGS;
+
+--echo # Force suspend binlog persistent
+set global debug= '+d, force_suspend_binlog_persist_while_wait_for_mysql_binlog';
+
+# Enable auto purge
+SET @@global.binlog_expire_logs_auto_purge = ON;
+FLUSH LOGS;
+INSERT INTO t1 values(10,'abcd');
+FLUSH LOGS;
+INSERT INTO t1 values(11,'abcd');
+--sleep $sleep_time_in_seconds
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+--replace_column 2 # 3 #
+SHOW CONSENSUS LOGS;
+
+--echo  # Signal binlog persistent
+set global debug= '-d, force_suspend_binlog_persist_while_wait_for_mysql_binlog';
+--sleep $sleep_time_in_seconds
+
+# Trigger consensus binlog auto purge.
+FLUSH LOGS;
+INSERT INTO t1 values(11,'abcd');
+--sleep $sleep_time_in_seconds
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+--replace_column 2 # 3 #
+SHOW CONSENSUS LOGS;
+
+# clean up
+--eval SET GLOBAL binlog_expire_logs_seconds=$saved_binlog_expire_logs_seconds
+--eval SET GLOBAL binlog_expire_logs_auto_purge=$saved_binlog_expire_logs_auto_purge
+
+DROP TABLE t1;
+DROP DATABASE db1;

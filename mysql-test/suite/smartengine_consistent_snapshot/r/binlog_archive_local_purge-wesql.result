@@ -1,0 +1,75 @@
+SET GLOBAL binlog_expire_logs_seconds=3;
+SET @@global.binlog_expire_logs_auto_purge = OFF;
+CREATE DATABASE db1;
+CREATE TABLE t1(c1 int, c2 char(200)) ENGINE=SMARTENGINE ;
+INSERT INTO t1 values(1,'abcd');
+FLUSH logs;
+INSERT INTO t1 values(6,'abcd');
+FLUSH logs;
+INSERT INTO t1 values(8,'abcd');
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1)
+binlog.000003
+SHOW CONSENSUS LOGS;
+Log_name	File_size	Start_log_index
+binlog.000001	#	#
+binlog.000002	#	#
+binlog.000003	#	#
+SET @@global.binlog_expire_logs_auto_purge = ON;
+FLUSH logs;
+INSERT INTO t1 values(8,'abcd');
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1)
+binlog.000004
+SHOW CONSENSUS LOGS;
+Log_name	File_size	Start_log_index
+binlog.000003	#	#
+binlog.000004	#	#
+SET @@global.binlog_expire_logs_auto_purge = OFF;
+FLUSH LOGS;
+INSERT INTO t1 values(16,'abcd');
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1)
+binlog.000005
+SHOW CONSENSUS LOGS;
+Log_name	File_size	Start_log_index
+binlog.000003	#	#
+binlog.000004	#	#
+binlog.000005	#	#
+CALL DBMS_CONSENSUS.PURGE_LOG(10000000);;
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1)
+binlog.000005
+SHOW CONSENSUS LOGS;
+Log_name	File_size	Start_log_index
+binlog.000005	#	#
+# Force suspend binlog persistent
+set global debug= '+d, force_suspend_binlog_persist_while_wait_for_mysql_binlog';
+SET @@global.binlog_expire_logs_auto_purge = ON;
+FLUSH LOGS;
+INSERT INTO t1 values(10,'abcd');
+FLUSH LOGS;
+INSERT INTO t1 values(11,'abcd');
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1)
+binlog.000005
+SHOW CONSENSUS LOGS;
+Log_name	File_size	Start_log_index
+binlog.000005	#	#
+binlog.000006	#	#
+binlog.000007	#	#
+# Signal binlog persistent
+set global debug= '-d, force_suspend_binlog_persist_while_wait_for_mysql_binlog';
+FLUSH LOGS;
+INSERT INTO t1 values(11,'abcd');
+SELECT SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1) FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
+SUBSTRING_INDEX(LAST_PERSISTED_MYSQL_BINLOG, '/', -1)
+binlog.000008
+SHOW CONSENSUS LOGS;
+Log_name	File_size	Start_log_index
+binlog.000007	#	#
+binlog.000008	#	#
+SET GLOBAL binlog_expire_logs_seconds=2592000;
+SET GLOBAL binlog_expire_logs_auto_purge=1;
+DROP TABLE t1;
+DROP DATABASE db1;

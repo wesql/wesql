@@ -1,0 +1,7 @@
+!include suite/smartengine_consistent_snapshot/my.cnf
+
+[mysqld]
+binlog_archive_expire_auto_purge= false
+binlog_archive_slice_max_size= 4096
+binlog_archive_period=       1000
+snapshot_archive=           false
