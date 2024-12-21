@@ -17,7 +17,6 @@
 #include "util/ebr.h"
 #include "logger/log_module.h"
 #include "util/status.h"
-#include "util/se_constants.h"
 
 namespace smartengine {
 using namespace common;

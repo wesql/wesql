@@ -12,7 +12,8 @@
 
 #include <inttypes.h>
 #include <cstdio>
-#include "port/likely.h"
+#include "util/macro_utils.h"
+
 namespace smartengine {
 
 using namespace util;

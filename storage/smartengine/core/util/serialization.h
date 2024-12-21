@@ -27,10 +27,6 @@
 #include "template_util.h"
 #include "util/status.h"
 
-#ifndef UNUSED
-#define UNUSED(x) ((void)x)
-#endif
-
 #define ASSERT_BUFFER(length) \
   assert(nullptr != buffer && bufsiz - pos >= length)
 

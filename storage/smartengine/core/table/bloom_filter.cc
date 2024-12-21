@@ -2,7 +2,6 @@
 #include "logger/log_module.h"
 #include "port/port_posix.h"
 #include "util/hash.h"
-#include "util/se_constants.h"
 #include "util/status.h"
 
 namespace smartengine

@@ -19,7 +19,6 @@
 #include "field.h"
 #include "dict/se_field_pack.h"
 #include "util/se_buff.h"
-#include "port/likely.h"
 
 namespace smartengine {
 

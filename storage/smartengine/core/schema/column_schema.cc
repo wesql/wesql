@@ -16,7 +16,6 @@
 
 #include "schema/column_schema.h"
 #include "logger/log_module.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

@@ -16,7 +16,6 @@
 
 #include "util/compress/compressor.h"
 #include "logger/log_module.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

@@ -51,7 +51,7 @@ protected:
     return result;
   }
 
-  void check_read(const std::string &data,
+  int check_read(const std::string &data,
                   IOExtent *io_extent,
                   const int64_t offset,
                   const int64_t size,
@@ -63,10 +63,18 @@ protected:
     memset(aligned_buf_, 0, 2 * MAX_EXTENT_SIZE);
 
     ret = io_extent->read(aio_handle, offset, size, aligned_buf_ + aligned_buf_offset, resut);
-    ASSERT_EQ(Status::kOk, ret);
-    ASSERT_EQ(size, resut.size());
-    ret = memcmp(data.data() + offset, resut.data(), size);
-    ASSERT_EQ(0, ret);
+    EXPECT_EQ(Status::kOk, ret);
+    EXPECT_EQ(size, resut.size());
+    if (SUCCED(ret)) {
+      ret = memcmp(data.data() + offset, resut.data(), size);
+      EXPECT_EQ(0, ret);
+      
+      if (0 != ret) {
+        ret = Status::kCorruption;
+      }
+    }
+
+    return ret;
   }
 
 protected:
@@ -261,7 +269,8 @@ TEST_F(FileIOExtentTest, file_io_extent_write)
   ASSERT_EQ(Status::kOk, ret);
 
   // check data
-  check_read(data_, &file_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ret = check_read(data_, &file_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 }
 
 TEST_F(FileIOExtentTest, file_io_extent_positioned_write)
@@ -302,7 +311,8 @@ TEST_F(FileIOExtentTest, file_io_extent_positioned_write)
   ASSERT_EQ(Status::kOk, ret);
   
   // check data
-  check_read(data_, &file_extent, storage::MAX_EXTENT_SIZE - size, size, 0, nullptr);
+  ret = check_read(data_, &file_extent, storage::MAX_EXTENT_SIZE - size, size, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 }
 
 TEST_F(FileIOExtentTest, file_io_extent_sync_read)
@@ -339,43 +349,58 @@ TEST_F(FileIOExtentTest, file_io_extent_sync_read)
   ASSERT_EQ(Status::kOverLimit, ret);
 
   // Aligned offset, size, buf
-  check_read(data_, &file_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ret = check_read(data_, &file_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &file_extent, DIOHelper::DIO_ALIGN_SIZE * 2, DIOHelper::DIO_ALIGN_SIZE * 10, 0, nullptr);
+  ret = check_read(data_, &file_extent, DIOHelper::DIO_ALIGN_SIZE * 2, DIOHelper::DIO_ALIGN_SIZE * 10, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &file_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ret = check_read(data_, &file_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
   // Not aligned offset, and aligned size, buf
-  check_read(data_, &file_extent, DIOHelper::DIO_ALIGN_SIZE / 2, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ret = check_read(data_, &file_extent, DIOHelper::DIO_ALIGN_SIZE / 2, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &file_extent,
-            DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
-            DIOHelper::DIO_ALIGN_SIZE * 10,
-            0,
-            nullptr);
+  ret = check_read(data_, &file_extent,
+                   DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   0,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
   // Not aligned size, and aligned offset, buf
-  check_read(data_, &file_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE / 2, 0, nullptr);
+  ret = check_read(data_, &file_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE / 2, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &file_extent,
-             DIOHelper::DIO_ALIGN_SIZE * 10,
-             DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
-             0,
-             nullptr);
+  ret = check_read(data_, &file_extent,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
+                   0,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
   
   // Not aligned buf, and aligned offset, size
-  check_read(data_, &file_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE / 2, nullptr);
+  ret = check_read(data_,
+                   &file_extent,
+                   DIOHelper::DIO_ALIGN_SIZE,
+                   DIOHelper::DIO_ALIGN_SIZE,
+                   DIOHelper::DIO_ALIGN_SIZE / 2,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &file_extent,
-             DIOHelper::DIO_ALIGN_SIZE * 10,
-             DIOHelper::DIO_ALIGN_SIZE * 10,
-             DIOHelper::DIO_ALIGN_SIZE * 5 + DIOHelper::DIO_ALIGN_SIZE / 5,
-             nullptr);
+  ret = check_read(data_, &file_extent,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 5 + DIOHelper::DIO_ALIGN_SIZE / 5,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  // Random offset, size, buf
-  test::RandomInt64Generator generator(0, 1024 * 1024);
+  // Random offset, size, buf, the size should be more than zero.
+  test::RandomInt64Generator generator(1, 1024 * 1024);
   for (int32_t i = 0; i < 10000; ++i) {
-    check_read(data_, &file_extent, generator.generate(), generator.generate(), generator.generate(), nullptr);
+    ret = check_read(data_, &file_extent, generator.generate(), generator.generate(), generator.generate(), nullptr);
+    ASSERT_EQ(Status::kOk, ret);
   }
 }
 
@@ -391,8 +416,8 @@ TEST_F(FileIOExtentTest, file_io_extent_async_read)
   ret = file_extent.init(io_info_.extent_id_, io_info_.unique_id_, io_info_.fd_);
   ASSERT_EQ(Status::kOk, ret);
 
-  // Random async read
-  test::RandomInt64Generator generator(0, 1024 * 1024);
+  // Random async read, the size should be more than zero.
+  test::RandomInt64Generator generator(1, 1024 * 1024);
   for (int32_t i = 0; i < 10000; ++i) {
     util::AIOHandle aio_handle;
     aio_handle.aio_req_.reset(new util::AIOReq());
@@ -401,7 +426,8 @@ TEST_F(FileIOExtentTest, file_io_extent_async_read)
     int64_t aligned_buf_offset = generator.generate(); 
     ret = file_extent.prefetch(&aio_handle, offset, size);
     ASSERT_EQ(Status::kOk, ret);
-    check_read(data_, &file_extent, offset, size, aligned_buf_offset, &aio_handle);
+    ret = check_read(data_, &file_extent, offset, size, aligned_buf_offset, &aio_handle);
+    ASSERT_EQ(Status::kOk, ret);
   }
 
   // Read range is not consistent with prefetch range
@@ -410,7 +436,8 @@ TEST_F(FileIOExtentTest, file_io_extent_async_read)
     aio_handle.aio_req_.reset(new util::AIOReq());
     ret = file_extent.prefetch(&aio_handle, generator.generate(), generator.generate());
     ASSERT_EQ(Status::kOk, ret);
-    check_read(data_, &file_extent, generator.generate(), generator.generate(), generator.generate(), &aio_handle);
+    ret = check_read(data_, &file_extent, generator.generate(), generator.generate(), generator.generate(), &aio_handle);
+    ASSERT_EQ(Status::kOk, ret);
   }
 
   // Prefetch overlimit range
@@ -493,7 +520,8 @@ TEST_F(ObjectIOExtentTest, object_io_extent_write)
   ASSERT_EQ(Status::kOk, ret);
 
   // check data
-  check_read(data, &object_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ret = check_read(data, &object_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 }
 
 TEST_F(ObjectIOExtentTest, object_io_extent_sync_read)
@@ -534,43 +562,66 @@ TEST_F(ObjectIOExtentTest, object_io_extent_sync_read)
   ASSERT_EQ(Status::kOverLimit, ret);
 
   // Aligned offset, size, buf
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ret = check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE * 2, DIOHelper::DIO_ALIGN_SIZE * 10, 0, nullptr);
+  ret = check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE * 2, DIOHelper::DIO_ALIGN_SIZE * 10, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ret = check_read(data_, &object_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
   // Not aligned offset, and aligned size, buf
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE / 2, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ret = check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE / 2, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent,
-            DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
-            DIOHelper::DIO_ALIGN_SIZE * 10,
-            0,
-            nullptr);
+  ret = check_read(data_,
+                   &object_extent,
+                   DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   0,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
   // Not aligned size, and aligned offset, buf
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE / 2, 0, nullptr);
+  ret = check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE / 2, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent,
-             DIOHelper::DIO_ALIGN_SIZE * 10,
-             DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
-             0,
-             nullptr);
+  ret = check_read(data_,
+                   &object_extent,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
+                   0,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
   
   // Not aligned buf, and aligned offset, size
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE / 2, nullptr);
+  ret = check_read(data_,
+                   &object_extent,
+                   DIOHelper::DIO_ALIGN_SIZE,
+                   DIOHelper::DIO_ALIGN_SIZE,
+                   DIOHelper::DIO_ALIGN_SIZE / 2,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent,
-             DIOHelper::DIO_ALIGN_SIZE * 10,
-             DIOHelper::DIO_ALIGN_SIZE * 10,
-             DIOHelper::DIO_ALIGN_SIZE * 5 + DIOHelper::DIO_ALIGN_SIZE / 5,
-             nullptr);
+  ret = check_read(data_,
+                   &object_extent,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 5 + DIOHelper::DIO_ALIGN_SIZE / 5,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  // Random offset, size, buf
-  test::RandomInt64Generator generator(0, 1024 * 1024);
+  // Random offset, size, buf, the size should be more than zero.
+  test::RandomInt64Generator generator(1, 1024 * 1024);
   for (int32_t i = 0; i < 10000; ++i) {
-    check_read(data_, &object_extent, generator.generate(), generator.generate(), generator.generate(), nullptr);
+    ret = check_read(data_,
+                     &object_extent,
+                     generator.generate(),
+                     generator.generate(),
+                     generator.generate(),
+                     nullptr);
+    ASSERT_EQ(Status::kOk, ret);
   }
 }
 
@@ -621,43 +672,61 @@ TEST_F(ObjectIOExtentTest, object_io_extent_sync_read_with_persistent_cache)
   ASSERT_EQ(Status::kOverLimit, ret);
 
   // Aligned offset, size, buf
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ret = check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE * 2, DIOHelper::DIO_ALIGN_SIZE * 10, 0, nullptr);
+  ret = check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE * 2, DIOHelper::DIO_ALIGN_SIZE * 10, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ret = check_read(data_, &object_extent, 0, MAX_EXTENT_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
   // Not aligned offset, and aligned size, buf
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE / 2, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ret = check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE / 2, DIOHelper::DIO_ALIGN_SIZE, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent,
-            DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
-            DIOHelper::DIO_ALIGN_SIZE * 10,
-            0,
-            nullptr);
+
+  ret = check_read(data_,
+                   &object_extent,
+                   DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   0,
+                   nullptr);
 
   // Not aligned size, and aligned offset, buf
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE / 2, 0, nullptr);
+  ret = check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE / 2, 0, nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent,
-             DIOHelper::DIO_ALIGN_SIZE * 10,
-             DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
-             0,
-             nullptr);
+  ret = check_read(data_,
+                   &object_extent,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 10 + DIOHelper::DIO_ALIGN_SIZE / 10,
+                   0,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
   
   // Not aligned buf, and aligned offset, size
-  check_read(data_, &object_extent, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE, DIOHelper::DIO_ALIGN_SIZE / 2, nullptr);
+  ret = check_read(data_,
+                   &object_extent,
+                   DIOHelper::DIO_ALIGN_SIZE,
+                   DIOHelper::DIO_ALIGN_SIZE,
+                   DIOHelper::DIO_ALIGN_SIZE / 2,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  check_read(data_, &object_extent,
-             DIOHelper::DIO_ALIGN_SIZE * 10,
-             DIOHelper::DIO_ALIGN_SIZE * 10,
-             DIOHelper::DIO_ALIGN_SIZE * 5 + DIOHelper::DIO_ALIGN_SIZE / 5,
-             nullptr);
+  ret = check_read(data_,
+                   &object_extent,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 10,
+                   DIOHelper::DIO_ALIGN_SIZE * 5 + DIOHelper::DIO_ALIGN_SIZE / 5,
+                   nullptr);
+  ASSERT_EQ(Status::kOk, ret);
 
-  // Random offset, size, buf
-  test::RandomInt64Generator generator(0, 1024 * 1024);
+  // Random offset, size, buf, and the size should be more than zero.
+  test::RandomInt64Generator generator(1, 1024 * 1024);
   for (int32_t i = 0; i < 10000; ++i) {
-    check_read(data_, &object_extent, generator.generate(), generator.generate(), generator.generate(), nullptr);
+    ret = check_read(data_, &object_extent, generator.generate(), generator.generate(), generator.generate(), nullptr);
+    ASSERT_EQ(Status::kOk, ret);
   }
 
   // rollback status
@@ -680,8 +749,8 @@ TEST_F(ObjectIOExtentTest, object_io_extent_async_read)
                            std::string());
   ASSERT_EQ(Status::kOk, ret);
 
-  // Random async read
-  test::RandomInt64Generator generator(0, 1024 * 1024);
+  // Random async read, and the size should be more than zero.
+  test::RandomInt64Generator generator(1, 1024 * 1024);
   for (int32_t i = 0; i < 10000; ++i) {
     util::AIOHandle aio_handle;
     aio_handle.aio_req_.reset(new util::AIOReq());
@@ -691,7 +760,8 @@ TEST_F(ObjectIOExtentTest, object_io_extent_async_read)
     ret = object_extent.prefetch(&aio_handle, offset, size);
     ASSERT_EQ(Status::kOk, ret);
     ASSERT_EQ(Status::kNoSpace, aio_handle.aio_req_->status_);
-    check_read(data_, &object_extent, offset, size, aligned_buf_offset, &aio_handle);
+    ret = check_read(data_, &object_extent, offset, size, aligned_buf_offset, &aio_handle);
+    ASSERT_EQ(Status::kOk, ret);
   }
 
   // Read range is not consistent with prefetch range
@@ -700,7 +770,8 @@ TEST_F(ObjectIOExtentTest, object_io_extent_async_read)
     aio_handle.aio_req_.reset(new util::AIOReq());
     ret = object_extent.prefetch(&aio_handle, generator.generate(), generator.generate());
     ASSERT_EQ(Status::kOk, ret);
-    check_read(data_, &object_extent, generator.generate(), generator.generate(), generator.generate(), &aio_handle);
+    ret = check_read(data_, &object_extent, generator.generate(), generator.generate(), generator.generate(), &aio_handle);
+    ASSERT_EQ(Status::kOk, ret);
   }
 
   // Prefetch overlimit range
@@ -736,8 +807,8 @@ TEST_F(ObjectIOExtentTest, object_io_extent_async_read_with_persistent_cache)
                            std::string());
   ASSERT_EQ(Status::kOk, ret);
 
-  // Random async read
-  test::RandomInt64Generator generator(0, 1024 * 1024);
+  // Random async read, the size should be more than zero.
+  test::RandomInt64Generator generator(1, 1024 * 1024);
   for (int32_t i = 0; i < 10000; ++i) {
     util::AIOHandle aio_handle;
     aio_handle.aio_req_.reset(new util::AIOReq());
@@ -747,7 +818,8 @@ TEST_F(ObjectIOExtentTest, object_io_extent_async_read_with_persistent_cache)
     ret = object_extent.prefetch(&aio_handle, offset, size);
     ASSERT_EQ(Status::kOk, ret);
     ASSERT_EQ(Status::kBusy, aio_handle.aio_req_->status_);
-    check_read(data_, &object_extent, offset, size, aligned_buf_offset, &aio_handle);
+    ret = check_read(data_, &object_extent, offset, size, aligned_buf_offset, &aio_handle);
+    ASSERT_EQ(Status::kOk, ret);
   }
 
   // Read range is not consistent with prefetch range
@@ -756,7 +828,8 @@ TEST_F(ObjectIOExtentTest, object_io_extent_async_read_with_persistent_cache)
     aio_handle.aio_req_.reset(new util::AIOReq());
     ret = object_extent.prefetch(&aio_handle, generator.generate(), generator.generate());
     ASSERT_EQ(Status::kOk, ret);
-    check_read(data_, &object_extent, generator.generate(), generator.generate(), generator.generate(), &aio_handle);
+    ret = check_read(data_, &object_extent, generator.generate(), generator.generate(), generator.generate(), &aio_handle);
+    ASSERT_EQ(Status::kOk, ret);
   }
 
   // Prefetch overlimit range

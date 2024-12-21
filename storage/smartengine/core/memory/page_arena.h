@@ -26,13 +26,10 @@
 #include "allocator.h"
 #include "base_malloc.h"
 #include "mod_info.h"
+#include "util/macro_utils.h"
 
 namespace smartengine {
 namespace memory {
-
-#ifndef UNUSED
-#define UNUSED(x) ((void)x)
-#endif
 
 // convenient function for memory alignment
 inline size_t get_align_offset(void *p) {

@@ -10,12 +10,11 @@
 #include "util/stack_trace.h"
 #include <cxxabi.h>
 #include <execinfo.h>
-#include <iomanip>
 #include <sstream>
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
-#include "util/se_constants.h"
+#include "util/macro_utils.h"
 
 namespace smartengine
 {

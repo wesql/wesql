@@ -15,7 +15,7 @@
  */
 #include "memtable/art_node.h"
 #include "logger/log_module.h"
-#include "util/common.h"
+#include "util/macro_utils.h"
 
 namespace smartengine {
 

@@ -12,7 +12,7 @@
 
 #include "util/thread_local.h"
 #include <stdlib.h>
-#include "port/likely.h"
+#include "util/macro_utils.h"
 #include "util/mutexlock.h"
 
 using namespace smartengine::port;

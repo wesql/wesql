@@ -14,14 +14,12 @@
  * limitations under the License.
  */
 #include <gflags/gflags.h>
-#include <memory>
 #include "cache/cache.h"
 #include "compact/compaction_job.h"
 #include "compact/mt_ext_compaction.h"
 #include "compact/task_type.h"
 #include "db/db.h"
 #include "db/column_family.h"
-#include "db/db.h"
 #include "db/db_impl.h"
 #include "db/db_iter.h"
 #include "db/db_test_util.h"

@@ -15,8 +15,6 @@
  */
 #pragma once
 
-#include "../core/port/likely.h"
-
 #include <stdint.h>
 
 /** Max table name length as defined in univ.i */

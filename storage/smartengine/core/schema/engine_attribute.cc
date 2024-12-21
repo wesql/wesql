@@ -23,7 +23,6 @@
 #endif // MYSQL_SERVER
 
 #include "logger/log_module.h"
-#include "util/se_constants.h"
 #include "util/status.h"
 #include "options/options_helper.h"
 

@@ -19,7 +19,6 @@
 #include "cache/cache.h"
 #include "env/env.h"
 #include "util/coding.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

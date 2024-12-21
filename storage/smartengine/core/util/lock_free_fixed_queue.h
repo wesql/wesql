@@ -20,7 +20,7 @@
 #include <cstdlib>
 #include <stdint.h>
 #include <assert.h>
-#include "util/common.h"
+#include "util/macro_utils.h"
 
 #define e_OK 0
 #define e_NOT_INIT -1
@@ -30,19 +30,6 @@
 #define e_ENTRY_NOT_EXIST -6
 #define e_ALLOCATE_MEMORY_FAILED -7
 
-#define CACHE_ALIGN_SIZE 64
-#define CACHE_ALIGNED_ __attribute__((aligned(CACHE_ALIGN_SIZE)))
-
-//#define ATOMIC_CAS(val, cmpv, newv) __sync_val_compare_and_swap((val), (cmpv), (newv))
-//#define ATOMIC_SET(val, newv) __sync_lock_test_and_set((val), (newv))
-
-#ifndef PAUSE
-#if defined(__x86_64__)
-#define PAUSE() asm("pause\n")
-#elif defined(__aarch64__)
-#define PAUSE() asm("yield\n")
-#endif
-#endif
 
 namespace smartengine {
 namespace util {
@@ -84,9 +71,9 @@ private:
   bool inited_;
   int64_t max_num_;
   ArrayItem* array_;
-  volatile uint64_t consumer_ CACHE_ALIGNED_; 
-  volatile uint64_t producer_ CACHE_ALIGNED_;
-} CACHE_ALIGNED_;
+  volatile uint64_t consumer_ CACHE_ALIGNED; 
+  volatile uint64_t producer_ CACHE_ALIGNED;
+} CACHE_ALIGNED;
 
 template <typename T>
 FixedQueue<T>::FixedQueue()

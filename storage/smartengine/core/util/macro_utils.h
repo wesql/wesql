@@ -14,43 +14,44 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 
- * $Id:  common.h,v 1.0 05/10/2018 10:39:41 AM
- *
  ************************************************************************/
 
-/**
- * @file common.h
- * @date 05/10/2018 10:39:41 AM
- * @version 1.0
- * @brief
- *
- **/
-#ifndef IS_COMMON_COMMON_H_
-#define IS_COMMON_COMMON_H_
+#pragma once
 
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <linux/futex.h>
-#include <chrono>
 #include <errno.h>
-
-namespace smartengine {
-namespace util {
-using Duration = std::chrono::milliseconds;
-}
-}
 
 #ifndef UNUSED
 #define UNUSED(x) ((void)x)
 #endif
 
 #if defined(__GNUC__) && __GNUC__ >= 4
-#define LIKELY(x)   (__builtin_expect((x), 1))
-#define UNLIKELY(x) (__builtin_expect((x), 0))
+#define LIKELY(expr)   (__builtin_expect(!!(expr), !!1))
+#define UNLIKELY(expr) (__builtin_expect(!!(expr), !!0))
 #else
-#define LIKELY(x)   (x)
-#define UNLIKELY(x) (x)
+#define LIKELY(expr) (expr)
+#define UNLIKELY(expr) (expr)
 #endif
+
+#define IS_FALSE(expr) (UNLIKELY(false == (expr)))
+
+#define IS_NULL(expr) (UNLIKELY(nullptr == (expr)))
+#define IS_NOTNULL(expr) (LIKELY(nullptr != (expr)))
+
+#define SUCCED(expr) (LIKELY(smartengine::common::Status::kOk == (ret = (expr))))
+#define FAILED(expr) (UNLIKELY(smartengine::common::Status::kOk != (ret = (expr))))
+
+/**Abort execution if expr does not evaluate to nonzero.*/
+#define se_assert(expr)                     \
+  do {                                      \
+    bool val = (expr);                      \
+    if (UNLIKELY(!val)) {                   \
+      abort();                              \
+    }                                       \
+  } while (false)
+
 
 #ifndef CACHE_LINE_SIZE
 #define CACHE_LINE_SIZE 64U
@@ -59,21 +60,13 @@ using Duration = std::chrono::milliseconds;
 #ifndef CACHE_ALIGNED
 #define CACHE_ALIGNED __attribute__ ((aligned (CACHE_LINE_SIZE)))
 #endif
+
 #ifndef PAUSE
 #if defined(__x86_64__)
 #define PAUSE() asm("pause\n")
 #elif defined(__aarch64__)
 #define PAUSE() asm("yield\n")
 #endif
-#endif
-
-// Get Local address for xrdma
-#ifdef WITH_RDMA
-# define STRINGIZE(x)      #x
-# define STRINGIZE_VAL(x)  STRINGIZE(x)
-# define LOCAL_ADDR        STRINGIZE_VAL(LOCAL_IP)
-#else
-# define LOCAL_ADDR  "127.0.0.1"
 #endif
 
 // atomic operations
@@ -87,20 +80,4 @@ using Duration = std::chrono::milliseconds;
 #define ATOMIC_FETCH_AND(val, andv) ({__sync_fetch_and_and((val), (andv));})
 #define ATOMIC_CAS(val, cmpv, newv) ({__sync_val_compare_and_swap((val), (cmpv), (newv));})
 
-// futex
-#define futex(...) syscall(SYS_futex, __VA_ARGS__)
-inline int futex_wait(void *p, int val, const timespec *timeout)
-{
-  int ret = 0;
-  if (0 != futex((int *)p, FUTEX_WAIT_PRIVATE, val, timeout, NULL, 0)) {
-    ret = errno;
-  }
-  return ret;
-}
 
-inline int64_t futex_wake(void *p, int val)
-{
-  return futex((int *)p, FUTEX_WAKE_PRIVATE, val, NULL, NULL, 0);
-}
-
-#endif // end IS_COMMON_COMMON_H_

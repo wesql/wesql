@@ -21,7 +21,6 @@
 #endif
 #include "schema/record_format.h"
 #include "util/data_buffer.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

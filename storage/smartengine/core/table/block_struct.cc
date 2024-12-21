@@ -17,11 +17,6 @@
 #include "table/block_struct.h"
 #include "table/bloom_filter.h"
 #include "logger/log_module.h"
-#include "storage/io_extent.h"
-#include "table/row_block.h"
-#include "util/compress/compressor_helper.h"
-#include "util/crc32c.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

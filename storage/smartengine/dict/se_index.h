@@ -23,7 +23,6 @@
 #include "se_index_stats.h"
 #include "dd/types/index.h"
 #include "util/se_buff.h"
-#include "util/se_constants.h"
 
 class Field;
 

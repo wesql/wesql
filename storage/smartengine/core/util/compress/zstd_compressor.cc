@@ -18,7 +18,6 @@
 
 #include "util/compress/zstd_compressor.h"
 #include "logger/log_module.h"
-#include "util/se_constants.h"
 #include "util/status.h"
 
 namespace smartengine
