@@ -14,11 +14,11 @@
 #endif
 
 #include "util/file_name.h"
+#include <algorithm>
 #include <inttypes.h>
 #include <stdio.h>
 #include "logger/log_module.h"
 #include "options/db_options.h"
-#include "schema/table_schema.h"
 #include "util/se_constants.h"
 #include "util/string_util.h"
 

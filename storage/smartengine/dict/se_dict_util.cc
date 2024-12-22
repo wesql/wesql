@@ -25,7 +25,6 @@
 #include "dict/se_index.h"
 #include "dict/se_dd_operations.h"
 #include "logger/log_module.h"
-#include "util/se_constants.h"
 
 extern CHARSET_INFO my_charset_gbk_bin;
 extern CHARSET_INFO my_charset_gbk_chinese_ci;

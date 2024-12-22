@@ -17,8 +17,6 @@
 #pragma once
 
 #include <atomic>
-#include "port/likely.h"
-#include "util/se_constants.h"
 #include "util/status.h"
 
 namespace smartengine {

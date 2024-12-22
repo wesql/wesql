@@ -18,7 +18,6 @@
 #define SMARTENGINE_INCLUDE_INCREMENT_NUMBER_GENERATOR_H_
 
 #include <atomic>
-#include "util/se_constants.h"
 
 namespace smartengine
 {

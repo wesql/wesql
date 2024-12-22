@@ -16,7 +16,6 @@
 #define SMARTENGINE_CONSTRANTS_H_
 
 #include <cstdint>
-#include "port/likely.h"
 
 namespace smartengine
 {
@@ -32,55 +31,8 @@ const int32_t BITS_PER_BYTE = (8);  // 8 bits of a char
 static const int32_t MAX_FILE_PATH_SIZE = 1024;
 static const int32_t RESERVED_SIZE = 32; 
 static const int64_t MAX_TIER_COUNT = 3;
+
 }  // namespace storage
 }  // namespace smartengine
-
-#ifndef UNUSED
-#define UNUSED(x) ((void)x)
-#endif
-
-#ifndef INT32_MAX
-#define INT32_MAX 0x7FFFFFFF
-#endif
-
-#define IS_FALSE(expr) (UNLIKELY(false == (expr)))
-#define IS_NULL(expr) (UNLIKELY(nullptr == (expr)))
-#define IS_NOTNULL(expr) (UNLIKELY(nullptr != (expr)))
-#define SUCCED(expr) (LIKELY(common::Status::kOk == (ret = (expr))))
-#ifndef FAILED
-#define FAILED(expr) (UNLIKELY(common::Status::kOk != (ret = (expr))))
-#endif
-#define FAIL_RETURN(expr)                                                  \
-  if (FAILED(expr)) {                                                      \
-    fprintf(stderr, "failed on %s:%d, ret=%d\n", __FILE__, __LINE__, ret); \
-    return ret;                                                            \
-  }
-
-#define FAIL_RETURN_MSG(expr, fmt, ...) \
-  if (FAILED(expr)) {                           \
-    __SE_LOG(ERROR, fmt, __VA_ARGS__); \
-    return ret;                                 \
-  }
-
-#define FAIL_RETURN_VOID_MSG(expr, fmt, ...) \
-  if (FAILED(expr)) {                                \
-    __SE_LOG(ERROR, fmt, __VA_ARGS__);        \
-    return;                                          \
-  }
-
-#define FAIL_RETURN_MSG_NEW(expr, fmt, ...) \
-  if (FAILED(expr)) {                       \
-    __SE_LOG(ERROR, fmt, __VA_ARGS__); \
-    return ret;                             \
-  }
-
-/**Abort execution if EXPR does not evaluate to nonzero.*/
-#define se_assert(EXPR)                     \
-  do {                                      \
-    if (UNLIKELY(false == (bool)(EXPR))) {  \
-      abort();                              \
-    }                                       \
-  } while (0)
-
 
 #endif

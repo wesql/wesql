@@ -6,7 +6,7 @@
 #include "monitoring/thread_status_updater.h"
 #include <memory>
 #include "env/env.h"
-#include "port/likely.h"
+#include "util/macro_utils.h"
 
 namespace smartengine {
 using namespace common;

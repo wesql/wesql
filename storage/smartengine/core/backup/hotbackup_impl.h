@@ -19,7 +19,6 @@
 #include "db/db.h"
 #include "logger/log_module.h"
 #include "util/file_name.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

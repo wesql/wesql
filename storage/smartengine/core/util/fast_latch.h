@@ -17,9 +17,8 @@
 #pragma once
 
 #include "memory/thread_local_store.h"
-#include "util/common.h"
+#include "util/macro_utils.h"
 #include "util/misc_utility.h"
-#include "util/se_constants.h"
 #include "util/status.h"
 
 namespace smartengine
@@ -315,6 +314,23 @@ private:
   {
     return static_cast<int32_t>((lock & ~(WAIT_MASK | WRITE_MASK)) >> 32);
   }
+
+  // futex
+  #define futex(...) syscall(SYS_futex, __VA_ARGS__)
+  inline int futex_wait(void *p, int val, const timespec *timeout)
+  {
+    int ret = 0;
+    if (0 != futex((int *)p, FUTEX_WAIT_PRIVATE, val, timeout, NULL, 0)) {
+      ret = errno;
+    }
+    return ret;
+  }
+
+  inline int64_t futex_wake(void *p, int val)
+  {
+    return futex((int *)p, FUTEX_WAKE_PRIVATE, val, NULL, NULL, 0);
+  }
+
 
 private:
   static const uint64_t WRITE_MASK = (1ULL << 31) | (1ULL << 63);

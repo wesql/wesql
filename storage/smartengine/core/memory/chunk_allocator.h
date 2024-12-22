@@ -22,7 +22,6 @@
 #include "util/mutexlock.h"
 #include "util/autovector.h"
 #include "util/heap.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

@@ -675,6 +675,7 @@ set(TESTS
         unittest/util/filelock_test.cc
         unittest/util/file_name_test.cc
         unittest/util/heap_test.cc
+        unittest/util/macro_utils_test.cc
         unittest/util/rate_limiter_test.cc
         unittest/util/ring_buffer_test.cc
         unittest/util/slice_test.cc

@@ -18,7 +18,7 @@
 #include <unistd.h>
 #include "cache/persistent_cache.h"
 #include "table/extent_writer.h"
-#include "util/common.h"
+#include "util/macro_utils.h"
 #include "util/misc_utility.h"
 #include "util/sync_point.h"
 

@@ -21,7 +21,6 @@
 #include "port/port_posix.h"
 #include "util/callback_util.h"
 #include "util/lock_free_fixed_queue.h"
-#include "util/common.h"
 #include "memory/allocator.h"
 
 namespace smartengine {
@@ -33,7 +32,6 @@ class Env;
 namespace db {
 
 using util::FixedQueue;
-//typedef std::unique_ptr<ReplayTask, ReplayTaskDeleter> TaskPtr;
 class CallbackDeleter {
   public:
     void operator() (util::CallbackBase *func) {
@@ -49,7 +47,7 @@ public:
   struct Task {
     explicit Task(util::CallbackBase *_func,
                   memory::SimpleAllocator *_arena = nullptr,
-                  util::Duration _to = util::Duration(0),
+                  std::chrono::milliseconds _to = std::chrono::milliseconds(0),
                   util::CallbackBase *_on_timeout = nullptr)
       : func(_func),
         arena(_arena),
@@ -66,7 +64,7 @@ public:
     }
     util::CallbackBase *func;
     memory::SimpleAllocator *arena;
-    util::Duration timeout;
+    std::chrono::milliseconds timeout;
     util::CallbackBase *on_timeout;
     Deleter deleter;
   };

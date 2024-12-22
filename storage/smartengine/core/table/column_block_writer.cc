@@ -1,6 +1,5 @@
 #include "table/column_block_writer.h"
 #include "logger/log_module.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

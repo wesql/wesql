@@ -21,7 +21,6 @@
 #include "storage/io_extent.h"
 #include "table/extent_struct.h"
 #include "util/aio_wrapper.h"
-#include "util/se_constants.h"
 #include "util/status.h"
 
 namespace smartengine

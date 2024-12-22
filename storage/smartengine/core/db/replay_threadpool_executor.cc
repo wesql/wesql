@@ -18,7 +18,6 @@
 #include <thread>
 #include "util/mutexlock.h"
 #include "logger/log_module.h"
-#include "util/se_constants.h"
 #include "util/sync_point.h"
 #include "util/status.h"
 

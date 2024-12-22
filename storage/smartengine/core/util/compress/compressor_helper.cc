@@ -16,12 +16,10 @@
 
 #include "util/compress/compressor_helper.h"
 #include "logger/log_module.h"
-#include "memory/base_malloc.h"
 #include "options/advanced_options.h"
 #include "options/options.h"
 #include "util/compress/compressor_factory.h"
 #include "util/compress/compressor.h"
-#include "util/se_constants.h"
 #include "util/status.h"
 
 namespace smartengine

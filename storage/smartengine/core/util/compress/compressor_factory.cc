@@ -17,7 +17,6 @@
 #include "util/compress/compressor_factory.h"
 #include "options/advanced_options.h"
 #include "util/compress/compressor.h"
-#include "util/se_constants.h"
 #include "util/status.h"
 
 #include "logger/log_module.h"

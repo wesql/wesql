@@ -21,7 +21,6 @@
 #include "mysql/status_var.h"
 #include "core/logger/log_module.h"
 #include "core/monitoring/query_perf_context.h"
-#include "core/util/se_constants.h"
 #include "core/util/status.h"
 
 namespace smartengine

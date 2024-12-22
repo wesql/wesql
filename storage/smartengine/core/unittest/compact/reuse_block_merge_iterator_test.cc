@@ -25,7 +25,6 @@
 #include "util/logging.h"
 #include "util/testharness.h"
 #include "smartengine/options.h"
-#include "smartengine/options.h"
 #include "smartengine/table.h"
 #include "smartengine/se_constants.h"
 

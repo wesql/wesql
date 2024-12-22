@@ -11,7 +11,7 @@
 #include <stdint.h>
 #include <thread>
 
-#include "port/likely.h"
+#include "util/macro_utils.h"
 #include "util/thread_local.h"
 
 #ifdef ROCKSDB_SUPPORT_THREAD_LOCAL

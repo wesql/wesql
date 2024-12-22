@@ -1176,58 +1176,65 @@ int CompactionJob::build_multiple_major_compaction(
   return ret;
 }
 
+// TODO (Zhao Dongsheng): Refactor this function, because it has multiple return points.
 // Maybe Stream or Minor compaction
 int CompactionJob::build_multiple_compaction(ArenaAllocator &arena,
                                              storage::RangeIterator **iterators,
                                              int64_t iter_size,
-                                             const int64_t merge_limit) {
-  int ret = 0;
-  ReuseBlockMergeIterator extent_merge_iterator(arena,
-                                                *context_.data_comparator_);
-  FAIL_RETURN(extent_merge_iterator.set_children(iterators, iter_size));
-  extent_merge_iterator.seek_to_first();
-  ret = extent_merge_iterator.status().code();
+                                             const int64_t merge_limit)
+{
+  int ret = Status::kOk;
   int64_t total_extent = 0;
   int64_t merge_extent = 0;
   storage::Compaction *compaction = nullptr;
-  while (Status::kOk == ret && extent_merge_iterator.valid()) {
-    if (context_.shutting_down_->load(std::memory_order_acquire)) {
-      COMPACTION_LOG(INFO, "process shutting down, break compaction.");
-      ret = Status::kShutdownInProgress;
-      return ret;
-    }
-    const MetaDescriptorList &extents =
-        extent_merge_iterator.get_output();
-    total_extent += extents.size();
-    if (extents.size() > 1) {
-      merge_extent += extents.size();
-    }
-    if (nullptr == compaction) {
-      compaction = ALLOC_OBJECT(GeneralCompaction, arena, context_, cf_desc_, arena_);
-    }
-    if (nullptr != compaction) {
-      FAIL_RETURN(compaction->add_merge_batch(extents, 0, extents.size()));
-    } else {
-      ret = Status::kMemoryLimit;
-      COMPACTION_LOG(ERROR, "cannot allocate memory for create compaction task.", K(ret), K(extents.size()));
-      return ret;
-    }
+  ReuseBlockMergeIterator extent_merge_iterator(arena, *context_.data_comparator_);
 
-    if (merge_extent > merge_limit) {
-      COMPACTION_LOG(INFO, "split new task merge_extent.", K(merge_extent), K(total_extent));
-      add_compaction_task(compaction);
-      // reset compaction for next batch;
-      compaction = nullptr;
-      // clear status;
-      merge_extent = 0;
-    }
-    extent_merge_iterator.next();
+  if (FAILED(extent_merge_iterator.set_children(iterators, iter_size))) {
+    COMPACTION_LOG(WARN, "set children failed", K(ret), K(iter_size));
+  } else {
+    extent_merge_iterator.seek_to_first();
     ret = extent_merge_iterator.status().code();
-  }
+    while (SUCCED(ret) && extent_merge_iterator.valid()) {
+      if (context_.shutting_down_->load(std::memory_order_acquire)) {
+        COMPACTION_LOG(INFO, "process shutting down, break compaction.");
+        ret = Status::kShutdownInProgress;
+        return ret;
+      }
+      const MetaDescriptorList &extents = extent_merge_iterator.get_output();
+      total_extent += extents.size();
+      if (extents.size() > 1) {
+        merge_extent += extents.size();
+      }
+      if (nullptr == compaction) {
+        compaction = ALLOC_OBJECT(GeneralCompaction, arena, context_, cf_desc_, arena_);
+      }
+      if (nullptr != compaction) {
+        if (FAILED(compaction->add_merge_batch(extents, 0, extents.size()))) {
+          COMPACTION_LOG(WARN, "fail to add merge batch", K(ret), K(extents.size()));
+          return ret;
+        }
+      } else {
+        ret = Status::kMemoryLimit;
+        COMPACTION_LOG(ERROR, "cannot allocate memory for create compaction task.", K(ret), K(extents.size()));
+        return ret;
+      }
 
-  if (Status::kOk == ret && nullptr != compaction) {
-    COMPACTION_LOG(INFO, "split last new task merge_extent", K(merge_extent), K(total_extent));
-    add_compaction_task(compaction);
+      if (merge_extent > merge_limit) {
+        COMPACTION_LOG(INFO, "split new task merge_extent.", K(merge_extent), K(total_extent));
+        add_compaction_task(compaction);
+        // reset compaction for next batch;
+        compaction = nullptr;
+        // clear status;
+        merge_extent = 0;
+      }
+      extent_merge_iterator.next();
+      ret = extent_merge_iterator.status().code();
+    }
+
+    if (SUCCED(ret) && nullptr != compaction) {
+      COMPACTION_LOG(INFO, "split last new task merge_extent", K(merge_extent), K(total_extent));
+      add_compaction_task(compaction);
+    }
   }
 
   return ret;

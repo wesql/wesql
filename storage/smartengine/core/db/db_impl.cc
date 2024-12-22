@@ -54,7 +54,6 @@
 #include "objstore/snapshot_release_lock.h"
 #include "options/cf_options.h"
 #include "options/options_helper.h"
-#include "port/likely.h"
 #include "storage/extent_meta_manager.h"
 #include "storage/extent_space_manager.h"
 #include "storage/storage_logger.h"

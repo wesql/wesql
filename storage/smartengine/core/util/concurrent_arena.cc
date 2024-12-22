@@ -11,13 +11,16 @@
 
 #include "util/concurrent_arena.h"
 #include <thread>
-#include "port/likely.h"
+#include "util/macro_utils.h"
 #include "util/random.h"
 
-using namespace smartengine::port;
 
-namespace smartengine {
-namespace util {
+namespace smartengine
+{
+using namespace port;
+
+namespace util
+{
 
 #ifdef ROCKSDB_SUPPORT_THREAD_LOCAL
 __thread uint32_t ConcurrentArena::tls_cpuid = 0;

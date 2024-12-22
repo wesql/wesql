@@ -18,7 +18,6 @@
 
 #include "se_write_batch_impl.h"
 #include "transactions/transaction_db_impl.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

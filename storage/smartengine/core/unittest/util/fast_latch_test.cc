@@ -16,7 +16,6 @@
 
 #include "util/fast_latch.h"
 
-#include <stdio.h>
 #include <pthread.h>
 #include "util/random.h"
 #include "util/se_constants.h"

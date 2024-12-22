@@ -21,8 +21,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <errno.h>
-#include "util/common.h"
 #include "logger/log_module.h"
+#include "util/macro_utils.h"
 
 namespace smartengine
 {

@@ -24,7 +24,7 @@
 #include "memtable/memtablerep.h"
 #include "memtable/art_node.h"
 #include "util/coding.h"
-#include "util/common.h"
+#include "util/macro_utils.h"
 
 namespace smartengine {
 namespace memtable {

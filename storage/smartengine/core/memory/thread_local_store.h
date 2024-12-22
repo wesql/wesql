@@ -23,7 +23,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <vector>
-#include "util/common.h"
+#include "util/macro_utils.h"
 namespace smartengine 
 {
 namespace memory 

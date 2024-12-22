@@ -13,7 +13,6 @@
 #include "table/row_block.h"
 #include "memory/base_malloc.h"
 #include "util/coding.h"
-#include "util/se_constants.h"
 
 namespace smartengine
 {

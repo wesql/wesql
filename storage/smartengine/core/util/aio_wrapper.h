@@ -25,7 +25,6 @@
 #include "monitoring/query_perf_context.h"
 #include "util/dio_helper.h"
 #include "util/status.h"
-#include "util/se_constants.h"
 #include "util/thread_local.h"
 
 namespace smartengine
