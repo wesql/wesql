@@ -152,8 +152,25 @@ class ObjectStore {
                             const std::string_view &key,
                             const std::string_view &data,
                             bool forbid_overwrite = false) = 0;
+  // TODO (Zhao Dongsheng): This interface is temporary to implement condition write.
+  virtual Status put_object(const std::string_view &bucket __attribute__((unused)),
+                            const std::string_view &key __attribute__((unused)),
+                            const std::string_view &data __attribute__((unused)),
+                            const std::string &etag __attribute__((unused)),
+                            bool forbid_overwrite __attribute__((unused)))
+  {
+    return Status(Errors::SE_IO_ERROR, 0, "not implemented");
+  }
   virtual Status get_object(const std::string_view &bucket,
                             const std::string_view &key, std::string &body) = 0;
+  // TODO (Zhao Dongsheng): This interface is temporary to implement condition read.
+  virtual Status get_object(const std::string_view &bucket __attribute__((unused)),
+                            const std::string_view &key __attribute__((unused)),
+                            std::string &input __attribute__((unused)),
+                            std::string *etag __attribute__((unused)))
+  {
+    return Status(Errors::SE_IO_ERROR, 0, "not implemented");
+  }
   virtual Status get_object(const std::string_view &bucket,
                             const std::string_view &key, size_t off, size_t len,
                             std::string &body) = 0;

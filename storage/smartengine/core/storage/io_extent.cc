@@ -560,7 +560,7 @@ int ObjectIOExtent::write_object(const char *data, int64_t data_size)
     //   abort();
     // }
     ret = Status::kObjStoreError;
-    SE_LOG(WARN, "io error, failed to put obj", K(ret), KE((object_status.error_code())), K(std::string(object_status.error_message())),
+    SE_LOG(WARN, "io error, failed to put obj", K(ret), KE((object_status.error_code())), K(object_status.error_message()),
         K_(extent_id), K_(bucket), K(object_id), K(data_size), K_(bucket));
   } else {
     if (PersistentCache::get_instance().is_enabled() && !is_large_object_extent()) {
@@ -669,7 +669,7 @@ int ObjectIOExtent::read_object(int64_t offset, int64_t size, char *buf, common:
     if (UNLIKELY(!object_status.is_succ())) {
       ret = Status::kObjStoreError;
       SE_LOG(WARN, "io error, failed to get obj", K(ret), KE(object_status.error_code()),
-            K(std::string(object_status.error_message())), K_(bucket), K_(extent_id), K(object_id));
+            K(object_status.error_message()), K_(bucket), K_(extent_id), K(object_id));
     } else if (UNLIKELY(MAX_EXTENT_SIZE != body.size())) {
       ret = Status::kCorruption;
       SE_LOG(WARN, "the data is corrupted", K(ret), "size", body.size());
@@ -694,7 +694,7 @@ int ObjectIOExtent::read_object(int64_t offset, int64_t size, char *buf, common:
     if (UNLIKELY(!object_status.is_succ())) {
       ret = Status::kObjStoreError;
       SE_LOG(WARN, "io error, failed to get obj", K(ret), KE(object_status.error_code()),
-            K(std::string(object_status.error_message())), K_(bucket), K_(extent_id), K(object_id));
+            K(object_status.error_message()), K_(bucket), K_(extent_id), K(object_id));
     } else if (UNLIKELY(size != static_cast<int64_t>(body.size()))) {
       ret = Status::kCorruption;
       SE_LOG(WARN, "the data is corrupted", K(ret), "expected_size", size, "actual_size", body.size());
@@ -723,7 +723,7 @@ int ObjectIOExtent::load_extent(cache::Cache::Handle **handle)
       if (UNLIKELY(!object_status.is_succ())) {
         ret = Status::kObjStoreError;
         SE_LOG(WARN, "io error, fail to get object", K(ret), KE(object_status.error_code()),
-            K(std::string(object_status.error_message())), K_(extent_id), K(object_id));
+            K(object_status.error_message()), K_(extent_id), K(object_id));
       } else if (UNLIKELY(MAX_EXTENT_SIZE != body.size())) {
         ret = Status::kCorruption;
         SE_LOG(WARN, "the data is corrupted", K(ret), "size", body.size());
