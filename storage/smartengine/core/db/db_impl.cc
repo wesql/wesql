@@ -2449,11 +2449,6 @@ int DBImpl::create_backup_snapshot(BackupSnapshotId backup_id,
       if (FAILED(switch_memtable(sub_table, &context, true /* force create new wal file*/))) {
         SE_LOG(WARN, "Failed to switch memtable", K(backup_id), K(ret));
       } else {
-        last_manifest_file_num = StorageLogger::get_instance().current_manifest_file_number();
-        last_manifest_file_size = StorageLogger::get_instance().current_manifest_file_size();
-        last_wal_file_num = logfile_number_;
-        last_binlog_pos = global_binlog_pos_;
-
         int64_t commit_seq = 0;
         uint64_t auto_increment_id = backup_snapshot_map.get_max_auto_increment_id() + 1;
         AccquireBackupSnapshotLogEntry log_entry(backup_id, auto_increment_id);
@@ -2468,6 +2463,11 @@ int DBImpl::create_backup_snapshot(BackupSnapshotId backup_id,
           ret = Status::kErrorUnexpected;
           SE_LOG(WARN, "backup snapshot id already exists", K(ret), K(backup_id));
         } else {
+          last_manifest_file_num = StorageLogger::get_instance().current_manifest_file_number();
+          last_manifest_file_size = StorageLogger::get_instance().current_manifest_file_size();
+          last_wal_file_num = logfile_number_;
+          last_binlog_pos = global_binlog_pos_;
+
           SE_LOG(INFO,
                  "Create a backup snapshot",
                  K(backup_id),

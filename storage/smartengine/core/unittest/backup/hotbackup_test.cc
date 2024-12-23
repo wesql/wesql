@@ -1139,8 +1139,8 @@ TEST_F(HotbackupTest, create_multiple_backup_snapshots) {
   ASSERT_EQ("gg", Get(1, "g"));
   ASSERT_EQ("hh", Get(1, "h"));
 
-  ASSERT_EQ(0, backup_snapshot->get_backup_snapshot_map().get_backup_snapshot_count());
-  ASSERT_FALSE(backup_snapshot->get_backup_snapshot_map().find_backup_snapshot(backup_id));
+  ASSERT_EQ(1, backup_snapshot->get_backup_snapshot_map().get_backup_snapshot_count());
+  ASSERT_TRUE(backup_snapshot->get_backup_snapshot_map().find_backup_snapshot(backup_id));
 
   Close();
   DestroyDB(backup_path, last_options_);
@@ -1155,9 +1155,9 @@ TEST_F(HotbackupTest, create_multiple_backup_snapshots) {
   ASSERT_EQ("ggg", Get(1, "g"));
   ASSERT_EQ("hhh", Get(1, "h"));
 
-  ASSERT_EQ(1, backup_snapshot->get_backup_snapshot_map().get_backup_snapshot_count());
+  ASSERT_EQ(2, backup_snapshot->get_backup_snapshot_map().get_backup_snapshot_count());
   ASSERT_TRUE(backup_snapshot->get_backup_snapshot_map().find_backup_snapshot(backup_id));
-  ASSERT_FALSE(backup_snapshot->get_backup_snapshot_map().find_backup_snapshot(backup_id2));
+  ASSERT_TRUE(backup_snapshot->get_backup_snapshot_map().find_backup_snapshot(backup_id2));
 
   ASSERT_EQ(Status::kOk, backup_snapshot->release_old_backup_snapshot(db_, backup_id));
 
@@ -1174,10 +1174,10 @@ TEST_F(HotbackupTest, create_multiple_backup_snapshots) {
   ASSERT_EQ("gggg", Get(1, "g"));
   ASSERT_EQ("hhhh", Get(1, "h"));
 
-  ASSERT_EQ(2, backup_snapshot->get_backup_snapshot_map().get_backup_snapshot_count());
+  ASSERT_EQ(3, backup_snapshot->get_backup_snapshot_map().get_backup_snapshot_count());
   ASSERT_TRUE(backup_snapshot->get_backup_snapshot_map().find_backup_snapshot(backup_id));
   ASSERT_TRUE(backup_snapshot->get_backup_snapshot_map().find_backup_snapshot(backup_id2));
-  ASSERT_FALSE(backup_snapshot->get_backup_snapshot_map().find_backup_snapshot(backup_id3));
+  ASSERT_TRUE(backup_snapshot->get_backup_snapshot_map().find_backup_snapshot(backup_id3));
 
   ASSERT_EQ(Status::kOk, backup_snapshot->release_old_backup_snapshot(db_, backup_id));
   ASSERT_EQ(Status::kOk, backup_snapshot->release_old_backup_snapshot(db_, backup_id2));
