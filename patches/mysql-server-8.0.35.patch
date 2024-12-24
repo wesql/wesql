@@ -2751,10 +2751,10 @@ index e010b378799..a6f94f8f194 100644
  ################################################################################
  # DO NOT add messages for the error-log to this file;
 diff --git a/share/messages_to_error_log.txt b/share/messages_to_error_log.txt
-index cdef214ae5f..8010a9a6236 100644
+index cdef214ae5f..d51f84797cf 100644
 --- a/share/messages_to_error_log.txt
 +++ b/share/messages_to_error_log.txt
-@@ -12293,6 +12293,459 @@ ER_WARN_DEPRECATED_OR_BLOCKED_CIPHER
+@@ -12293,6 +12293,471 @@ ER_WARN_DEPRECATED_OR_BLOCKED_CIPHER
  # End of 8.0 error messages intended to be written to the server error log.
  #
  
@@ -3130,34 +3130,34 @@ index cdef214ae5f..8010a9a6236 100644
 +  eng "Binlog archive: %s."
 +
 +ER_BINLOG_ARCHIVE_WORKER_LOG
-+  eng "Binlog archive worker %d: %s."
++  eng "Binlog archive: worker %d %s."
 +
 +ER_BINLOG_ARCHIVE_UPDATE_INDEX_WORKER_LOG
-+  eng "Binlog archive update index worker: %s."
++  eng "Binlog archive: update index worker %s."
 +
 +ER_BINLOG_ARCHIVE_STARTUP
-+  eng "Binlog archive startup: %s."
++  eng "Binlog archive: startup %s."
 +
 +ER_BINLOG_ARCHIVE_CREATE_OBJECT_STORE
-+  eng "Binlog archive create object store: provider=%s region=%s endpoint=%s bucket=%s use_https=%s %s."
++  eng "Binlog archive: create objstore provider=%s region=%s endpoint=%s bucket=%s use_https=%s %s."
 +
 +ER_BINLOG_ARCHIVE_GET_OBJECT_TO_FILE
-+  eng "Binlog archive get object: %s key=%s file=%s %s."
++  eng "Binlog archive: get object %s key=%s file=%s %s."
 +
 +ER_BINLOG_ARCHIVE_PUT_OBJECT_FROM_BINLOG_SLICE_FILE
-+  eng "Binlog archive put binlog slice to object store: key=%s file=%s size=%lld %s."
++  eng "Binlog archive: put binlog slice to objstore key=%s file=%s size=%lld %s."
 +
 +ER_BINLOG_ARCHIVE_PUT_OBJECT_FROM_BINLOG_INDEX_FILE
-+  eng "Binlog archive put binlog index to object store: key=%s index_entry=%s %s."
++  eng "Binlog archive: put binlog index to objstore key=%s index_entry=%s %s."
 +
 +ER_BINLOG_ARCHIVE_LIST_OBJECT
-+  eng "Binlog archive list object: %s key_prefix=%s %s."
++  eng "Binlog archive: list objects %s key_prefix=%s %s."
 +
 +ER_BINLOG_ARCHIVE_OPEN_INDEX
-+  eng "Binlog archive open index: %s  index=%s."
++  eng "Binlog archive: open index %s  index=%s."
 +
 +ER_BINLOG_ARCHIVE_OPEN_INDEX_TERM_CHANGED
-+  eng "Binlog archive open index term changed: %lld to %lld."
++  eng "Binlog archive: open index term changed %lld to %lld."
 +
 +ER_BINLOG_ARCHIVE_LOG_START
 +  eng "Binlog archive: persistent mysql binlog %s/%lld"
@@ -3171,11 +3171,23 @@ index cdef214ae5f..8010a9a6236 100644
 +ER_BINLOG_ARCHIVE_REPLICA
 +  eng "Binlog archive replica: %s."
 +
++ER_BINLOG_ARCHIVE_REPLICA_CREATE_SOURCE_OBJECT_STORE
++  eng "Binlog archive replica: create source objstore provider=%s region=%s endpoint=%s bucket=%s use_https=%s %s."
++
 +ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER
-+  eng "Binlog archive replica relay worker: %s."
++  eng "Binlog archive replica: relay worker %s."
 +
 +ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER
-+  eng "Binlog archive replica io worker %d: %s."
++  eng "Binlog archive replica: io worker %d %s."
++
++ER_BINLOG_ARCHIVE_REPLICA_GET_OBJECT_TO_FILE
++  eng "Binlog archive replica: get object %s key=%s file=%s %s."
++
++ER_BINLOG_ARCHIVE_REPLICA_LIST_OBJECT
++  eng "Binlog archive replica: list objects %s key_prefix=%s %s."
++
++ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX
++  eng "Binlog archive replica: open index %s  index=%s."
 +
 +ER_CONSISTENT_SNAPSHOT_LOG
 +   eng "Snapshot archive: %s"
