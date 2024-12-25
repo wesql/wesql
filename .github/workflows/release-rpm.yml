@@ -75,10 +75,10 @@ on:
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-  KNOWN_HOSTS: ${{ secrets.GCP_RPM_REPO_KNOWN_HOSTS }}
-  SSH_HOST: ${{ secrets.GCP_RPM_REPO_HOST }}
-  SSH_USER: ${{ secrets.SSH_USER }}
-  SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+  KNOWN_HOSTS: ${{ secrets.RPM_SERVER_KNOWN_HOSTS }}
+  ID_RSA: ${{ secrets.RPM_SERVER_ID_RSA }}
+  SSH_HOST: ${{ secrets.RPM_SERVER_HOST }}
+  SSH_USER: ${{ secrets.RPM_SERVER_USER }}
   DOCKER_REGISTRY_USER: ${{ secrets.DOCKER_REGISTRY_USER}}
   DOCKER_REGISTRY_PASSWORD: ${{ secrets.DOCKER_REGISTRY_PASSWORD}}
   DOCKER_REGISTRY_URL: "docker.io"
@@ -89,6 +89,7 @@ env:
   BOOST_NAME: "boost_1_77_0.tar.bz2"
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  MYSQL_SSH_DIR: "/home/mysql/.ssh"
 
 
 jobs:
@@ -152,16 +153,20 @@ jobs:
 
       - name: upload rpm
         run: |
-          mkdir -pv /home/mysql/.ssh/
+          MYSQL_SSH_DIR="${{ env.MYSQL_SSH_DIR }}"
+          mkdir -pv ${MYSQL_SSH_DIR}
 
-          touch /home/mysql/.ssh/known_hosts
+          touch ${MYSQL_SSH_DIR}/known_hosts
+          touch ${MYSQL_SSH_DIR}/id_rsa
+          chmod 600 ${MYSQL_SSH_DIR}/id_rsa
 
-          echo "${{ env.KNOWN_HOSTS }}" >> /home/mysql/.ssh/known_hosts
+          echo "${{ env.KNOWN_HOSTS }}" >> ${MYSQL_SSH_DIR}/known_hosts
+          echo "${{ env.ID_RSA }}" >> ${MYSQL_SSH_DIR}/id_rsa
 
-          sshpass -p ${{ env.SSH_PASSWORD }} scp -v ${{ github.workspace }}/../rpm/* \
+          scp -v ${{ github.workspace }}/../rpm/* \
             ${{ env.SSH_USER }}@${{ env.SSH_HOST }}:/var/www/html/release/8/rpms/x86_64/
 
-          sshpass -p ${{ env.SSH_PASSWORD }} ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} \
+          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} \
             createrepo --update /var/www/html/release/8/rpms/x86_64/
 
       - name: get prerelease for image
@@ -254,16 +259,20 @@ jobs:
 
       - name: upload rpm
         run: |
-          mkdir -pv /home/mysql/.ssh/
+          MYSQL_SSH_DIR="${{ env.MYSQL_SSH_DIR }}"
+          mkdir -pv ${MYSQL_SSH_DIR}
 
-          touch /home/mysql/.ssh/known_hosts
+          touch ${MYSQL_SSH_DIR}/known_hosts
+          touch ${MYSQL_SSH_DIR}/id_rsa
+          chmod 600 ${MYSQL_SSH_DIR}/id_rsa
 
-          echo "${{ env.KNOWN_HOSTS }}" >> /home/mysql/.ssh/known_hosts
+          echo "${{ env.KNOWN_HOSTS }}" >> ${MYSQL_SSH_DIR}/known_hosts
+          echo "${{ env.ID_RSA }}" >> ${MYSQL_SSH_DIR}/id_rsa
 
-          sshpass -p ${{ env.SSH_PASSWORD }} scp -v ${{ github.workspace }}/rpm/* \
+          scp -v ${{ github.workspace }}/rpm/* \
             ${{ env.SSH_USER }}@${{ env.SSH_HOST }}:/var/www/html/release/8/rpms/aarch64/
 
-          sshpass -p ${{ env.SSH_PASSWORD }} ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} \
+          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} \
             createrepo --update /var/www/html/release/8/rpms/aarch64/
 
       - name: rm rpm
