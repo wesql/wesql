@@ -43,11 +43,6 @@ on:
         required: false
         default: 'false'
         type: string
-      branch:
-        description: 'docker-wesql branch name'
-        required: false
-        default: 'main'
-        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -90,11 +85,6 @@ on:
         required: false
         default: 'false'
         type: string
-      branch:
-        description: 'docker-wesql branch name'
-        required: false
-        default: ''
-        type: string
 
 env:
   DOCKER_REGISTRY_URL: docker.io
@@ -112,18 +102,9 @@ jobs:
         registry: [ dockerhub, aliyun ]
     runs-on: ubuntu-latest
     steps:
-      - if: ${{ inputs.branch == '' }}
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: wesql/docker-wesql
-          path: ./
-          token: ${{ env.GITHUB_TOKEN }}
-
-      - if: ${{ inputs.branch != '' }}
-        uses: actions/checkout@v4
-        with:
-          repository: wesql/docker-wesql
-          ref: ${{ inputs.branch }}
           path: ./
           token: ${{ env.GITHUB_TOKEN }}
 
