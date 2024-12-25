@@ -526,8 +526,9 @@ set(SOURCES
         util/to_string.cc
         util/misc_utility.cc
         util/memory_stat.cc
-        objstore/objstore_layout.cc
         objstore/lease_lock.cc
+        objstore/objstore_layout.cc
+        objstore/objstore_allocator.cc
         objstore/snapshot_release_lock.cc
         compact/compaction.cc
         compact/compaction_job.cc
@@ -719,6 +720,7 @@ set(TESTS
         #unittest/transactions/transaction_test.cc
         unittest/write_batch/write_batch_test.cc
         #unittest/write_batch_with_index_test.cc
+        unittest/objstore/objstore_allocator_test.cc
         unittest/objstore/objstore_test.cc
         unittest/objstore/objstore_bench.cc
 )

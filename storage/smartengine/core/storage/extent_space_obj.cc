@@ -338,9 +338,8 @@ int ObjectExtentSpace::recycle(const std::string prefix, const ExtentId extent_i
         objstore_->delete_object(extent_bucket_, extent_key);
     if (!st.is_succ()) {
       ret = Status::kObjStoreError;
-      SE_LOG(WARN, "fail to recyle extent", K(extent_bucket_), K(extent_key),
-             K(int(st.error_code())), K(std::string(st.error_message())),
-             K(ret));
+      SE_LOG(WARN, "fail to recyle extent", K(ret), K(extent_bucket_), K(extent_key),
+             KE(st.error_code()), K(st.error_message()));
     } else {
       inused_extent_set_.erase(extent_id.offset);
       --total_extent_count_;

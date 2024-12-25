@@ -46,8 +46,23 @@ class S3ObjectStore : public ObjectStore {
   Status put_object(const std::string_view &bucket, const std::string_view &key,
                     const std::string_view &data,
                     bool forbid_overwrite = false) override;
+
+  // TODO (Zhao Dongsheng): This interface is temporary to implement condition write.
+  // Most of the code is same with above put_object, so we can refactor it later.
+  Status put_object(const std::string_view &bucket,
+                    const std::string_view &key,
+                    const std::string_view &data,
+                    const std::string &etag,
+                    bool forbid_overwrite) override;
+
   Status get_object(const std::string_view &bucket, const std::string_view &key,
                     std::string &input) override;
+  // TODO (Zhao Dongsheng): This interface is temporary to implement condition read.
+  // Most of the code is same with above get_object, so we can refactor it later.
+  Status get_object(const std::string_view &bucket,
+                    const std::string_view &key,
+                    std::string &input,
+                    std::string *etag) override;
   Status get_object(const std::string_view &bucket, const std::string_view &key,
                     size_t off, size_t len, std::string &body) override;
   Status get_object_meta(const std::string_view &bucket,

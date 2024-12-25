@@ -166,6 +166,13 @@ inline void databuff_print_obj(char *buf, const int64_t buf_len, int64_t &pos,
   databuff_printf(buf, buf_len, pos, "\"%s\"", obj.c_str());
 }
 
+template <>
+inline void databuff_print_obj(char *buf, const int64_t buf_len, int64_t &pos,
+                               const std::string_view &obj)
+{
+  databuff_printf(buf, buf_len, pos, "\"%s\"", std::string(obj).c_str());
+}
+
 template <class T>
 void databuff_print_obj(char *buf, const int64_t buf_len, int64_t &pos, const std::vector<T> &obj_vec)
 {

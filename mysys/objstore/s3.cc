@@ -46,8 +46,8 @@ Errors aws_error_to_objstore_error(const Aws::S3::S3Error &aws_error) {
     // as an unrecoverable error of cloud provider.
     return Errors::CLOUD_PROVIDER_ERROR_RETRY_LIMIT_EXCEEDED;
   }
-  if (aws_error.GetResponseCode() ==
-      Aws::Http::HttpResponseCode::PRECONDITION_FAILED) {
+  if ((Aws::Http::HttpResponseCode::PRECONDITION_FAILED == aws_error.GetResponseCode()) ||
+      (Aws::Http::HttpResponseCode::CONFLICT == aws_error.GetResponseCode())) {
     return Errors::SE_OBJECT_FORBID_OVERWRITE;
   }
   int aws_error_code = static_cast<int>(aws_error.GetErrorType());
@@ -257,6 +257,63 @@ Status S3ObjectStore::put_object(const std::string_view &bucket,
   return Status();
 }
 
+// TODO (Zhao Dongsheng): This interface is temporary to implement condition write.
+// Most of the code is same with above put_object, so we can refactor it later.
+Status S3ObjectStore::put_object(const std::string_view &bucket,
+                                 const std::string_view &key,
+                                 const std::string_view &data,
+                                 const std::string &etag,
+                                 bool forbid_overwrite) {
+  if (!is_valid_key(key) || (forbid_overwrite && !etag.empty())) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid key");
+  }
+  Aws::S3::Model::PutObjectRequest request;
+  Aws::String full_key(key);
+  request.SetKey(full_key);
+  request.SetBucket(Aws::String(bucket));
+  if (forbid_overwrite) {
+    request.SetAdditionalCustomHeaderValue("If-None-Match", "*");
+  } else if (!etag.empty()) {
+    request.SetAdditionalCustomHeaderValue("If-Match", etag);
+  }
+
+  const std::shared_ptr<Aws::IOStream> data_stream =
+      Aws::MakeShared<Aws::StringStream>("SStreamAllocationTag");
+  if (!*data_stream) {
+    return Status(Errors::SE_IO_ERROR, 0,
+                  "unable to create data stream to hold input data");
+  }
+
+  *data_stream << data;
+  if (!*data_stream) {
+    return Status(Errors::SE_IO_ERROR, 0,
+                  "unable to write data into data stream");
+  }
+
+  request.SetBody(data_stream);
+
+  Aws::S3::Model::PutObjectOutcome outcome;
+
+  int retry_times = retry_times_on_error_;
+  while (true) {
+    outcome = s3_client_.PutObject(request);
+    if (!outcome.IsSuccess()) {
+      const Aws::S3::S3Error &err = outcome.GetError();
+      bool should_retry = err.ShouldRetry();
+      if (retry_times-- > 0 && should_retry) {
+        continue;
+      }
+      Errors err_type = aws_error_to_objstore_error(err);
+      return Status(err_type, static_cast<int>(err.GetErrorType()),
+                    err.GetMessage());
+    } else {
+      break;
+    }
+  }
+
+  return Status();
+}
+
 Status S3ObjectStore::get_object(const std::string_view &bucket,
                                  const std::string_view &key,
                                  std::string &body) {
@@ -295,6 +352,58 @@ Status S3ObjectStore::get_object(const std::string_view &bucket,
     body = oss.str();
   } else {
     body = "";
+  }
+
+  return Status();
+}
+
+
+// TODO (Zhao Dongsheng): This interface is temporary to implement condition read.
+// Most of the code is same with above get_object, so we can refactor it later.
+Status S3ObjectStore::get_object(const std::string_view &bucket,
+                                 const std::string_view &key,
+                                 std::string &body,
+                                 std::string *etag) {
+  Aws::S3::Model::GetObjectRequest request;
+  Aws::String full_key(key);
+  request.SetKey(full_key);
+  request.SetBucket(Aws::String(bucket));
+
+  Aws::S3::Model::GetObjectOutcome outcome;
+
+  int retry_times = retry_times_on_error_;
+  while (true) {
+    outcome = s3_client_.GetObject(request);
+    if (!outcome.IsSuccess()) {
+      const Aws::S3::S3Error &err = outcome.GetError();
+      bool should_retry = err.ShouldRetry();
+      if (retry_times-- > 0 && should_retry) {
+        continue;
+      }
+      Errors err_type = aws_error_to_objstore_error(err);
+
+      return Status(err_type, static_cast<int>(err.GetErrorType()),
+                    err.GetMessage());
+    } else {
+      break;
+    }
+  }
+
+  std::ostringstream oss;
+  if (outcome.GetResult().GetBody().rdbuf()->in_avail() > 0) {
+    oss << outcome.GetResult().GetBody().rdbuf();
+    if (!oss) {
+      return Status(Errors::SE_IO_ERROR, 0,
+                    "unable to read data from response stream");
+    }
+    body = oss.str();
+  } else {
+    body = "";
+  }
+
+  // Get ETag. Even the body is empty, we still need to get ETag.
+  if (nullptr != etag) {
+    *etag = outcome.GetResult().GetETag();
   }
 
   return Status();

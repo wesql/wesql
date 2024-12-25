@@ -427,7 +427,7 @@ class Env {
   // if user need use objstore interface, he/she still need include
   // objstore.h. this choice is not very good, since this env header
   // is not self contained. TODO(cnut): refine me.
-  virtual common::Status GetObjectStore(objstore::ObjectStore*& object_store) {
+  virtual common::Status GetObjectStore(::objstore::ObjectStore*& object_store) {
     object_store = nullptr;
     return common::Status::NotSupported("Not supported.");
   }
