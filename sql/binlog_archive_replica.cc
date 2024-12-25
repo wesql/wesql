@@ -1106,20 +1106,20 @@ int start_binlog_archive_replica() {
       opt_source_objectstore_endpoint
           ? std::string_view(opt_source_objectstore_endpoint)
           : "");
-  objstore::ObjectStore *objstore = objstore::create_object_store(
+  objstore::ObjectStore *objstore = objstore::create_source_object_store(
       std::string_view(opt_source_objectstore_provider),
       std::string_view(opt_source_objectstore_region),
       opt_source_objectstore_endpoint ? &endpoint : nullptr,
       opt_source_objectstore_use_https, obj_error_msg);
   if (!objstore) {
-    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_CREATE_OBJECT_STORE,
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_CREATE_SOURCE_OBJECT_STORE,
            opt_source_objectstore_provider, opt_source_objectstore_region,
            std::string(endpoint).c_str(), opt_source_objectstore_bucket,
            opt_source_objectstore_use_https ? "true" : "false",
            !obj_error_msg.empty() ? obj_error_msg.c_str() : "");
     return 1;
   }
-  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_CREATE_OBJECT_STORE,
+  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_CREATE_SOURCE_OBJECT_STORE,
          opt_source_objectstore_provider, opt_source_objectstore_region,
          std::string(endpoint).c_str(), opt_source_objectstore_bucket,
          opt_source_objectstore_use_https ? "true" : "false", "");
@@ -1856,7 +1856,7 @@ bool Binlog_archive_replica::list_persistent_objects(
           ss.error_code() == objstore::Errors::SE_NO_SUCH_KEY) {
         return true;
       }
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT, "failed",
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_LIST_OBJECT, "failed",
              binlog_index_prefix.c_str(),
              std::string(ss.error_message()).c_str());
       return false;
@@ -1870,7 +1870,7 @@ bool Binlog_archive_replica::list_persistent_objects(
               return a.key < b.key;
             });
   if (allow_no_search_key == false && persistent_objects.empty()) {
-    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LIST_OBJECT, "failed",
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_LIST_OBJECT, "failed",
            binlog_index_prefix.c_str(), "no persistent objects found");
     return false;
   }
@@ -1952,7 +1952,7 @@ bool Binlog_archive_replica::open_index_file() {
         std::string_view(opt_source_objectstore_bucket),
         last_binlog_index_keyid, std::string_view(m_index_local_file_name));
     if (!status.is_succ()) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_GET_OBJECT_TO_FILE,
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_GET_OBJECT_TO_FILE,
              "get last persistent binlog-index.index failed",
              last_binlog_index_keyid.c_str(), m_index_local_file_name,
              std::string(status.error_message()).c_str());
@@ -1987,7 +1987,7 @@ bool Binlog_archive_replica::open_index_file() {
     std::string err_msg;
     err_msg.assign("Failed to chmod: ");
     err_msg.append(m_index_local_file_name);
-    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX, err_msg.c_str());
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX, err_msg.c_str());
     error = true;
     goto end;
   }
@@ -2078,14 +2078,14 @@ int Binlog_archive_replica::find_log_pos_common(
 
     size_t first_dot = found_log_slice_name.find('.');
     if (first_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
              "Invalid log slice index entry", found_log_slice_name);
       error = LOG_INFO_IO;
       break;
     }
     size_t second_dot = found_log_slice_name.find('.', first_dot + 1);
     if (second_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
              "Invalid log slice index entry", found_log_slice_name);
       error = LOG_INFO_IO;
       break;
@@ -2098,7 +2098,7 @@ int Binlog_archive_replica::find_log_pos_common(
     left_string = found_log_slice_name.substr(second_dot + 1);
     size_t third_dot = left_string.find('.');
     if (third_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
              "Invalid log slice index entry", found_log_slice_name);
       error = LOG_INFO_IO;
       break;
@@ -2129,7 +2129,7 @@ int Binlog_archive_replica::find_log_pos_by_name(LOG_ARCHIVED_INFO *linfo,
   DBUG_TRACE;
 
   if (!my_b_inited(&m_index_file)) {
-    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
            "binlog index not inited");
     return LOG_INFO_IO;
   }
@@ -2160,7 +2160,7 @@ int Binlog_archive_replica::find_next_log(LOG_ARCHIVED_INFO *linfo) {
   bool next_log = false;
 
   if (!my_b_inited(&m_index_file)) {
-    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
            "binlog index not inited");
     return LOG_INFO_IO;
   }
@@ -2188,7 +2188,7 @@ int Binlog_archive_replica::find_next_log_common(IO_CACHE *index_file,
   next_log = false;
 
   if (!my_b_inited(index_file)) {
-    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
            "binlog index not inited");
     return LOG_INFO_IO;
   }
@@ -2224,14 +2224,14 @@ int Binlog_archive_replica::find_next_log_common(IO_CACHE *index_file,
 
     size_t first_dot = found_log_slice_name.find('.');
     if (first_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
              "Invalid log slice index entry", found_log_slice_name);
       error = LOG_INFO_IO;
       break;
     }
     size_t second_dot = found_log_slice_name.find('.', first_dot + 1);
     if (second_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
              "Invalid log slice index entry", found_log_slice_name);
       error = LOG_INFO_IO;
       break;
@@ -2242,7 +2242,7 @@ int Binlog_archive_replica::find_next_log_common(IO_CACHE *index_file,
     left_string = found_log_slice_name.substr(second_dot + 1);
     size_t third_dot = left_string.find('.');
     if (third_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
              "Invalid log slice index entry", found_log_slice_name);
       error = LOG_INFO_IO;
       break;
