@@ -4,7 +4,9 @@
 log-bin=                    master-bin
 binlog_format=              ROW
 sync_binlog=                1
-snapshot_archive_expire_auto_purge=  false
+gtid_mode=                  ON
+enforce_gtid_consistency=   ON
+snapshot_archive_expire_auto_purge=     false
 binlog_archive_expire_auto_purge=       false
 binlog_archive_period=                  1000
 objectstore_lease_lock_timeout=         0

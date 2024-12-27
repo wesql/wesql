@@ -201,14 +201,6 @@ class Binlog_archive_replica_io_worker {
     return ret;
   }
   int terminate_binlog_archive_replica_io_worker_thread();
-  bool is_binlog_archive_replica_io_worker_waiting() const {
-    return atomic_binlog_archive_replica_io_worker_waiting.load(
-        std::memory_order_acquire);
-  }
-  void set_binlog_archive_replica_io_worker_waiting(bool waiting) {
-    atomic_binlog_archive_replica_io_worker_waiting.store(
-        waiting, std::memory_order_release);
-  }
 
  private:
   Binlog_archive_replica *m_archive;
@@ -219,7 +211,6 @@ class Binlog_archive_replica_io_worker {
   thread_state m_thd_state;
   mysql_mutex_t m_worker_run_lock;
   mysql_cond_t m_worker_run_cond;
-  std::atomic<bool> atomic_binlog_archive_replica_io_worker_waiting;
 };
 
 /**
