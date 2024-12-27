@@ -6695,7 +6695,7 @@ index b11348b5b48..346978f5c55 100644
       Forward iterators to initiate traversing of a map.
  
 diff --git a/sql/rpl_replica.cc b/sql/rpl_replica.cc
-index 57dfb700ea5..8361ce91d56 100644
+index 57dfb700ea5..100693cdd43 100644
 --- a/sql/rpl_replica.cc
 +++ b/sql/rpl_replica.cc
 @@ -650,6 +650,21 @@ bool start_slave(THD *thd) {
@@ -7441,7 +7441,7 @@ index 57dfb700ea5..8361ce91d56 100644
 +      lock_count = 2;
 +    }
 +
-+    if (flush_master_info(mi, true /*force*/, lock_count == 0 /*need_lock*/,
++    if (flush_master_info(mi, false /*force*/, lock_count == 0 /*need_lock*/,
 +                          false /*flush_relay_log*/, mi->is_gtid_only_mode()))
 +      res = QUEUE_EVENT_ERROR_FLUSHING_INFO;
 +    if (mi->is_gtid_only_mode()) {

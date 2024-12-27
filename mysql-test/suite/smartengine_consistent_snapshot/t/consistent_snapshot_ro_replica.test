@@ -57,7 +57,7 @@ let MYSQLD_ERROR_START_LOG = $MYSQLTEST_VARDIR/log/ro_start.err;
 let self_bucket=wesql-ro;
 let MYSQLD_EXTRA_INIT_ARGS = --initialize_from_source_objectstore=true; 
 --echo # Initialize ro server
-let $MYSQLD_EXTRA_ARGS = --server-id=$ro_server_id --port=$ro_port --socket=$MYSQLD_DATADIR/test.sock --console --skip-ssl --log-bin=master-bin --objectstore-region=.local_region --objectstore_bucket=$self_bucket --log-error-verbosity=3 --datadir=$MYSQLD_DATADIR --source_objectstore_smartengine_data=true --source_objectstore_region=$source_region --source_objectstore_bucket=$source_bucket --source_objectstore_repo_id=$source_repo --objectstore_bucket=$self_bucket;
+let $MYSQLD_EXTRA_ARGS = --server-id=$ro_server_id --port=$ro_port --socket=$MYSQLD_DATADIR/test.sock --console --skip-ssl --log-bin=slave-bin --objectstore-region=.local_region --objectstore_bucket=$self_bucket --log-error-verbosity=3 --datadir=$MYSQLD_DATADIR --source_objectstore_smartengine_data=true --source_objectstore_region=$source_region --source_objectstore_bucket=$source_bucket --source_objectstore_repo_id=$source_repo --objectstore_bucket=$self_bucket;
 --exec $MYSQLD --initialize-insecure --no-defaults $MYSQLD_ARGS $MYSQLD_EXTRA_INIT_ARGS $MYSQLD_EXTRA_ARGS > $MYSQLD_ERROR_LOG 2>&1
 --echo # Start ro server
 
@@ -67,6 +67,8 @@ sync_binlog=1
 sync_relay_log=1
 relay_log=relay-bin
 binlog_format=ROW
+gtid_mode=on
+enforce_gtid_consistency=on
 relay_log_recovery=on
 objectstore_lease_lock_timeout=0
 binlog_archive_replica=ON
