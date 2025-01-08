@@ -150,14 +150,14 @@ Status TransactionDB::Open(const Options &options,
   TransactionDBImpl *trans_db_impl = nullptr;
 
   if (FAILED(DB::Open(options, db_name, handles, &db_ptr).code())) {
-    SE_LOG(WARN, "Fail to open db", K(ret));
+    SE_LOG(ERROR, "Fail to open db", K(ret));
   } else if (IS_NULL(trans_db_impl = new TransactionDBImpl(
           db_ptr,
           TransactionDBImpl::ValidateTxnDBOptions(trans_db_options)))) {
     ret = Status::kMemoryLimit;
-    SE_LOG(WARN, "Fail to allocate memory for TransactionDBImpl", K(ret));
+    SE_LOG(ERROR, "Fail to allocate memory for TransactionDBImpl", K(ret));
   } else if (FAILED(trans_db_impl->Initialize().code())) {
-    SE_LOG(WARN, "Fail to initialize TransactionDBImpl", K(ret));
+    SE_LOG(ERROR, "Fail to initialize TransactionDBImpl", K(ret));
   } else {
     *trans_db = trans_db_impl;
   }
