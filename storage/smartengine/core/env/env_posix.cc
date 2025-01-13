@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "env/io_posix.h"
+#include "logger/log_module.h"
 #include "monitoring/iostats_context_imp.h"
 #include "monitoring/thread_status_updater.h"
 #include "objstore.h"
@@ -414,7 +415,7 @@ class PosixEnv : public Env
     while (SUCCED(ret) && (nullptr != (cursor_ptr = strchr(parent_ptr, '/')))) {
       if (parent_ptr != cursor_ptr) {
         *cursor_ptr = '\0';
-        do_mkdir(copy_path, mode);
+        ret = do_mkdir(copy_path, mode);
         *cursor_ptr = '/';
       }
       parent_ptr = cursor_ptr + 1;
@@ -762,9 +763,11 @@ private:
       //directory not exist, create it. EEXIST for race condition, more than one  thread create the same directory
       if (0 != mkdir(path, mode) && EEXIST != errno) {
         ret = Status::kIOError;
+        SE_LOG(WARN, "fail to create directory", K(ret), K(path), K(mode), K(errno), K(strerror(errno)));
       }
     } else if (!S_ISDIR(st.st_mode)) {
       ret = Status::kIOError;
+      SE_LOG(WARN, "the path is not a directory", K(ret), K(path));
     }
 
     return ret;

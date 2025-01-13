@@ -218,7 +218,7 @@ int DBImpl::prepare_recovery(const ColumnFamilyOptions &cf_options)
                                          immutable_db_options_.wal_dir,
                                          immutable_db_options_.db_paths,
                                          immutable_db_options_.persistent_cache_dir).code())) {
-    SE_LOG(INFO, "fail to set directories", K(ret), K_(dbname),
+    SE_LOG(WARN, "fail to set directories", K(ret), K_(dbname),
         "wal_dir", immutable_db_options_.wal_dir, "persist_cache_dir", immutable_db_options_.persistent_cache_dir);
   } else if (FAILED(env_->LockFile(FileNameUtil::lock_file_path(dbname_), &db_lock_).code())) {
     SE_LOG(INFO, "fail to lock file", K(ret), K_(dbname));
