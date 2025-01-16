@@ -241,6 +241,23 @@ void se_post_ddl(THD *thd);
 
 int se_checkpoint(THD *thd);
 
+bool se_ddse_dict_init(dict_init_mode_t dict_init_mode,
+                       uint version,
+                       List<const dd::Object_table> *ddse_tables,
+                       List<const Plugin_tablespace> *ddse_tablespaces);
+
+bool se_dict_recover(dict_recovery_mode_t dict_recovery_mode, uint version);
+
+bool se_dict_set_server_version();
+
+bool se_dict_get_server_version(uint *version);
+
+bool se_is_dict_readonly();
+
+void se_dict_register_dd_table_id(dd::Object_id table_id);
+
+void se_dict_cache_reset_tables_and_tablespaces();
+
 int se_create_backup_snapshot(THD *thd,
                               uint64_t *backup_snapshot_id,
                               std::string &binlog_file,

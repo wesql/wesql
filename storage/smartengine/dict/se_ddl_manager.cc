@@ -951,6 +951,15 @@ void SeDdlManager::cleanup()
   m_sequence.cleanup();
 }
 
+void SeDdlManager::reset()
+{
+  // TODO(Zhao Dongsheng): reset the table cache and repopulate it from data dictionary.
+  mysql_rwlock_wrlock(&m_rwlock);
+  m_ddl_hash.clear();
+  m_sequence.cleanup();
+  mysql_rwlock_unlock(&m_rwlock);
+}
+
 int SeDdlManager::scan_for_tables(Se_tables_scanner *const tables_scanner)
 {
   int ret = 0;

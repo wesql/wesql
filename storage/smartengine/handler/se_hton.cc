@@ -729,6 +729,76 @@ void se_post_engine_recover() {
 
 void se_post_ddl(THD *thd) { ddl_log_manager.post_ddl(thd); }
 
+/** The private data dictionary of smartengine stores in the internal system subtable. So there is no
+need to initialize the data dictionary table for smartengine, but it still neccesary to call this function
+to do some check for smartengine.*/
+bool se_ddse_dict_init(dict_init_mode_t dict_init_mode,
+                       uint version,
+                       List<const dd::Object_table> *ddse_tables,
+                       List<const Plugin_tablespace> *ddse_tablespaces)
+{
+  UNUSED(dict_init_mode);
+  UNUSED(version);
+  UNUSED(ddse_tables);
+  UNUSED(ddse_tablespaces);
+  se_assert(nullptr != ddse_tables && ddse_tables->is_empty());
+  se_assert(nullptr != ddse_tablespaces && ddse_tablespaces->is_empty());
+
+  return false;
+} 
+
+/** As mentioned int the comment of se_ddse_dict_init, the data dictionary of smartengine is stored in the internal
+system subtable, so there is no need to do extra recover the data dictionary for smartengine.*/
+bool se_dict_recover(dict_recovery_mode_t dict_recovery_mode, uint version)
+{
+  UNUSED(dict_recovery_mode);
+  UNUSED(version);
+  return false;
+}
+
+bool se_is_dict_readonly() { return false; }
+
+/**
+  Set server version to data dictionary. 
+  @return false if set server version succeed, true otherwise.
+*/
+bool se_dict_set_server_version()
+{
+  int ret = Status::kOk;
+
+  if (FAILED(dict_manager.set_server_version())) {
+    HANDLER_LOG(WARN, "SE: set server version failed", K(ret));
+  }
+
+  return Status::kOk != ret;
+}
+
+/**
+  Get server version from data dictionary.
+  @param version: the server version.
+  @return false if get server version succeed, true otherwise.
+*/
+bool se_dict_get_server_version(uint *version)
+{
+  int ret = Status::kOk;
+
+  if (FAILED(dict_manager.get_server_version(version))) {
+    HANDLER_LOG(WARN, "SE: get server version failed", K(ret));
+  }
+
+  return Status::kOk != ret;  
+}
+
+void se_dict_register_dd_table_id(dd::Object_id table_id)
+{
+  dict_manager.insert_dd_table_id(table_id);
+}
+
+void se_dict_cache_reset_tables_and_tablespaces()
+{
+  ddl_manager.reset();
+}
+
 int se_checkpoint(THD *thd) {
   int ret = Status::kOk;
   util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_instance();
