@@ -1,0 +1,78 @@
+--source include/have_debug.inc
+--source suite/smartengine/include/have_smartengine.inc
+
+# Save the initial number of concurrent sessions
+--source include/count_sessions.inc
+
+SET @debug_saved = @@global.debug;
+
+--echo
+START TRANSACTION;
+
+--echo
+CREATE TABLE t1(a INT PRIMARY KEY AUTO_INCREMENT, b VARCHAR(255)) engine = smartengine;
+
+--echo
+INSERT INTO t1(b) VALUES ('aaa');
+INSERT INTO t1(b) VALUES ('bbb');
+INSERT INTO t1(b) VALUES ('ccc');
+
+--echo
+COMMIT;
+
+###########################################################################
+
+--echo
+--echo # Check that inner transaction has different visibility scope than
+--echo # the outer transaction.
+
+--echo # Start READ ONLY transaction.
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+START TRANSACTION READ ONLY;
+
+--echo # SELECT to actually start a transaction.
+SELECT * FROM t1;
+
+--echo
+--echo # [another connection]
+--connect (con1,localhost,root,,)
+
+--echo
+START TRANSACTION;
+UPDATE t1 SET b = 'zzz' WHERE a = 2;
+COMMIT;
+--disconnect con1
+
+--echo
+--echo # [default connection]
+--connection default
+
+--echo
+--echo # SELECT in the outer transaction doesn't see the changes.
+SELECT * FROM t1;
+
+--echo
+--echo # SELECT in the inner transaction sees the changes.
+SET @@global.debug = '+d,use_attachable_trx';
+SELECT * FROM t1;
+SET @@global.debug = '-d,use_attachable_trx';
+
+--echo
+--echo # COMMIT the outer transaction.
+COMMIT;
+
+--echo # SELECT in the outer transaction now sees the changes.
+SELECT * FROM t1;
+COMMIT;
+
+###########################################################################
+
+--echo
+--echo # Cleanup.
+DROP TABLE t1;
+
+--echo
+SET @@global.debug = @debug_saved;
+
+# Wait till we reached the initial number of concurrent sessions
+--source include/wait_until_count_sessions.inc

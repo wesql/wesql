@@ -173,7 +173,7 @@ public:
 
   THD *get_thd() const { return m_thd; }
 
-  void set_params(int timeout_sec_arg, int max_row_locks_arg);
+  void set_params(THD *thd);
 
   void add_table_in_use() { ++m_n_mysql_tables_in_use; }
 

@@ -18,7 +18,9 @@
 
 #include "se_transaction.h"
 #include "ha_smartengine.h"
+#include "se_system_vars.h"
 #include "mysql/plugin.h"
+#include "sql/query_options.h"
 #include "se_hton.h"
 #include "se_transaction_list_walker.h"
 #include "dict/se_table.h"
@@ -205,11 +207,21 @@ int SeTransaction::set_status_error(THD *const thd,
   return HA_ERR_INTERNAL_ERROR;
 }
 
-void SeTransaction::set_params(int timeout_sec_arg, int max_row_locks_arg)
+void SeTransaction::set_params(THD *thd)
 {
-  m_timeout_sec = timeout_sec_arg;
-  m_max_row_locks = max_row_locks_arg;
-  set_lock_timeout(timeout_sec_arg);
+  if (thd_tx_is_dd_trx(thd)) {
+    // The attachable transaction for dd is must AC-RO-RC-NL
+    // (auto-commit, read-only, read-committed, no-locks)
+    assert(!my_core::thd_test_options(thd, OPTION_NOT_AUTOCOMMIT | OPTION_BEGIN));
+    assert(0 == get_lock_count());
+    assert(thd_tx_is_read_only(thd));
+    assert(ISO_READ_COMMITTED == thd_tx_isolation(thd));
+    m_max_row_locks = 0;
+  } else {
+    m_timeout_sec = se_thd_lock_wait_timeout(thd);
+    m_max_row_locks = se_thd_max_row_locks(thd);
+    set_lock_timeout(m_timeout_sec);
+  }
 }
 
 void SeTransaction::snapshot_created(const db::Snapshot *const snapshot)

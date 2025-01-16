@@ -50,12 +50,10 @@ SeTransaction *get_or_create_tx(THD *const thd)
     {
       tx = new SeTransactionImpl(thd);
     }
-    //tx->set_params(THDVAR(thd, lock_wait_timeout), THDVAR(thd, max_row_locks));
-    tx->set_params(se_thd_lock_wait_timeout(thd), se_thd_max_row_locks(thd));
+    tx->set_params(thd);
     tx->start_tx();
   } else {
-    //tx->set_params(THDVAR(thd, lock_wait_timeout), THDVAR(thd, max_row_locks));
-    tx->set_params(se_thd_lock_wait_timeout(thd), se_thd_max_row_locks(thd));
+    tx->set_params(thd);
     if (!tx->is_tx_started()) {
       tx->start_tx();
     }
