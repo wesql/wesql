@@ -2045,7 +2045,7 @@ int consensus_append_log_entry(MYSQL_BIN_LOG *binlog, ConsensusLogEntry &log,
 
   error = append_one_log_entry(log, binlog_file, add_to_cache, rli);
 
-  if (!error) error = binlog->flush_and_sync(false);
+  if (!error) error = binlog->flush_and_sync(true);
 
   if (error) goto err;
 
@@ -2102,7 +2102,7 @@ int consensus_append_multi_log_entries(MYSQL_BIN_LOG *binlog,
     *max_index = flush_index;
   }
 
-  if (!error) error = binlog->flush_and_sync(false);
+  if (!error) error = binlog->flush_and_sync(true);
 
   if (error) goto err;
 
