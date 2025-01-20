@@ -9337,7 +9337,7 @@ index 6c3dd85db23..8c43a67cd52 100644
          | HASH_SYM
          | HISTOGRAM_SYM
 diff --git a/sql/sys_vars.cc b/sql/sys_vars.cc
-index b16cb1830e4..8f4f68feae9 100644
+index b16cb1830e4..ed87c986aae 100644
 --- a/sql/sys_vars.cc
 +++ b/sql/sys_vars.cc
 @@ -93,11 +93,13 @@
@@ -9490,13 +9490,13 @@ index b16cb1830e4..8f4f68feae9 100644
 +    "binlog_archive_parallel_workers",
 +    "Number of worker threads for uploading binlog slice to "
 +    "object store in parallel",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive_parallel_workers),
++    PERSIST_AS_READONLY GLOBAL_VAR(opt_binlog_archive_parallel_workers),
 +    CMD_LINE(REQUIRED_ARG), VALID_RANGE(1, MTS_MAX_WORKERS), DEFAULT(4),
 +    BLOCK_SIZE(1));
 +
 +static Sys_var_bool Sys_binlog_archive_replica(
 +    "binlog_archive_replica", "Indicate if binlog archive replica enable.",
-+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive_replica), CMD_LINE(OPT_ARG),
++    PERSIST_AS_READONLY GLOBAL_VAR(opt_binlog_archive_replica), CMD_LINE(OPT_ARG),
 +    DEFAULT(false));
 +
 +static Sys_var_ulong Sys_binlog_archive_replica_flush_period(
