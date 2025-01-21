@@ -52,6 +52,9 @@ bool SeDictionaryManager::init(db::DB *const se_dict, const common::ColumnFamily
       m_key_slice_max_index_id =common::Slice(reinterpret_cast<char *>(m_key_buf_max_index_id), SeKeyDef::INDEX_NUMBER_SIZE);
       se_netbuf_store_index(m_key_buf_max_table_id, SeKeyDef::MAX_TABLE_ID);
       m_key_slice_max_table_id = common::Slice(reinterpret_cast<char *>(m_key_buf_max_table_id), SeKeyDef::INDEX_NUMBER_SIZE);
+      // TODO(Zhao Dongsheng): The function name se_netbuf_store_index is not good, it should be se_netbuf_store_uint32.
+      se_netbuf_store_index(m_key_buf_server_version, SeKeyDef::SERVER_VERSION);
+      m_key_slice_server_version = common::Slice(reinterpret_cast<char *>(m_key_buf_server_version), SeKeyDef::SERVER_VERSION_SIZE);
   }
   //resume_drop_indexes();
   //rollback_ongoing_index_creation();
@@ -489,6 +492,64 @@ SeIndexStats SeDictionaryManager::get_stats(GL_INDEX_ID gl_index_id) const
   }
 
   return SeIndexStats();
+}
+
+int SeDictionaryManager::set_server_version()
+{
+  std::unique_ptr<db::WriteBatch> batch;
+  common::Slice server_version_value_slice;
+  uint32_t server_version = MYSQL_VERSION_ID;
+  uchar value_buf[SeKeyDef::VERSION_SIZE + SeKeyDef::SERVER_VERSION_SIZE] = {0};
+
+  // Build server version value buf.
+  se_netbuf_store_uint16(value_buf, SeKeyDef::SERVER_VERSION_VERSION);
+  se_netbuf_store_uint32(value_buf + SeKeyDef::VERSION_SIZE, server_version);
+  server_version_value_slice = common::Slice((char *)value_buf, sizeof(value_buf));
+
+  // Put server version to data dictionary.
+  batch = begin();
+  batch->Put(m_system_cfh, m_key_slice_server_version, server_version_value_slice);
+  commit(batch.get(), true /* sync */);
+
+  return common::Status::kOk;
+}
+
+int SeDictionaryManager::get_server_version(uint *version)
+{
+  assert(nullptr != version);
+  int ret = common::Status::kOk;
+  std::string server_version_value;
+  uint16_t server_version_version = 0;
+  uint32_t server_version = 0;
+
+  if (FAILED(get_value(m_key_slice_server_version, &server_version_value).code())) {
+    HANDLER_LOG(WARN, "SE: get server version failed", K(ret));
+  } else {
+    // Parse server version version.
+    server_version_version = se_netbuf_to_uint16((const uchar *)server_version_value.c_str());
+    if (SeKeyDef::SERVER_VERSION_VERSION != server_version_version) {
+      ret = common::Status::kErrorUnexpected;
+      HANDLER_LOG(WARN, "SE: server version version mismatch", K(ret), K(server_version_version));
+    } else {
+      // Parse server version.
+      server_version = se_netbuf_to_uint32((const uchar *)server_version_value.c_str() + SeKeyDef::VERSION_SIZE);
+      *version = server_version;
+    }
+  }
+
+  return ret;
+}
+
+int SeDictionaryManager::insert_dd_table_id(dd::Object_id table_id)
+{
+  int ret = common::Status::kOk;
+
+  if (!(dd_table_ids.insert(table_id).second)) {
+    ret = common::Status::kErrorUnexpected;
+    HANDLER_LOG(ERROR, "SE: insert dd table id failed", K(ret), KE(table_id));
+  }
+
+  return ret;
 }
 
 } //namespace smartengine

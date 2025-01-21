@@ -124,6 +124,14 @@ static int se_init_func(void *const p)
   se_hton->post_engine_recover = se_post_engine_recover;
   se_hton->post_ddl = se_post_ddl;
 
+  se_hton->ddse_dict_init = se_ddse_dict_init;
+  se_hton->dict_recover = se_dict_recover;
+  se_hton->is_dict_readonly = se_is_dict_readonly;
+  se_hton->dict_set_server_version = se_dict_set_server_version;
+  se_hton->dict_get_server_version = se_dict_get_server_version;
+  se_hton->dict_register_dd_table_id = se_dict_register_dd_table_id;
+  se_hton->dict_cache_reset_tables_and_tablespaces = se_dict_cache_reset_tables_and_tablespaces;
+
   se_hton->checkpoint = se_checkpoint;
   se_hton->create_backup_snapshot = se_create_backup_snapshot;
   se_hton->incremental_backup = se_incremental_backup;

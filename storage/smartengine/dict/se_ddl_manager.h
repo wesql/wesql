@@ -105,6 +105,8 @@ public:
 
   void cleanup();
 
+  void reset();
+
   // find is designed to find SeTableDef from table cache or load SeTableDef
   // from dictionary.
   //

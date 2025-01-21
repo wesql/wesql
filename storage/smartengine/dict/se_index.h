@@ -303,6 +303,7 @@ public:
     CF_FLAG_SIZE = 4,
     PACKED_SIZE = 4, // one int
     TABLE_ID_SIZE = 8,
+    SERVER_VERSION_SIZE = 4,
   };
 
   // bit flags for combining bools when writing to disk
@@ -324,6 +325,7 @@ public:
     DDL_OPERATION_LOG = 9,  //DDL-LOG
     SYSTEM_CF_VERSION_INDEX = 10,
     MAX_TABLE_ID = 11,
+    SERVER_VERSION = 12,
     END_DICT_INDEX_ID = 255
   };
 
@@ -345,6 +347,7 @@ public:
     DDL_OPERATION_LOG_VERSION = 1,
     MAX_TABLE_ID_VERSION = 1,
     // Version for index stats is stored in IndexStats struct
+    SERVER_VERSION_VERSION = 1,
   };
 
   // Index info version.  Introduce newer versions when changing the

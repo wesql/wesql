@@ -29,20 +29,21 @@ class WriteBatchBase;
 } // namespace db
 
 /*
-   SeDictionaryManager manages how MySQL on se stores its
+  SeDictionaryManager manages how MySQL on SmartEngine stores its
   internal data dictionary.
-  SE stores data dictionary on dedicated system column family
-  named __system__. The system column family is used by se
+
+  SmartEngine stores data dictionary on dedicated system subtable
+  named __system__. The system subtable is used by SmartEngine
   internally only, and not used by applications.
 
-   Currently SE has the following data dictionary data models.
+  Currently SmartEngine has the following data dictionary data models:
 
   1. Table Name => internal index id mappings
   key: SeKeyDef::DDL_ENTRY_INDEX_START_NUMBER(0x1) + dbname.tablename
   value: version, {cf_id, index_id}*n_indexes_of_the_table
   version is 2 bytes. cf_id and index_id are 4 bytes.
 
-  2. internal cf_id, index id => index information
+  2. Internal cf_id, index id => index information
   key: SeKeyDef::INDEX_INFO(0x2) + cf_id + index_id
   value: version, index_type, kv_format_version
   index_type is 1 byte, version and kv_format_version are 2 bytes.
@@ -73,7 +74,7 @@ class WriteBatchBase;
   key: SeKeyDef::DDL_CREATE_INDEX_ONGOING(0x8) + cf_id + index_id
   value: version
 
-  Data dictionary operations are atomic inside se. For example,
+  Data dictionary operations are atomic inside SmartEngine. For example,
   when creating a table with two indexes, it is necessary to call Put
   three times. They have to be atomic. SeDictionaryManager has a wrapper function
   begin() and commit() to make it easier to do atomic operations.
@@ -91,6 +92,11 @@ private:
 
   uchar m_key_buf_max_table_id[SeKeyDef::INDEX_NUMBER_SIZE] = {0};
   common::Slice m_key_slice_max_table_id;
+
+  uchar m_key_buf_server_version[SeKeyDef::SERVER_VERSION_SIZE] = {0};
+  common::Slice m_key_slice_server_version;
+
+  std::unordered_set<dd::Object_id> dd_table_ids;
 
   static void dump_index_id(uchar *const netbuf,
                             SeKeyDef::DATA_DICT_TYPE dict_type,
@@ -147,9 +153,7 @@ public:
 
   /* Functions for fast CREATE/DROP TABLE/INDEX */
   // Kept for upgrading from old version
-  void
-  get_ongoing_index_operation(std::unordered_set<GL_INDEX_ID> *gl_index_ids,
-                              SeKeyDef::DATA_DICT_TYPE dd_type) const;
+  void get_ongoing_index_operation(std::unordered_set<GL_INDEX_ID> *gl_index_ids, SeKeyDef::DATA_DICT_TYPE dd_type) const;
 
   bool get_max_index_id(uint32_t *const index_id) const;
 
@@ -166,6 +170,12 @@ public:
   void add_stats(db::WriteBatch *const batch, const std::vector<SeIndexStats> &stats) const;
 
   SeIndexStats get_stats(GL_INDEX_ID gl_index_id) const;
+
+  int set_server_version();
+
+  int get_server_version(uint *version);
+
+  int insert_dd_table_id(dd::Object_id table_id);
 };
 
 } //namespace smartengine
