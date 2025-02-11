@@ -26,6 +26,7 @@
 #include "mysql/plugin.h"
 #include "debug_sync.h"
 #include "sql_class.h"
+#include "sql/plugin_table.h"
 #include "query_options.h"
 #include "ha_smartengine.h"
 #include "db/db_impl.h"
@@ -743,6 +744,18 @@ bool se_ddse_dict_init(dict_init_mode_t dict_init_mode,
   UNUSED(ddse_tablespaces);
   se_assert(nullptr != ddse_tables && ddse_tables->is_empty());
   se_assert(nullptr != ddse_tablespaces && ddse_tablespaces->is_empty());
+
+  // fake dd tablespace "mysql" for smartengine
+  const size_t len = 30 + sizeof("id=;flags=;server_version=;space_version=;state=normal");
+  const char *fmt = "id=%u;flags=%u;server_version=%u;space_version=%u;state=normal";
+  static char se_private_data_dd[len];
+  snprintf(se_private_data_dd, len, fmt, 8, 0, 0, 0);
+  static Plugin_tablespace dd_space((const char *)"mysql", "", 
+                                    se_private_data_dd, "", 
+                                    (const char *)"SMARTENGINE");
+  // static Plugin_tablespace::Plugin_tablespace_file dd_file((const char *)"mysql.ibd", "");
+  // dd_space.add_file(&dd_file);
+  ddse_tablespaces->push_back(&dd_space);
 
   return false;
 } 

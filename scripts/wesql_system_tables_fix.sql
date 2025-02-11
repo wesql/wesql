@@ -1,6 +1,6 @@
 use mysql;
 
-set default_storage_engine=InnoDB;
+set default_storage_engine=SMARTENGINE;
 
 -- Consensus replication
 SET @have_raft_replication= (select count(plugin_name) from information_schema.plugins where plugin_name='raft_replication');

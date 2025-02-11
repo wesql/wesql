@@ -18,7 +18,7 @@ SET FOREIGN_KEY_CHECKS= 1;
 
 # Added sql_mode elements and making it as SET, instead of ENUM
 
-set default_storage_engine=InnoDB;
+set default_storage_engine=SMARTENGINE;
 
 -- Serverless
 SET @cmd = "ALTER TABLE gtid_executed ENGINE = smartengine;";

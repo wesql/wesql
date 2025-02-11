@@ -139,6 +139,8 @@ public:
 
   virtual int index_next(uchar *const buf) override;
 
+  virtual int index_next_same(uchar *buf, const uchar *key, uint length) override;
+
   virtual int index_prev(uchar *const buf) override;
 
   virtual int index_first(uchar *const buf) override;
