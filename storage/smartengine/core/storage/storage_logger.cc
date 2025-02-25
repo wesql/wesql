@@ -21,6 +21,7 @@
 #include "db/version_set.h"
 #include "logger/log_module.h"
 #include "objstore/snapshot_release_lock.h"
+#include "objstore/objstore_snapshot.h"
 #include "storage/extent_meta_manager.h"
 #include "util/file_reader_writer.h"
 #include "util/file_name.h"
@@ -772,6 +773,23 @@ int StorageLogger::flush_large_log_entry(TransContext &trans_ctx, ManifestRedoLo
   return ret;
 }
 
+int StorageLogger::load_latest_backup_snapshot()
+{
+  int ret = Status::kOk;
+  GlobalContext *global_ctx = nullptr;
+  if (!is_inited_) {
+    ret = Status::kNotInit;
+    SE_LOG(WARN, "StorageLogger should been inited first", K(ret));
+  } else if (!env_->IsObjectStoreInited()) {
+    ret = Status::kNotSupported;
+    SE_LOG(WARN, "object store not inited", K(ret));
+  } else if (FAILED(version_set_->load_latest_backup_snapshot())) {
+    SE_LOG(WARN, "fail to load latest backup snapshot", K(ret));
+  }
+  
+  return ret;
+}
+
 int StorageLogger::load_checkpoint(memory::ArenaAllocator &arena)
 {
   int ret = Status::kOk;
@@ -920,12 +938,6 @@ int StorageLogger::replay_after_ckpt(memory::ArenaAllocator &arena)
                   if (FAILED(ExtentMetaManager::get_instance().replay(log_entry_header.log_entry_type_, log_data, log_len))) {
                     SE_LOG(WARN, "fail to replay extent meta log", K(ret), K(log_entry_header));
                   }
-                } else if (is_backup_snapshot_log(log_entry_header.log_entry_type_)) {
-                  if (FAILED(version_set_->replay_backup_snapshot_log(log_entry_header.log_entry_type_,
-                                                                      log_data,
-                                                                      log_len))) {
-                    SE_LOG(WARN, "fail to replay backup snapshot log", K(ret), K(log_entry_header));
-                  }
                 } else {
                   ret = Status::kNotSupported;
                   SE_LOG(WARN, "not support log type", K(ret), K(log_entry_header));
@@ -947,34 +959,6 @@ int StorageLogger::replay_after_ckpt(memory::ArenaAllocator &arena)
       checkpoint_name = FileNameUtil::checkpoint_file_path(db_name_, log_file_number);
     }
     log_file_number_ = log_file_number - 1;
-  }
-
-  if (SUCCED(ret) && env_->IsObjectStoreInited()) {
-    objstore::ObjectStore *objstore = nullptr;
-    std::string_view objstore_bucket = env_->GetObjectStoreBucket();
-    const std::string &cluster_objstore_id = env_->GetClusterObjstoreId();
-    if (FAILED(env_->GetObjectStore(objstore).code())) {
-      SE_LOG(WARN, "fail to get object store", K(ret));
-    } else {
-      std::string err_msg;
-      BackupSnapshotMap *backup_snapshots = &BackupSnapshotImpl::get_instance()->get_backup_snapshot_map();
-      uint64_t auto_increment_id_for_recover = backup_snapshots->get_max_auto_increment_id() + 1;
-      if (FAILED(objstore::tryBackupRecoveringLock(auto_increment_id_for_recover,
-                                                   objstore,
-                                                   objstore_bucket,
-                                                   cluster_objstore_id,
-                                                   err_msg))) {
-        SE_LOG(WARN, "fail to try backup recovering lock", K(ret), K(err_msg));
-      } else if (FAILED(objstore::removeObsoletedBackupStatusLockFiles(objstore,
-                                                                       objstore_bucket,
-                                                                       cluster_objstore_id,
-                                                                       auto_increment_id_for_recover,
-                                                                       err_msg))) {
-        SE_LOG(WARN, "fail to remove obsoleted backup status lock files", K(ret), K(err_msg));
-      } else {
-        backup_snapshots->save_auto_increment_id_for_recover(auto_increment_id_for_recover);
-      }
-    }
   }
 
   SE_LOG(SYSTEM, "success to replay after checkpoint", K_(log_file_number));

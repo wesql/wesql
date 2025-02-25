@@ -25,7 +25,9 @@ SnapshotImpl::SnapshotImpl() : index_id_(-1), number_(0), ref_(0), backup_ref_(0
 SnapshotImpl::~SnapshotImpl()
 {
 }
+
 int SnapshotImpl::init(int64_t index_id,
+                       int64_t meta_snapshot_id,
                        storage::ExtentLayerVersion **extent_layer_versions,
                        common::SequenceNumber seq_num)
 {
@@ -36,6 +38,7 @@ int SnapshotImpl::init(int64_t index_id,
     SE_LOG(WARN, "invalid argument", K(ret), KP(extent_layer_versions));
   } else {
     index_id_ = index_id;
+    meta_snapshot_id_ = meta_snapshot_id;
     number_ = seq_num;
     for (int64_t level = 0; level < storage::MAX_TIER_COUNT; ++level) {
       extent_layer_versions_[level] = extent_layer_versions[level];
@@ -87,18 +90,6 @@ int64_t SnapshotImpl::get_total_extent_count() const
     total_extent_count += extent_layer_versions_[level]->get_total_extent_size();
   }
   return total_extent_count;
-}
-
-int SnapshotImpl::recover_extent_space()
-{
-  int ret = Status::kOk;
-  for (int64_t level = 0; SUCCED(ret) && level < storage::MAX_TIER_COUNT; ++level) {
-    if (FAILED(extent_layer_versions_[level]->recover_reference_extents(true))) {
-      SE_LOG(WARN, "fail to recover extent space", K(ret), K(level));
-    }
-  }
-
-  return ret;
 }
 
 int SnapshotImpl::extent_layer_versions_serialize(char *buf, int64_t buf_len, int64_t &pos) const {

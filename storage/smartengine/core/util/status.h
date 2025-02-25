@@ -137,6 +137,20 @@ class Status {
     return Status(kInvalidArgument, msg);
   }
 
+  static Status Unexpected(const Slice &msg, const Slice &msg2 = Slice()) {
+    return Status(kErrorUnexpected, msg, msg2);
+  }
+  static Status Unexpected(SubCode msg = kNone) {
+    return Status(kErrorUnexpected, msg);
+  }
+
+  static Status ObjectStoreError(const Slice &msg, const Slice &msg2 = Slice()) {
+    return Status(kObjStoreError, msg, msg2);
+  }
+  static Status ObjectStoreError(SubCode msg = kNone) {
+    return Status(kObjStoreError, msg);
+  }
+
   static Status IOError(const Slice &msg, const Slice &msg2 = Slice()) {
     return Status(kIOError, msg, msg2);
   }

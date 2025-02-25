@@ -1440,19 +1440,28 @@ int StorageManager::update_current_meta_snapshot(ExtentLayerVersion **new_extent
 
     if (SUCCED(ret)) {
       int64_t index_id = IS_NOTNULL(owner_) ? owner_->GetID() : -1;
+      int64_t meta_snapshot_id = -1;
 
       if (IS_NULL(new_current_meta = MOD_NEW_OBJECT(ModId::kStorageMgr, db::SnapshotImpl))) {
         ret = Status::kMemoryLimit;
         SE_LOG(WARN, "fail to allocate memory for new current meta", K(ret));
-      } else if (FAILED(new_current_meta->init(index_id, extent_layer_versions_, ++meta_version_))) {
-        SE_LOG(WARN, "fail to init new current meta", K(ret));
-      } else {
-        if (nullptr != current_meta_) {
-          release_meta_snapshot_unsafe(current_meta_);
+      } else if (GlobalContext::get_env()->IsObjectStoreInited()) {
+        if (FAILED(GlobalContext::get_env()->AllocMetasnapshotId(meta_snapshot_id).code())) {
+          SE_LOG(WARN, "fail to alloc meta snapshot id", K(ret));
         }
-        current_meta_ = new_current_meta;
-        accquire_meta_snapshot_unsafe();
-        calc_extent_stats_unsafe();
+      }
+
+      if (SUCCED(ret)) {
+        if (FAILED(new_current_meta->init(index_id, meta_snapshot_id, extent_layer_versions_, ++meta_version_))) {
+          SE_LOG(WARN, "fail to init new current meta", K(ret));
+        } else {
+          if (nullptr != current_meta_) {
+            release_meta_snapshot_unsafe(current_meta_);
+          }
+          current_meta_ = new_current_meta;
+          accquire_meta_snapshot_unsafe();
+          calc_extent_stats_unsafe();
+        }
       }
     }
   }
@@ -1824,7 +1833,7 @@ int StorageManager::recover_extent_space()
       if (IS_NULL(current_extent_layer_version = extent_layer_versions_[level])) {
         ret = Status::kErrorUnexpected;
         SE_LOG(WARN, "unexpected error, extent meta must not nullptr", K(ret), K(level));
-      } else if (FAILED(current_extent_layer_version->recover_reference_extents(false))) {
+      } else if (FAILED(current_extent_layer_version->recover_reference_extents())) {
         SE_LOG(WARN, "fail to recover reference extents", K(ret), K(level));
       }
     }

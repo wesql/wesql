@@ -95,8 +95,11 @@ int DBImpl::run_one_flush_task(ColumnFamilyData *sub_table,
                                BaseFlush* flush_job,
                                JobContext& context,
                                std::vector<SequenceNumber> &flushed_seqs) {
-  int ret = Status::kOk;
   mutex_.AssertHeld();
+  int ret = Status::kOk;
+  GlobalContext *global_ctx = nullptr;
+  objstore::ObjStoreSnapshotOperator *snapshot_operator = nullptr;
+  int64_t metasnapshot_id = 0;
   SeEvent event = storage::INVALID_EVENT;
   TaskType task_type = flush_job->get_task_type();
   if (TaskType::DUMP_TASK == task_type) {
@@ -132,12 +135,12 @@ int DBImpl::run_one_flush_task(ColumnFamilyData *sub_table,
       if (SUCCED(ret) && FAILED(flush_job->run(mtables))) {
         SE_LOG(WARN, "failed to run flush task", K(ret));
       }
-      mutex_.Lock();
-      if (FAILED(flush_job->after_run_flush(mtables, ret))) {
+      if (FAILED(flush_job->after_run_flush(mtables, ret, &mutex_))) {
         SE_LOG(WARN, "failed to do func after run flush", K(ret));
       } else if (FAILED(StorageLogger::get_instance().commit(dummy_log_seq))) {
         SE_LOG(WARN, "fail to commit flush trans", K(ret));
       }
+      mutex_.Lock();
     }
   }
   return ret;

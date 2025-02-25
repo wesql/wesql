@@ -126,7 +126,6 @@ static int se_init_func(void *const p)
 
   se_hton->checkpoint = se_checkpoint;
   se_hton->create_backup_snapshot = se_create_backup_snapshot;
-  se_hton->incremental_backup = se_incremental_backup;
   se_hton->cleanup_tmp_backup_dir = se_cleanup_tmp_backup_dir;
   se_hton->release_backup_snapshot = se_release_backup_snapshot;
   se_hton->list_backup_snapshots = se_list_backup_snapshots;
@@ -402,13 +401,18 @@ static int se_init_func(void *const p)
   }
 
   // remove hard links in backup tmp dir if exists
-  if (FAILED(BackupSnapshot::get_instance()->init(se_db))) {
-    sql_print_error("SE: Failed to init backup instance.");
+  if (FAILED(BackupSnapshot::get_objstore_instance()->init(se_db))) {
+    sql_print_error("SE: Failed to init object store mode backup instance.");
+    DBUG_RETURN(HA_EXIT_FAILURE);
+  }
+  // remove hard links in backup tmp dir if exists
+  if (FAILED(BackupSnapshot::get_file_instance()->init(se_db))) {
+    sql_print_error("SE: Failed to init file mode backup instance.");
     DBUG_RETURN(HA_EXIT_FAILURE);
   }
 
-    // NO_LINT_DEBUG
-    sql_print_information("SE: global statistics using %s indexer", STRINGIFY_ARG(SE_INDEXER));
+  // NO_LINT_DEBUG
+  sql_print_information("SE: global statistics using %s indexer", STRINGIFY_ARG(SE_INDEXER));
 #if defined(HAVE_SCHED_GETCPU)
   if (sched_getcpu() == -1) {
     // NO_LINT_DEBUG

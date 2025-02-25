@@ -77,18 +77,6 @@ struct CheckpointBlockHeader
   DECLARE_TO_STRING()
 };
 
-struct BackupSnapshotInfo {
-  int64_t backup_id_{0};
-  int64_t auto_increment_id_{0};
-  int64_t meta_snapshot_count_{0};
-  int64_t meta_snapshot_meta_block_count_{0};
-  int64_t meta_snapshot_meta_block_offset_{0};
-};
-
-constexpr size_t kMaxBackupSnapshotReservedNum = 50000;
-
-static_assert(db::BackupSnapshotMap::kMaxBackupSnapshotNum <= kMaxBackupSnapshotReservedNum);
-
 constexpr int64_t CHECKPOINT_HEADER_SIZE = 2 * 1024 * 1024;
 
 struct CheckpointHeader
@@ -101,8 +89,6 @@ struct CheckpointHeader
   int64_t sub_table_meta_block_count_{0};
   int64_t extent_meta_block_offset_{0};
   int64_t sub_table_meta_block_offset_{0};
-  int64_t backup_snapshots_count_{0};
-  BackupSnapshotInfo backup_snapshot_info_[kMaxBackupSnapshotReservedNum];
   int64_t reserve_[2]{0, 0};
 
   CheckpointHeader() {}
@@ -169,6 +155,7 @@ private:
   int deconstruct_trans_context(TransContext *trans_ctx);
   int flush_log(TransContext &trans_ctx, int64_t *log_seq_num = nullptr);
   int flush_large_log_entry(TransContext &trans_ctx, ManifestRedoLogType log_type, ManifestLogEntry &log_entry);
+  int load_latest_backup_snapshot();
   int load_checkpoint(memory::ArenaAllocator &arena);
   int replay_after_ckpt(memory::ArenaAllocator &arena);
   //trigger write checkpoint by internal condition

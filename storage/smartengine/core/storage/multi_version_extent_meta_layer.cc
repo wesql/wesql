@@ -740,7 +740,7 @@ int ExtentLayerVersion::get(const common::Slice &key,
   return ret;
 }
 
-int ExtentLayerVersion::recover_reference_extents(bool for_snapshot)
+int ExtentLayerVersion::recover_reference_extents()
 {
   int ret = Status::kOk;
   ExtentLayer *extent_layer = nullptr;
@@ -757,16 +757,8 @@ int ExtentLayerVersion::recover_reference_extents(bool for_snapshot)
   }
 
   if (nullptr != dump_extent_layer_) {
-    if (for_snapshot) {
-      // for extent layer version in a snapshot structure(SnapshotImpl), we can not transform dump extent layer to level
-      // 0, just mark the extents in dump extent layer as used.
-      if (FAILED(dump_extent_layer_->recover_reference_extents())) {
-        SE_LOG(WARN, "fail to recover reference extents for dump extent layer", K(ret), K_(level));
-      }
-    } else {
-      ret = Status::kErrorUnexpected;
-      SE_LOG(WARN, "unexpected error, dump extent layer should transform to level 0", K(ret), K_(level));
-    }
+    ret = Status::kErrorUnexpected;
+    SE_LOG(WARN, "unexpected error, dump extent layer should transform to level 0", K(ret), K_(level));
   }
 
   return ret;

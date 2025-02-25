@@ -26,6 +26,7 @@
 #include "db/job_context.h"
 #include "db/version_set.h"
 #include "monitoring/thread_status_util.h"
+#include "objstore/objstore_snapshot.h"
 #include "options/options_helper.h"
 #include "storage/extent_space_manager.h"
 #include "storage/storage_log_entry.h"
@@ -775,6 +776,35 @@ int ColumnFamilyData::recover_m0_to_l0() {
   return ret;
 }
 
+int ColumnFamilyData::write_objstore_meta_snapshot() {
+  int ret = Status::kOk;
+  SnapshotImpl *current_snapshot = nullptr;
+  int64_t metasnapshot_id = 0;
+  smartengine::objstore::ObjStoreSnapshotOperator *snapshot_operator = nullptr;
+  if (IS_NULL(GlobalContext::get_env())) {
+    ret = Status::kErrorUnexpected;
+    SE_LOG(WARN, "global env is null", K(ret));
+  } else if (IS_FALSE(GlobalContext::get_env()->IsObjectStoreInited())) {
+    // for file mode, no need to write meta snapshot
+  } else if (FAILED(GlobalContext::get_env()->GetSnapshotOperator(snapshot_operator).code())) {
+    SE_LOG(WARN, "failed to get snapshot operator", K(ret));
+  } else if (IS_NULL(snapshot_operator)) {
+    ret = Status::kErrorUnexpected;
+    SE_LOG(WARN, "snapshot operator is null", K(ret));
+  } else if (IS_NULL(current_snapshot = reinterpret_cast<db::SnapshotImpl*>(get_meta_snapshot()))) {
+    ret = Status::kErrorUnexpected;
+    SE_LOG(WARN, "unexpected error, current snapshot must not be nullptr", K(ret));
+  } else if (current_snapshot->meta_snapshot_id_ == -1) {
+    ret = Status::kErrorUnexpected;
+    SE_LOG(WARN, "unexpected error, current snapshot id must not be -1", K(ret));
+  } else if (FAILED(snapshot_operator->write_meta_snapshot(current_snapshot->meta_snapshot_id_, current_snapshot))) {
+    SE_LOG(WARN, "failed to write meta snapshot", K(ret));
+  } else {
+    release_meta_snapshot(current_snapshot);
+  }
+  return ret;
+}
+
 int ColumnFamilyData::apply_change_info(storage::ChangeInfo &change_info,
                                       bool write_log,
                                       bool is_replay,
@@ -814,6 +844,8 @@ int ColumnFamilyData::apply_change_info(storage::ChangeInfo &change_info,
   if (SUCCED(ret)) {
     if (FAILED(storage_manager_.apply(change_info, is_replay))) {
       SE_LOG(WARN, "fail to apply change info to storage manager", K(ret));
+    } else if (write_log && FAILED(write_objstore_meta_snapshot())) {
+      SE_LOG(WARN, "fail to write object store meta snapshot", K(ret));
     } else if (nullptr != flushed_memtables) {
       // update sst_largest_seq_ (for row_cache)
       SE_LOG(INFO, "ROW_CACHE:update sst_largest_seq for row cache start", K(sst_largest_seq_), K(GetID()));

@@ -26,6 +26,7 @@
 #include "db/dbformat.h"
 #include "logger/log_module.h"
 #include "memtable/memtable_list.h"
+#include "monitoring/instrumented_mutex.h"
 #include "monitoring/iostats_context_imp.h"
 #include "monitoring/thread_status_util.h"
 #include "memory/page_arena.h"
@@ -255,11 +256,13 @@ int BaseFlush::write_level0(MiniTables &mini_tables)
   return ret;
 }
 
-int BaseFlush::after_run_flush(MiniTables &mtables, int ret) {
+int BaseFlush::after_run_flush(MiniTables &mtables, int ret, monitor::InstrumentedMutex *mutex) {
   //get the Gratest recovery point
   MemTable* last_mem = mems_.size() > 0 ? mems_.back() : nullptr;
   RecoveryPoint recovery_point;
 
+  // cfd_->imm() need be protected by db mutex? if not, this lock can be removed
+  mutex->Lock();
   if (SUCCED(ret)) {
     if (IS_NULL(last_mem)
         || IS_NULL(mtables.change_info_)
@@ -290,21 +293,26 @@ int BaseFlush::after_run_flush(MiniTables &mtables, int ret) {
     } else {
       FLUSH_LOG(ERROR, "unexpected error, can not abort", K(ret), K(cfd_->GetID()));
     }
-  } else if (TaskType::DUMP_TASK == job_context_.task_type_) {
-    if (FAILED(cfd_->apply_change_info(*(mtables.change_info_), true /*write_log*/, false /*is_replay*/, &recovery_point))) {
+  } 
+  mutex->Unlock();
+
+  if (SUCCED(ret)) {
+    if (TaskType::DUMP_TASK == job_context_.task_type_) {
+      if (FAILED(cfd_->apply_change_info(*(mtables.change_info_), true /*write_log*/, false /*is_replay*/, &recovery_point))) {
+        StorageLogger::get_instance().abort();
+        FLUSH_LOG(WARN, "failed to apply change info for dump", K(ret));
+      } else {
+        last_mem->set_temp_min_prep_log(UINT64_MAX);
+      }
+      last_mem->set_dump_in_progress(false);
+    } else if (FAILED(cfd_->apply_change_info(*(mtables.change_info_),
+        true /*write_log*/, false /*is_replay*/, &recovery_point, 
+        &mems_, &job_context_.memtables_to_free))) {
       StorageLogger::get_instance().abort();
-      FLUSH_LOG(WARN, "failed to apply change info for dump", K(ret));
+      FLUSH_LOG(WARN, "fail to apply change info", K(ret));
     } else {
-      last_mem->set_temp_min_prep_log(UINT64_MAX);
+      // do nothing
     }
-    last_mem->set_dump_in_progress(false);
-  } else if (FAILED(cfd_->apply_change_info(*(mtables.change_info_),
-      true /*write_log*/, false /*is_replay*/, &recovery_point, 
-      &mems_, &job_context_.memtables_to_free))) {
-    StorageLogger::get_instance().abort();
-    FLUSH_LOG(WARN, "fail to apply change info", K(ret));
-  } else {
-    // do nothing
   }
   if (TaskType::FLUSH_LEVEL1_TASK != job_context_.task_type_) {
     // flush level1 not alloc change_info from arena_

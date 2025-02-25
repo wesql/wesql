@@ -168,7 +168,10 @@ int ExtentWriter::init(const ExtentWriterArgs &args)
     block_info_.set_probe_num(BloomFilter::DEFAULT_PROBE_NUM);
     block_info_.set_per_key_bits(BloomFilter::DEFAULT_PER_KEY_BITS);
     change_info_ = args.change_info_;
-    prefix_ = util::make_data_prefix(args.cluster_id_, table_schema_.get_database_name(), table_schema_.get_index_id());
+    // prefix_ = util::make_data_prefix(args.cluster_id_, table_schema_.get_database_name(), table_schema_.get_index_id());
+    // TODO(ljc): use repo_id instead of cluster_id
+    std::string repo_id = args.cluster_id_.substr(0, args.cluster_id_.find("/"));
+    prefix_ = util::make_data_prefix(repo_id);
 
     is_inited_ = true;
   }

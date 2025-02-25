@@ -246,8 +246,6 @@ int se_create_backup_snapshot(THD *thd,
                               std::string &binlog_file,
                               uint64_t *binlog_file_offset);
 
-int se_incremental_backup(THD *thd);
-
 int se_cleanup_tmp_backup_dir(THD *thd);
 
 int se_release_backup_snapshot(THD *thd, uint64_t backup_snapshot_id);

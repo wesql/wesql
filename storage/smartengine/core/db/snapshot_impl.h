@@ -26,8 +26,9 @@ class SnapshotImpl : public Snapshot {
 public:
   SnapshotImpl();
   virtual ~SnapshotImpl() override;
-  int init(int64_t index_id, storage::ExtentLayerVersion **extent_layer_versions, common::SequenceNumber seq_num);
-  void destroy(util::autovector<storage::ExtentLayerVersion *> &recyle_extent_layer_versions);
+  int init(int64_t index_id, int64_t meta_snapshot_id, storage::ExtentLayerVersion **extent_layer_versions, common::SequenceNumber seq_num);
+  virtual void destroy(util::autovector<storage::ExtentLayerVersion *> &recyle_extent_layer_versions);
+
   bool ref(int32_t *old_ref);
   bool unref(int32_t *old_ref);
   bool backup_ref();
@@ -45,8 +46,6 @@ public:
   virtual common::SequenceNumber GetSequenceNumber() const override {
     return number_;
   }
-
-  virtual int recover_extent_space() override;
 
   inline uint32_t pos() const { return pos_; }
 
@@ -70,6 +69,7 @@ private:
 
 public:
   int64_t index_id_;      // const after creation
+  int64_t meta_snapshot_id_; // const after creation, for object store mode only
   SequenceNumber number_; // const after creation
   ExtentLayerVersion *extent_layer_versions_[storage::MAX_TIER_COUNT];
 

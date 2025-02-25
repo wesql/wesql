@@ -29,20 +29,30 @@ namespace db
 namespace util
 {
 
+struct BackupSnapshotInfo {
+  static const int64_t BACKUP_SNAPSHOT_INFO_VERSION = 1;
+  BackupSnapshotId backup_id_;
+  int64_t last_manifest_file_num_;
+  uint64_t last_manifest_file_size_;
+  uint64_t last_wal_file_num_;
+  std::unordered_map<int64_t, int64_t> meta_snapshot_ids_; // index_id -> meta_snapshot_id
+
+  DECLARE_SERIALIZATION();
+  DECLARE_TO_STRING();
+};
+
 class BackupSnapshotImpl : public BackupSnapshot
 {
 public:
   virtual ~BackupSnapshotImpl() override;
-
-  static BackupSnapshotImpl *get_instance();
-
-  void destroy();
 
   virtual int lock_instance() override;
   virtual int unlock_instance() override;
   virtual int lock_one_step() override;
   virtual int unlock_one_step() override;
   virtual int check_lock_status() override;
+
+  virtual bool is_objstore_mode() const { return false; }
 
 public:
   // Check backup job and do init
@@ -51,20 +61,20 @@ public:
   virtual int create_tmp_dir(db::DB *db) override;
   // Cleanup backup tmp dir
   virtual int cleanup_tmp_dir(db::DB *db) override;
-  // Get backup status
-  virtual int get_backup_status(const char *&status) override;
-  // Set backup status
-  virtual int set_backup_status(const char *status) override;
+
+  // for file mode only,
   // Do a manual checkpoint and flush memtable
   virtual int do_checkpoint(db::DB *db, const char *backup_tmp_dir_path = nullptr) override;
   // Acquire snapshots and hard-link/copy manifest files
   virtual int accquire_backup_snapshot(db::DB *db,
                                        BackupSnapshotId *backup_id,
                                        db::BinlogPosition &binlog_pos) override;
+
   // Parse incremental manifest files and record the modified extent ids
   virtual int record_incremental_extent_ids(db::DB *db) override;
-  // Release an old backup snapshot
-  virtual int release_old_backup_snapshot(db::DB *db, BackupSnapshotId backup_id) override;
+
+  // Release a backup snapshot
+  virtual int release_objstore_backup_snapshot(db::DB *db, BackupSnapshotId backup_id) override;
   // Release the current backup snapshot
   virtual int release_current_backup_snapshot(db::DB *db) override;
   // List all backup snapshots and return the backup ids
@@ -75,13 +85,15 @@ public:
 public:
   int try_exclusive_lock();
   int unlock_exclusive_lock();
-  db::BackupSnapshotMap &get_backup_snapshot_map() { return backup_snapshot_map_; }
 
 private:
   BackupSnapshotImpl();
 
+  friend class BackupSnapshotFileImpl;
+  friend class BackupSnapshotObjStoreImpl;
+
 private:
-  int link_sst_files(db::DB *db);
+  // int link_sst_files(db::DB *db);
 
   template <typename CurrentFileChecker, typename DataFileChecker, typename WalFileChecker>
   int link_files(db::DB *db,
@@ -123,9 +135,31 @@ private:
   std::atomic<BackupSnapshotId> cur_backup_id_;
   // current backup snapshot(snapshots of all subtables)
   db::MetaSnapshotSet cur_meta_snapshots_;
-  // every backup snapshot has a map of meta snapshots(snapshots of all subtables)
-  db::BackupSnapshotMap backup_snapshot_map_;
   std::string backup_tmp_dir_path_;
+};
+
+class BackupSnapshotFileImpl : public BackupSnapshotImpl {
+public:
+  virtual ~BackupSnapshotFileImpl() override;
+
+  static BackupSnapshotFileImpl *get_instance();
+
+  virtual bool is_objstore_mode() const override { return false; }
+
+private:
+  BackupSnapshotFileImpl();
+};
+
+class BackupSnapshotObjStoreImpl : public BackupSnapshotImpl {
+public:
+  virtual ~BackupSnapshotObjStoreImpl() override;
+
+  static BackupSnapshotObjStoreImpl *get_instance();
+
+  virtual bool is_objstore_mode() const override { return true; }
+
+private:
+  BackupSnapshotObjStoreImpl();
 };
 
 struct SSTFileChecker
@@ -249,4 +283,4 @@ int BackupSnapshotImpl::link_dir_files(db::DB *db, const std::string &dir_path,
 }
 
 } // namespace util
-} // namespace xengien
+} // namespace smartengine
