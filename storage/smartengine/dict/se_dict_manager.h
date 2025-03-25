@@ -118,7 +118,7 @@ public:
   /* Raw se operations */
   std::unique_ptr<db::WriteBatch> begin() const;
 
-  int commit(db::WriteBatch *const batch, const bool &sync = true) const;
+  int commit(db::WriteBatch *batch, const bool &sync = true) const;
 
   common::Status get_value(const common::Slice &key, std::string *const value) const;
 
@@ -157,7 +157,7 @@ public:
 
   bool get_max_index_id(uint32_t *const index_id) const;
 
-  bool update_max_index_id(db::WriteBatch *const batch, const uint32_t &index_id) const;
+  int update_max_index_id(db::WriteBatch *batch, uint32_t index_id) const;
 
   bool get_system_cf_version(uint16_t* system_cf_version) const;
 

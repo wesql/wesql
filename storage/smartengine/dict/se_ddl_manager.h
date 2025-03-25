@@ -36,26 +36,6 @@ class SeDdlLogManager;
 struct SeCollationCodec;
 struct SeInplaceDdlDictInfo;
 
-class SeSequenceGenerator
-{
-  uint m_next_number = 0;
-  mysql_mutex_t m_mutex;
-
-public:
-  SeSequenceGenerator(const SeSequenceGenerator &) = delete;
-  SeSequenceGenerator &operator=(const SeSequenceGenerator &) = delete;
-  SeSequenceGenerator() = default;
-
-  void init(const uint &initial_number)
-  {
-    mysql_mutex_init(0, &m_mutex, MY_MUTEX_INIT_FAST);
-    m_next_number = initial_number;
-  }
-
-  uint get_and_update_next_number(SeDictionaryManager *const dict);
-
-  void cleanup() { mysql_mutex_destroy(&m_mutex); }
-};
 
 interface Se_tables_scanner
 {
@@ -84,7 +64,6 @@ class SeDdlManager
     m_index_num_to_uncommitted_keydef;
   mysql_rwlock_t m_rwlock;
 
-  SeSequenceGenerator m_sequence;
   // A queue of table stats to write into data dictionary
   // It is produced by event listener (ie compaction and flush threads)
   // and consumed by the se background thread
@@ -92,8 +71,7 @@ class SeDdlManager
 
   const std::shared_ptr<SeKeyDef> &find(GL_INDEX_ID gl_index_id);
 
-  // used to generate table id
-  mysql_mutex_t m_next_table_id_mutex;
+  uint64_t m_next_index_id;
   uint64_t m_next_table_id;
 public:
   SeDdlManager(const SeDdlManager &) = delete;
@@ -167,10 +145,8 @@ public:
   bool rename_cache(const std::string &from, const std::string &to);
   bool rename_cache(SeTableDef* tbl, const std::string &to);
 
-  uint get_and_update_next_number(SeDictionaryManager *const dict) {
-    return m_sequence.get_and_update_next_number(dict);
-  }
 
+  int alloc_index_id(uint64_t &index_id);
   bool get_table_id(uint64_t &table_id);
 
   /* Walk the data dictionary */
@@ -190,6 +166,7 @@ private:
   bool load_existing_tables(uint);
   bool upgrade_existing_tables(THD *const thd);
   bool populate_existing_tables(THD *const thd);
+  int update_max_index_id(uint64_t index_id);
   bool update_max_table_id(uint64_t table_id);
   bool update_system_cf_version(uint16_t system_cf_version);
 

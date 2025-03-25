@@ -159,7 +159,6 @@ bool SeDdlManager::init(THD *const thd, SeDictionaryManager *const dict_arg)
   }
 
   m_next_table_id = DD_TABLE_ID_END + 1;
-  mysql_mutex_init(0, &m_next_table_id_mutex, MY_MUTEX_INIT_FAST);
 
   // get value of system_cf_version
   uint16_t system_cf_version_in_dict;
@@ -228,7 +227,7 @@ bool SeDdlManager::init(THD *const thd, SeDictionaryManager *const dict_arg)
     }
   }
 
-  m_sequence.init(max_index_id_in_dict + 1);
+  m_next_index_id = max_index_id_in_dict + 1;
   return false;
 }
 
@@ -513,6 +512,28 @@ bool SeDdlManager::populate_existing_tables(THD *const thd)
 #endif
   }
   return error;
+}
+
+int SeDdlManager::update_max_index_id(uint64_t index_id)
+{
+  assert(nullptr != m_dict);
+  int ret = Status::kOk;
+
+  std::unique_ptr<db::WriteBatch> write_batch = m_dict->begin();
+  if (IS_NULL(write_batch.get())) {
+    ret = Status::kInvalidArgument;
+    HANDLER_LOG(ERROR, "SE: failed to allocate write batch", K(ret), KP(write_batch.get()));
+  } else if (FAILED(m_dict->update_max_index_id(write_batch.get(), index_id))) {
+    HANDLER_LOG(ERROR, "SE: failed to update max_index_id", K(ret), K(index_id));
+  } else if (FAILED(m_dict->commit(write_batch.get()))) {
+    HANDLER_LOG(ERROR, "SE: failed to commit max_index_id", K(ret), K(index_id));
+  } else {
+#ifndef NDEBUG
+    HANDLER_LOG(INFO, "SE: successfully update max_index_id", K(index_id));
+#endif
+  }
+
+  return ret;
 }
 
 bool SeDdlManager::update_max_table_id(uint64_t table_id)
@@ -948,7 +969,6 @@ void SeDdlManager::cleanup()
 {
   m_ddl_hash.clear();
   mysql_rwlock_destroy(&m_rwlock);
-  m_sequence.cleanup();
 }
 
 void SeDdlManager::reset()
@@ -956,14 +976,13 @@ void SeDdlManager::reset()
   // TODO(Zhao Dongsheng): reset the table cache and repopulate it from data dictionary.
   mysql_rwlock_wrlock(&m_rwlock);
   m_ddl_hash.clear();
-  m_sequence.cleanup();
   mysql_rwlock_unlock(&m_rwlock);
 }
 
 int SeDdlManager::scan_for_tables(Se_tables_scanner *const tables_scanner)
 {
   int ret = 0;
-  SeTableDef *rec;
+  SeTableDef *rec = nullptr;
 
   assert(tables_scanner != nullptr);
 
@@ -981,14 +1000,30 @@ int SeDdlManager::scan_for_tables(Se_tables_scanner *const tables_scanner)
   return ret;
 }
 
+int SeDdlManager::alloc_index_id(uint64_t &index_id)
+{
+  assert(nullptr != m_dict);
+  int ret = common::Status::kOk;
+
+  mysql_rwlock_wrlock(&m_rwlock);
+  if (FAILED(update_max_index_id(m_next_index_id))) {
+    HANDLER_LOG(ERROR, "SE: failed to update max index id", K(ret), K(m_next_index_id));
+  } else {
+    index_id = m_next_index_id++;
+  }
+  mysql_rwlock_unlock(&m_rwlock);
+
+  return ret;
+}
+
 bool SeDdlManager::get_table_id(uint64_t &table_id)
 {
   bool res = true;
-  SE_MUTEX_LOCK_CHECK(m_next_table_id_mutex);
+  mysql_rwlock_wrlock(&m_rwlock);
   if (!(res = update_max_table_id(m_next_table_id))) {
     table_id = m_next_table_id++;
   }
-  SE_MUTEX_UNLOCK_CHECK(m_next_table_id_mutex);
+  mysql_rwlock_unlock(&m_rwlock);
   return res;
 }
 
@@ -1138,27 +1173,6 @@ SeTableDef* SeDdlManager::restore_table_from_dd(THD* thd, const std::string& tab
   }
 
   return tbl;
-}
-
-uint SeSequenceGenerator::get_and_update_next_number(SeDictionaryManager *const dict)
-{
-  assert(dict != nullptr);
-
-  uint res = 0;
-  SE_MUTEX_LOCK_CHECK(m_mutex);
-
-  res = m_next_number++;
-
-  const std::unique_ptr<db::WriteBatch> wb = dict->begin();
-  db::WriteBatch *const batch = wb.get();
-
-  assert(batch != nullptr);
-  dict->update_max_index_id(batch, res);
-  dict->commit(batch);
-
-  SE_MUTEX_UNLOCK_CHECK(m_mutex);
-
-  return res;
 }
 
 } //namespace smartengine
