@@ -67,6 +67,26 @@ std::unique_ptr<db::WriteBatch> SeDictionaryManager::begin() const
   return std::unique_ptr<db::WriteBatch>(new db::WriteBatch);
 }
 
+int SeDictionaryManager::commit(db::WriteBatch *batch, const bool &sync) const
+{
+  int ret = common::Status::kOk;
+  common::WriteOptions options;
+  options.sync = sync;
+
+  if (IS_NULL(batch)) {
+    ret = common::Status::kInvalidArgument;
+    HANDLER_LOG(ERROR, "SE: invalid argument", K(ret), KP(batch));
+  } else if (FAILED(m_db->Write(options, batch).code())) {
+    HANDLER_LOG(ERROR, "SE: failed to commit write batch");
+    se_handle_io_error(common::Status(ret), SE_IO_ERROR_DICT_COMMIT);
+  }
+  if (IS_NOTNULL(batch)) {
+    batch->Clear();
+  }
+
+  return ret;
+}
+
 void SeDictionaryManager::put_key(db::WriteBatchBase *const batch,
                                   const common::Slice &key,
                                   const common::Slice &value) const
@@ -92,22 +112,6 @@ db::Iterator *SeDictionaryManager::new_iterator() const
   common::ReadOptions read_options;
   read_options.total_order_seek = true;
   return m_db->NewIterator(read_options, m_system_cfh);
-}
-
-int SeDictionaryManager::commit(db::WriteBatch *const batch, const bool &sync) const
-{
-  if (!batch)
-    return HA_EXIT_FAILURE;
-  int res = 0;
-  common::WriteOptions options;
-  options.sync = sync;
-  common::Status s = m_db->Write(options, batch);
-  res = !s.ok(); // we return true when something failed
-  if (res) {
-    se_handle_io_error(s, SE_IO_ERROR_DICT_COMMIT);
-  }
-  batch->Clear();
-  return res;
 }
 
 void SeDictionaryManager::dump_index_id(uchar *const netbuf,
@@ -334,31 +338,38 @@ bool SeDictionaryManager::get_max_index_id(uint32_t *const index_id) const
   return found;
 }
 
-bool SeDictionaryManager::update_max_index_id(
-    db::WriteBatch *const batch,
-    const uint32_t &index_id) const
+int SeDictionaryManager::update_max_index_id(db::WriteBatch *batch, uint32_t index_id) const
 {
-  assert(batch != nullptr);
-
+  int ret = common::Status::kOk;
   uint32_t old_index_id = -1;
-  if (get_max_index_id(&old_index_id)) {
-    if (old_index_id > index_id) {
-      sql_print_error("SE: Found max index id %u from data dictionary "
-                      "but trying to update to older value %u. This should "
-                      "never happen and possibly a bug.",
-                      old_index_id, index_id);
-      return true;
+  uchar value_buf[SeKeyDef::VERSION_SIZE + SeKeyDef::INDEX_NUMBER_SIZE] = {0};
+  common::Slice value;
+
+  if (IS_NULL(batch)) {
+    ret = common::Status::kInvalidArgument;
+    HANDLER_LOG(ERROR, "SE: invalid argument", K(ret), KP(batch));
+  } else {
+    if (get_max_index_id(&old_index_id)) {
+      if (old_index_id > index_id) {
+        ret = common::Status::kErrorUnexpected;
+        HANDLER_LOG(ERROR, "SE: found max index id from data dictionary "
+                    "but trying to update to older value. This should never "
+                    "happen and possibly a bug.",
+                    K(old_index_id), K(index_id));
+      }
+    }
+
+    if (SUCCED(ret)) {
+      se_netbuf_store_uint16(value_buf, SeKeyDef::MAX_INDEX_ID_VERSION);
+      se_netbuf_store_uint32(value_buf + SeKeyDef::VERSION_SIZE, index_id);
+      value.assign((char *)value_buf, sizeof(value_buf));
+      if (FAILED(batch->Put(m_system_cfh, m_key_slice_max_index_id, value).code())) {
+        HANDLER_LOG(ERROR, "SE: failed to put max index id to write batch", K(ret));
+      }
     }
   }
 
-  uchar value_buf[SeKeyDef::VERSION_SIZE + SeKeyDef::INDEX_NUMBER_SIZE] =
-      {0};
-  se_netbuf_store_uint16(value_buf, SeKeyDef::MAX_INDEX_ID_VERSION);
-  se_netbuf_store_uint32(value_buf + SeKeyDef::VERSION_SIZE, index_id);
-  const common::Slice value =
-      common::Slice((char *)value_buf, sizeof(value_buf));
-  batch->Put(m_system_cfh, m_key_slice_max_index_id, value);
-  return false;
+  return ret;
 }
 
 bool SeDictionaryManager::get_system_cf_version(uint16_t* system_cf_version) const

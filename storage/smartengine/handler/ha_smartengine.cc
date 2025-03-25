@@ -1510,6 +1510,7 @@ int ha_smartengine::create_key_defs(const TABLE *new_table,
     // Setup index ids, try to reuse old index id in some alter statements, like add index.
     if (SUCCED(ret)) {
       const char *key_name = nullptr;
+      uint64_t index_id = 0;
       std::unordered_map<std::string, uint> old_key_pos;
       if (IS_NOTNULL(old_table_def) && !need_rebuild) {
         old_key_pos = get_old_key_positions(new_table, new_table_def, old_table, old_table_def);
@@ -1523,8 +1524,10 @@ int ha_smartengine::create_key_defs(const TABLE *new_table,
           if (old_key_pos.end() != iter) {
             index_ids[i] = old_table_def->m_key_descr_arr[iter->second]->get_gl_index_id().index_id;
             SE_LOG(INFO, "dongsheng debug, use old index id", K(key_name), K(i), "index_id", index_ids[i]);
+          } else if (FAILED(ddl_manager.alloc_index_id(index_id))) {
+            SE_LOG(WARN, "failed to get index id", K(ret), K(key_name), K(i));
           } else {
-            index_ids[i] = ddl_manager.get_and_update_next_number(&dict_manager);
+            index_ids[i] = index_id;
             SE_LOG(INFO, "dongsheng debug, use new index id", K(key_name), K(i), "index_id", index_ids[i]);
           }
         }
