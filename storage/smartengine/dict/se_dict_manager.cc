@@ -20,17 +20,35 @@
 #include "dict/se_dict_util.h"
 #include "logger/log_module.h"
 #include "schema/table_schema.h"
-#include "storage/storage_logger.h"
+#include "write_batch/write_batch.h"
 
-namespace smartengine {
+namespace smartengine
+{
 
 extern SeSubtableManager cf_manager;
 
-bool SeDictionaryManager::init(db::DB *const se_dict, const common::ColumnFamilyOptions &cf_options)
+SeDictionaryManager::SeDictionaryManager()
+    : m_mutex(),
+      m_db(nullptr),
+      m_system_cfh(nullptr),
+      dd_table_ids(),
+      m_key_buf_max_index_id(),
+      m_key_slice_max_index_id(),
+      m_key_buf_max_table_id(),
+      m_key_slice_max_table_id(),
+      m_key_buf_server_version(),
+      m_key_slice_server_version()
+{
+  memset(m_key_buf_max_index_id, 0, SeKeyDef::INDEX_NUMBER_SIZE);
+  memset(m_key_buf_max_table_id, 0, SeKeyDef::INDEX_NUMBER_SIZE);
+  memset(m_key_buf_server_version, 0, SeKeyDef::SERVER_VERSION_SIZE);
+}
+
+bool SeDictionaryManager::init(db::DB *const se_db, const common::ColumnFamilyOptions &cf_options)
 {
   int ret = common::Status::kOk;
   mysql_mutex_init(0, &m_mutex, MY_MUTEX_INIT_FAST);
-  m_db = se_dict;
+  m_db = se_db;
   bool create_table_space = false;
   int64_t sys_table_space_id = DEFAULT_SYSTEM_TABLE_SPACE_ID;
   schema::TableSchema table_schema;
@@ -94,16 +112,16 @@ void SeDictionaryManager::put_key(db::WriteBatchBase *const batch,
   batch->Put(m_system_cfh, key, value);
 }
 
+void SeDictionaryManager::delete_key(db::WriteBatchBase *batch, const common::Slice &key) const
+{
+  batch->Delete(m_system_cfh, key);
+}
+
 common::Status SeDictionaryManager::get_value(const common::Slice &key, std::string *const value) const
 {
   common::ReadOptions options;
   options.total_order_seek = true;
   return m_db->Get(options, m_system_cfh, key, value);
-}
-
-void SeDictionaryManager::delete_key(db::WriteBatchBase *batch, const common::Slice &key) const
-{
-  batch->Delete(m_system_cfh, key);
 }
 
 db::Iterator *SeDictionaryManager::new_iterator() const
@@ -112,37 +130,6 @@ db::Iterator *SeDictionaryManager::new_iterator() const
   common::ReadOptions read_options;
   read_options.total_order_seek = true;
   return m_db->NewIterator(read_options, m_system_cfh);
-}
-
-void SeDictionaryManager::dump_index_id(uchar *const netbuf,
-                                        SeKeyDef::DATA_DICT_TYPE dict_type,
-                                        const GL_INDEX_ID &gl_index_id)
-{
-  se_netbuf_store_uint32(netbuf, dict_type);
-  se_netbuf_store_uint32(netbuf + SeKeyDef::INDEX_NUMBER_SIZE,
-                          gl_index_id.cf_id);
-  se_netbuf_store_uint32(netbuf + 2 * SeKeyDef::INDEX_NUMBER_SIZE,
-                          gl_index_id.index_id);
-}
-
-void SeDictionaryManager::delete_with_prefix(db::WriteBatch *const batch,
-                                             SeKeyDef::DATA_DICT_TYPE dict_type,
-                                             const GL_INDEX_ID &gl_index_id) const
-{
-  uchar key_buf[SeKeyDef::INDEX_NUMBER_SIZE * 3] = {0};
-  dump_index_id(key_buf, dict_type, gl_index_id);
-  common::Slice key = common::Slice((char *)key_buf, sizeof(key_buf));
-
-  delete_key(batch, key);
-}
-
-void SeDictionaryManager::drop_cf_flags(db::WriteBatch *const batch, uint32_t cf_id) const
-{
-  uchar key_buf[SeKeyDef::INDEX_NUMBER_SIZE * 2] = {0};
-  se_netbuf_store_uint32(key_buf, SeKeyDef::CF_DEFINITION);
-  se_netbuf_store_uint32(key_buf + SeKeyDef::INDEX_NUMBER_SIZE, cf_id);
-
-  delete_key(batch, common::Slice((char *)key_buf, sizeof(key_buf)));
 }
 
 void SeDictionaryManager::delete_index_info(db::WriteBatch *batch, const GL_INDEX_ID &gl_index_id) const
@@ -214,43 +201,13 @@ bool SeDictionaryManager::get_index_info(const GL_INDEX_ID &gl_index_id,
   return found;
 }
 
-bool SeDictionaryManager::is_valid_index_version(uint16_t index_dict_version)
+void SeDictionaryManager::drop_cf_flags(db::WriteBatch *const batch, uint32_t cf_id) const
 {
-  bool error;
-  switch (index_dict_version) {
-    case SeKeyDef::INDEX_INFO_VERSION_VERIFY_KV_FORMAT:
-    case SeKeyDef::INDEX_INFO_VERSION_GLOBAL_ID: {
-      error = false;
-      break;
-    }
-    default: {
-      error = true;
-      break;
-    }
-  }
+  uchar key_buf[SeKeyDef::INDEX_NUMBER_SIZE * 2] = {0};
+  se_netbuf_store_uint32(key_buf, SeKeyDef::CF_DEFINITION);
+  se_netbuf_store_uint32(key_buf + SeKeyDef::INDEX_NUMBER_SIZE, cf_id);
 
-  return !error;
-}
-
-bool SeDictionaryManager::is_valid_kv_version(uchar index_type, uint16_t kv_version)
-{
-  bool error = true;
-  switch (index_type) {
-    case SeKeyDef::INDEX_TYPE_PRIMARY:
-    case SeKeyDef::INDEX_TYPE_HIDDEN_PRIMARY: {
-      error = kv_version > SeKeyDef::PRIMARY_FORMAT_VERSION_LATEST;
-      break;
-    }
-    case SeKeyDef::INDEX_TYPE_SECONDARY: {
-      error = kv_version > SeKeyDef::SECONDARY_FORMAT_VERSION_LATEST;
-      break;
-    }
-    default: {
-      error = true;
-      break;
-    }
-  }
-  return !error;
+  delete_key(batch, common::Slice((char *)key_buf, sizeof(key_buf)));
 }
 
 bool SeDictionaryManager::get_cf_flags(const uint32_t &cf_id, uint32_t *const cf_flags) const
@@ -272,6 +229,17 @@ bool SeDictionaryManager::get_cf_flags(const uint32_t &cf_id, uint32_t *const cf
     }
   }
   return found;
+}
+
+void SeDictionaryManager::delete_with_prefix(db::WriteBatch *const batch,
+                                             SeKeyDef::DATA_DICT_TYPE dict_type,
+                                             const GL_INDEX_ID &gl_index_id) const
+{
+  uchar key_buf[SeKeyDef::INDEX_NUMBER_SIZE * 3] = {0};
+  dump_index_id(key_buf, dict_type, gl_index_id);
+  common::Slice key = common::Slice((char *)key_buf, sizeof(key_buf));
+
+  delete_key(batch, key);
 }
 
 /*
@@ -372,6 +340,88 @@ int SeDictionaryManager::update_max_index_id(db::WriteBatch *batch, uint32_t ind
   return ret;
 }
 
+bool SeDictionaryManager::get_max_table_id(uint64_t *table_id) const
+{
+  assert(table_id != nullptr);
+  bool found = false;
+  std::string value;
+  auto status = get_value(m_key_slice_max_table_id, &value);
+  if (status.ok()) {
+    auto val = (const uchar *)value.c_str();
+    const uint16_t &version = se_netbuf_to_uint16(val);
+    if (version == SeKeyDef::MAX_TABLE_ID_VERSION) {
+      *table_id = se_netbuf_to_uint64(val + SeKeyDef::VERSION_SIZE);
+      found = true;
+    }
+  }
+  return found;
+}
+
+bool SeDictionaryManager::update_max_table_id(
+    db::WriteBatch *const batch,
+    uint64_t table_id) const
+{
+  assert(batch != nullptr);
+  uint64_t max_table_id_in_dict = dd::INVALID_OBJECT_ID;
+  if (get_max_table_id(&max_table_id_in_dict)) {
+    if (dd::INVALID_OBJECT_ID != max_table_id_in_dict &&
+        max_table_id_in_dict > table_id) {
+      HANDLER_LOG(ERROR, "SE: found max table id from data dictionary but"
+                  " trying to update to older value. This should never"
+                  "happen and possibly a bug.",
+                  K(max_table_id_in_dict), K(table_id));
+      return true;
+    }
+  }
+
+  if (max_table_id_in_dict != table_id) {
+    uchar value_buf[SeKeyDef::VERSION_SIZE + SeKeyDef::TABLE_ID_SIZE] = {0};
+    se_netbuf_store_uint16(value_buf, SeKeyDef::MAX_TABLE_ID_VERSION);
+    se_netbuf_store_uint64(value_buf + SeKeyDef::VERSION_SIZE, table_id);
+    auto value = common::Slice((char *) value_buf, sizeof(value_buf));
+    batch->Put(m_system_cfh, m_key_slice_max_table_id, value);
+  }
+  return false;
+}
+
+void SeDictionaryManager::add_stats(db::WriteBatch *const batch, const std::vector<SeIndexStats> &stats) const
+{
+  assert(batch != nullptr);
+
+  for (const auto &it : stats) {
+    uchar key_buf[SeKeyDef::INDEX_NUMBER_SIZE * 3] = {0};
+    dump_index_id(key_buf, SeKeyDef::INDEX_STATISTICS, it.m_gl_index_id);
+
+    // IndexStats::materialize takes complete care of serialization including
+    // storing the version
+    const auto value =
+        SeIndexStats::materialize(std::vector<SeIndexStats>{it}, 1.);
+
+    batch->Put(m_system_cfh, common::Slice((char *)key_buf, sizeof(key_buf)),
+               value);
+  }
+}
+
+SeIndexStats SeDictionaryManager::get_stats(GL_INDEX_ID gl_index_id) const
+{
+  uchar key_buf[SeKeyDef::INDEX_NUMBER_SIZE * 3] = {0};
+  dump_index_id(key_buf, SeKeyDef::INDEX_STATISTICS, gl_index_id);
+
+  std::string value;
+  const common::Status status = get_value(
+      common::Slice(reinterpret_cast<char *>(key_buf), sizeof(key_buf)),
+      &value);
+  if (status.ok()) {
+    std::vector<SeIndexStats> v;
+    // unmaterialize checks if the version matches
+    if (SeIndexStats::unmaterialize(value, &v) == 0 && v.size() == 1) {
+      return v[0];
+    }
+  }
+
+  return SeIndexStats();
+}
+
 bool SeDictionaryManager::get_system_cf_version(uint16_t* system_cf_version) const
 {
   assert(system_cf_version != nullptr);
@@ -419,90 +469,6 @@ bool SeDictionaryManager::update_system_cf_version(
   }
 
   return false;
-}
-
-bool SeDictionaryManager::get_max_table_id(uint64_t *table_id) const
-{
-  assert(table_id != nullptr);
-  bool found = false;
-  std::string value;
-  auto status = get_value(m_key_slice_max_table_id, &value);
-  if (status.ok()) {
-    auto val = (const uchar *)value.c_str();
-    const uint16_t &version = se_netbuf_to_uint16(val);
-    if (version == SeKeyDef::MAX_TABLE_ID_VERSION) {
-      *table_id = se_netbuf_to_uint64(val + SeKeyDef::VERSION_SIZE);
-      found = true;
-    }
-  }
-  return found;
-}
-
-bool SeDictionaryManager::update_max_table_id(
-    db::WriteBatch *const batch,
-    uint64_t table_id) const
-{
-  assert(batch != nullptr);
-  uint64_t max_table_id_in_dict = dd::INVALID_OBJECT_ID;
-  if (get_max_table_id(&max_table_id_in_dict)) {
-    if (dd::INVALID_OBJECT_ID != max_table_id_in_dict &&
-        max_table_id_in_dict > table_id) {
-      HANDLER_LOG(ERROR, "SE: found max table id from data dictionary but"
-                  " trying to update to older value. This should never"
-                  "happen and possibly a bug.",
-                  K(max_table_id_in_dict), K(table_id));
-      return true;
-    }
-  }
-
-  if (max_table_id_in_dict != table_id) {
-    uchar value_buf[SeKeyDef::VERSION_SIZE + SeKeyDef::TABLE_ID_SIZE] = {0};
-    se_netbuf_store_uint16(value_buf, SeKeyDef::MAX_TABLE_ID_VERSION);
-    se_netbuf_store_uint64(value_buf + SeKeyDef::VERSION_SIZE, table_id);
-    auto value = common::Slice((char *) value_buf, sizeof(value_buf));
-    batch->Put(m_system_cfh, m_key_slice_max_table_id, value);
-  }
-  return false;
-}
-
-void SeDictionaryManager::add_stats(
-    db::WriteBatch *const batch,
-    const std::vector<SeIndexStats> &stats) const
-{
-  assert(batch != nullptr);
-
-  for (const auto &it : stats) {
-    uchar key_buf[SeKeyDef::INDEX_NUMBER_SIZE * 3] = {0};
-    dump_index_id(key_buf, SeKeyDef::INDEX_STATISTICS, it.m_gl_index_id);
-
-    // IndexStats::materialize takes complete care of serialization including
-    // storing the version
-    const auto value =
-        SeIndexStats::materialize(std::vector<SeIndexStats>{it}, 1.);
-
-    batch->Put(m_system_cfh, common::Slice((char *)key_buf, sizeof(key_buf)),
-               value);
-  }
-}
-
-SeIndexStats SeDictionaryManager::get_stats(GL_INDEX_ID gl_index_id) const
-{
-  uchar key_buf[SeKeyDef::INDEX_NUMBER_SIZE * 3] = {0};
-  dump_index_id(key_buf, SeKeyDef::INDEX_STATISTICS, gl_index_id);
-
-  std::string value;
-  const common::Status status = get_value(
-      common::Slice(reinterpret_cast<char *>(key_buf), sizeof(key_buf)),
-      &value);
-  if (status.ok()) {
-    std::vector<SeIndexStats> v;
-    // unmaterialize checks if the version matches
-    if (SeIndexStats::unmaterialize(value, &v) == 0 && v.size() == 1) {
-      return v[0];
-    }
-  }
-
-  return SeIndexStats();
 }
 
 int SeDictionaryManager::set_server_version()
@@ -561,6 +527,56 @@ int SeDictionaryManager::insert_dd_table_id(dd::Object_id table_id)
   }
 
   return ret;
+}
+
+bool SeDictionaryManager::is_valid_index_version(uint16_t index_dict_version)
+{
+  bool error;
+  switch (index_dict_version) {
+    case SeKeyDef::INDEX_INFO_VERSION_VERIFY_KV_FORMAT:
+    case SeKeyDef::INDEX_INFO_VERSION_GLOBAL_ID: {
+      error = false;
+      break;
+    }
+    default: {
+      error = true;
+      break;
+    }
+  }
+
+  return !error;
+}
+
+bool SeDictionaryManager::is_valid_kv_version(uchar index_type, uint16_t kv_version)
+{
+  bool error = true;
+  switch (index_type) {
+    case SeKeyDef::INDEX_TYPE_PRIMARY:
+    case SeKeyDef::INDEX_TYPE_HIDDEN_PRIMARY: {
+      error = kv_version > SeKeyDef::PRIMARY_FORMAT_VERSION_LATEST;
+      break;
+    }
+    case SeKeyDef::INDEX_TYPE_SECONDARY: {
+      error = kv_version > SeKeyDef::SECONDARY_FORMAT_VERSION_LATEST;
+      break;
+    }
+    default: {
+      error = true;
+      break;
+    }
+  }
+  return !error;
+}
+
+void SeDictionaryManager::dump_index_id(uchar *const netbuf,
+                                        SeKeyDef::DATA_DICT_TYPE dict_type,
+                                        const GL_INDEX_ID &gl_index_id) const
+{
+  se_netbuf_store_uint32(netbuf, dict_type);
+  se_netbuf_store_uint32(netbuf + SeKeyDef::INDEX_NUMBER_SIZE,
+                          gl_index_id.cf_id);
+  se_netbuf_store_uint32(netbuf + 2 * SeKeyDef::INDEX_NUMBER_SIZE,
+                          gl_index_id.index_id);
 }
 
 } //namespace smartengine
