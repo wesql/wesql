@@ -43,107 +43,18 @@
 #include "util/se_utils.h"
 #include "db/column_family.h"
 
-namespace smartengine {
-extern ulong purge_acquire_lock_timeout;
-extern SeSubtableManager cf_manager;
-extern util::TransactionDB *se_db;
-
-void SeDdlManager::erase_index_num(const GL_INDEX_ID &gl_index_id)
+namespace smartengine
 {
-  m_index_num_to_keydef.erase(gl_index_id);
-}
 
-void SeDdlManager::add_uncommitted_keydefs(
-    const std::unordered_set<std::shared_ptr<SeKeyDef>> &indexes)
-{
-  mysql_rwlock_wrlock(&m_rwlock);
-  for (const auto &index : indexes) {
-    m_index_num_to_uncommitted_keydef[index->get_gl_index_id()] = index;
-  }
-  mysql_rwlock_unlock(&m_rwlock);
-}
-
-void SeDdlManager::remove_uncommitted_keydefs(
-    const std::unordered_set<std::shared_ptr<SeKeyDef>> &indexes)
-{
-  mysql_rwlock_wrlock(&m_rwlock);
-  for (const auto &index : indexes) {
-    m_index_num_to_uncommitted_keydef.erase(index->get_gl_index_id());
-  }
-  mysql_rwlock_unlock(&m_rwlock);
-}
-
-// Check whethter we can safely purge given subtable.
-// We only can safely purge it if
-//   (1) no related SeKeyDef object in uncommited hash table;
-//   (2) no associated dd::Table object from global data dictionary.
-bool SeDdlManager::can_purge_subtable(THD* thd, const GL_INDEX_ID& gl_index_id)
-{
-  if (m_index_num_to_uncommitted_keydef.find(gl_index_id) !=
-      m_index_num_to_uncommitted_keydef.end())
-    return false;
-
-  uint32_t subtable_id = gl_index_id.index_id;
-  auto it = m_index_num_to_keydef.find(gl_index_id);
-  if (it != m_index_num_to_keydef.end()) {
-    auto& tbl_name = it->second.first;
-    uint keyno = it->second.second;
-    // Normally, SeKeyDef object always exists with SeTableDef object together
-    std::shared_ptr<SeTableDef> table_def = find_tbl_from_cache(tbl_name);
-    if (!table_def) {
-      /* Exception case 1:
-       *   SeTableDef object with the name is removed but index cache entry of
-       *   SeKeyDef in the SeTableDef is kept.
-       *   The SeTableDef object may be loaded again later.
-       */
-      HANDLER_LOG(ERROR, "SE: unexpected error, key cache entry exists without table cache entry",
-                  "table_name", tbl_name);
-      return false;
-    } else if (!table_def->m_key_descr_arr || keyno > table_def->m_key_count ||
-               !table_def->m_key_descr_arr[keyno] ||
-               subtable_id != table_def->m_key_descr_arr[keyno]->get_index_number()) {
-      /* Exception case 2:
-       *   old SeTableDef object with the name is removed and new
-       *   SeTableDef object is added but index cache entry of SeKeyDef in
-       *   old SeTableDef is kept
-       */
-      HANDLER_LOG(ERROR, "SE: found invalid index_id in m_index_num_to_keydef "
-                  "without related SeTableDef/SeKeyDef object", K(subtable_id));
-      m_index_num_to_keydef.erase(it);
-      return true;
-    }
-
-    // SeKeyDef object is still present with SeTableDef object in cache
-    // name string in SeTableDef is from filename format, to acquire dd object
-    // we should use table name format which uses different charset
-    char schema_name[FN_REFLEN+1], table_name[FN_REFLEN+1];
-    filename_to_tablename(table_def->base_dbname().c_str(), schema_name, sizeof(schema_name));
-    filename_to_tablename(table_def->base_tablename().c_str(), table_name, sizeof(table_name));
-    dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
-    const dd::Table *dd_table = nullptr;
-    MDL_ticket *tbl_ticket = nullptr;
-    // try to acquire and check existence of dd::Table object
-    if (SeDdHelper::acquire_se_table(
-            thd, purge_acquire_lock_timeout, schema_name,
-            table_name, dd_table, tbl_ticket)) {
-      // if failed to acquire dd::Table object we treat as lock wait timeout
-      // and related dd::Table is locked by other thread
-      return false;
-    } else if (nullptr != dd_table) {
-      HANDLER_LOG(WARN, "SE: subtable associated table is still present in global data dictionary!",
-                  K(subtable_id), K(schema_name), K(table_name));
-      if (tbl_ticket) dd::release_mdl(thd, tbl_ticket);
-      return false;
-    } else {
-      // SeTableDef is only present in cache
-      // remove cache entry
-      remove_cache(tbl_name);
-      return true;
-    }
-  }
-
-  return true;
-}
+SeDdlManager::SeDdlManager() : m_rwlock(),
+                               m_dict(nullptr),
+                               m_ddl_hash(),
+                               m_index_num_to_keydef(),
+                               m_index_num_to_uncommitted_keydef(),
+                               m_stats2store(),
+                               m_next_index_id(0),
+                               m_next_table_id(0)
+{}
 
 bool SeDdlManager::init(THD *const thd, SeDictionaryManager *const dict_arg)
 {
@@ -229,6 +140,389 @@ bool SeDdlManager::init(THD *const thd, SeDictionaryManager *const dict_arg)
 
   m_next_index_id = max_index_id_in_dict + 1;
   return false;
+}
+
+void SeDdlManager::cleanup()
+{
+  m_ddl_hash.clear();
+  mysql_rwlock_destroy(&m_rwlock);
+}
+
+void SeDdlManager::reset()
+{
+  // TODO(Zhao Dongsheng): reset the table cache and repopulate it from data dictionary.
+  mysql_rwlock_wrlock(&m_rwlock);
+  m_ddl_hash.clear();
+  mysql_rwlock_unlock(&m_rwlock);
+}
+
+/* TODO:
+  This function modifies m_ddl_hash and m_index_num_to_keydef.
+  However, these changes need to be reversed if dict_manager.commit fails
+  See the discussion here: https://reviews.facebook.net/D35925#inline-259167
+  Tracked by https://github.com/facebook/mysql-5.6/issues/33
+*/
+void SeDdlManager::put(const std::shared_ptr<SeTableDef>& tbl, bool lock/* = true*/)
+{
+  const std::string &dbname_tablename = tbl->full_tablename();
+
+  if (lock)
+    mysql_rwlock_wrlock(&m_rwlock);
+
+  // We have to do this find because 'tbl' is not yet in the list.  We need
+  // to find the one we are replacing ('rec')
+  const auto &it = m_ddl_hash.find(dbname_tablename);
+  if (it != m_ddl_hash.end()) {
+    m_ddl_hash.erase(it);
+  }
+  m_ddl_hash.insert({dbname_tablename, tbl});
+
+  for (uint keyno = 0; keyno < tbl->m_key_count; keyno++) {
+    m_index_num_to_keydef[tbl->m_key_descr_arr[keyno]->get_gl_index_id()] =
+        std::make_pair(dbname_tablename, keyno);
+  }
+
+  if (lock)
+    mysql_rwlock_unlock(&m_rwlock);
+}
+
+/**
+  Put table definition of `tbl` into the mapping, and also write it to the
+  on-disk data dictionary.
+
+  @param tbl, se_tbl_def put to cache
+  @param batch, transaction buffer on current session
+  @param ddl_log_manager
+  @param thread_id, session thread_id
+  @param write_ddl_log, for create-table, we need write remove_cache log to remove rubbish, for alter-table, we just invalid cache, make sure cache is consistent with dictionary.
+*/
+int SeDdlManager::put_and_write(const std::shared_ptr<SeTableDef>& tbl,
+                                db::WriteBatch *const batch,
+                                SeDdlLogManager *const ddl_log_manager,
+                                ulong thread_id,
+                                bool write_ddl_log)
+{
+  const std::string &dbname_tablename = tbl->full_tablename();
+
+  if (write_ddl_log) {
+    if (ddl_log_manager->write_remove_cache_log(batch,
+                                                dbname_tablename,
+                                                thread_id)) {
+      sql_print_error(
+          "write remove cache ddl_log error, table_name(%s), thread_id(%d)",
+          dbname_tablename.c_str(), thread_id);
+      return HA_EXIT_FAILURE;
+    } else {
+      put(tbl);
+    }
+  } else {
+    remove_cache(dbname_tablename);
+  }
+
+  return HA_EXIT_SUCCESS;
+}
+
+void SeDdlManager::remove_cache(const std::string &dbname_tablename, bool lock/* = true */)
+{
+  if (lock) {
+    mysql_rwlock_wrlock(&m_rwlock);
+  }
+
+  const auto &it = m_ddl_hash.find(dbname_tablename);
+  if (it != m_ddl_hash.end()) {
+    // m_index_num_to_keydef is inserted during put
+    // we should remove here not other place
+    if (it->second && it->second->m_key_descr_arr) {
+      for (uint keyno = 0; keyno < it->second->m_key_count; keyno++) {
+        auto kd = it->second->m_key_descr_arr[keyno];
+        assert(kd);
+        m_index_num_to_keydef.erase(kd->get_gl_index_id());
+      }
+    }
+    m_ddl_hash.erase(it);
+  }
+
+  if (lock) {
+    mysql_rwlock_unlock(&m_rwlock);
+  }
+}
+
+bool SeDdlManager::rename_cache(const std::string &from, const std::string &to)
+{
+  std::shared_ptr<SeTableDef> tbl;
+  bool from_dict = false;
+  if (!(tbl = find(from, &from_dict))) {
+    /** if not found, that's ok for we may executed many times */
+    HANDLER_LOG(WARN, "Table doesn't exist when rename_cache", K(from), K(to));
+    return false;
+  }
+
+  return rename_cache(tbl.get(), to);
+}
+
+bool SeDdlManager::rename_cache(SeTableDef* tbl, const std::string &to)
+{
+  assert(nullptr != tbl);
+  auto new_tbl = std::make_shared<SeTableDef>(to);
+
+  new_tbl->m_key_count = tbl->m_key_count;
+  new_tbl->m_auto_incr_val =
+      tbl->m_auto_incr_val.load(std::memory_order_relaxed);
+  new_tbl->m_key_descr_arr = tbl->m_key_descr_arr;
+  // so that it's not free'd when deleting the old rec
+  tbl->m_key_descr_arr = nullptr;
+
+  mysql_rwlock_wrlock(&m_rwlock);
+  /** update dictionary cache */
+  put(new_tbl, false);
+  remove_cache(tbl->full_tablename(), false);
+
+  mysql_rwlock_unlock(&m_rwlock);
+
+  DBUG_EXECUTE_IF("ddl_log_inject_rollback_rename_process",{return true;});
+  return false;
+}
+
+std::shared_ptr<SeTableDef> SeDdlManager::find(const std::string &table_name,
+                                               bool* from_dict,
+                                               bool lock/* = true*/)
+{
+  assert(!table_name.empty() && nullptr != from_dict);
+  std::shared_ptr<SeTableDef> tbl = find_tbl_from_cache(table_name, lock);
+  *from_dict = false;
+  // for rename_cache during ha_post_recover, current_thd is nullptr
+  if (nullptr == tbl && nullptr != current_thd) {
+    // SeTableDef* tbl_def = find_tbl_from_dict(table_name);
+    // try to acquire dd::Table object from dictionary and
+    // restore SeTableDef from dd::Table
+    SeTableDef* tbl_def = restore_table_from_dd(current_thd, table_name);
+    if (nullptr != tbl_def) {
+      *from_dict = true;
+      tbl.reset(tbl_def);
+    }
+  }
+
+  return tbl;
+}
+
+std::shared_ptr<SeTableDef> SeDdlManager::find(const char *table_name,
+                                               int64_t name_len,
+                                               bool* from_dict,
+                                               bool lock/* = true*/)
+{
+  return find(std::string(table_name, name_len), from_dict, lock);
+}
+
+std::shared_ptr<SeTableDef> SeDdlManager::find(const dd::Table* dd_table,
+                                               const std::string& table_name,
+                                               bool* from_dict,
+                                               bool lock/* = true*/)
+{
+  assert(!table_name.empty() && nullptr != from_dict);
+  std::shared_ptr<SeTableDef> tbl = find_tbl_from_cache(table_name, lock);
+  *from_dict = false;
+  if (nullptr == tbl) {
+    assert(nullptr != dd_table);
+    // restore SeTableDef from dd::Table
+    SeTableDef* tbl_def = restore_table_from_dd(dd_table, table_name);
+    if (nullptr != tbl_def) {
+      *from_dict = true;
+      tbl.reset(tbl_def);
+    }
+  }
+  return tbl;
+}
+
+std::shared_ptr<SeTableDef> SeDdlManager::find(THD* thd,
+                                               const std::string& table_name,
+                                               bool* from_dict,
+                                               bool lock/* = true*/)
+{
+  assert(!table_name.empty() && nullptr != from_dict);
+  std::shared_ptr<SeTableDef> tbl = find_tbl_from_cache(table_name, lock);
+  *from_dict = false;
+  if (nullptr == tbl) {
+    assert(nullptr != thd);
+    // try to acquire dd::Table object from dictionary and
+    // restore SeTableDef from dd::Table
+    SeTableDef* tbl_def = restore_table_from_dd(thd, table_name);
+    if (nullptr != tbl_def) {
+      *from_dict = true;
+      tbl.reset(tbl_def);
+    }
+  }
+  return tbl;
+}
+
+int SeDdlManager::alloc_index_id(uint64_t &index_id)
+{
+  assert(nullptr != m_dict);
+  int ret = common::Status::kOk;
+
+  mysql_rwlock_wrlock(&m_rwlock);
+  if (FAILED(update_max_index_id(m_next_index_id))) {
+    HANDLER_LOG(ERROR, "SE: failed to update max index id", K(ret), K(m_next_index_id));
+  } else {
+    index_id = m_next_index_id++;
+  }
+  mysql_rwlock_unlock(&m_rwlock);
+
+  return ret;
+}
+
+bool SeDdlManager::get_table_id(uint64_t &table_id)
+{
+  bool res = true;
+  mysql_rwlock_wrlock(&m_rwlock);
+  if (!(res = update_max_table_id(m_next_table_id))) {
+    table_id = m_next_table_id++;
+  }
+  mysql_rwlock_unlock(&m_rwlock);
+  return res;
+}
+
+void SeDdlManager::add_uncommitted_keydefs(const std::unordered_set<std::shared_ptr<SeKeyDef>> &indexes)
+{
+  mysql_rwlock_wrlock(&m_rwlock);
+  for (const auto &index : indexes) {
+    m_index_num_to_uncommitted_keydef[index->get_gl_index_id()] = index;
+  }
+  mysql_rwlock_unlock(&m_rwlock);
+}
+
+void SeDdlManager::remove_uncommitted_keydefs(const std::unordered_set<std::shared_ptr<SeKeyDef>> &indexes)
+{
+  mysql_rwlock_wrlock(&m_rwlock);
+  for (const auto &index : indexes) {
+    m_index_num_to_uncommitted_keydef.erase(index->get_gl_index_id());
+  }
+  mysql_rwlock_unlock(&m_rwlock);
+}
+
+void SeDdlManager::adjust_stats(SeIndexStats stats)
+{
+  mysql_rwlock_wrlock(&m_rwlock);
+  const auto &keydef = find(stats.m_gl_index_id);
+  if (keydef) {
+    keydef->m_stats.m_distinct_keys_per_prefix.resize(keydef->get_key_parts());
+    keydef->m_stats.update(stats, keydef->max_storage_fmt_length());
+    m_stats2store[keydef->m_stats.m_gl_index_id] = keydef->m_stats;
+  }
+
+  const bool should_save_stats = !m_stats2store.empty();
+  mysql_rwlock_unlock(&m_rwlock);
+  if (should_save_stats) {
+    // Queue an async persist_stats(false) call to the background thread.
+    se_queue_save_stats_request();
+  }
+}
+
+void SeDdlManager::persist_stats(const bool &sync)
+{
+  mysql_rwlock_wrlock(&m_rwlock);
+  const auto local_stats2store = std::move(m_stats2store);
+  m_stats2store.clear();
+  mysql_rwlock_unlock(&m_rwlock);
+
+  // Persist stats
+  const std::unique_ptr<db::WriteBatch> wb = m_dict->begin();
+  std::vector<SeIndexStats> stats;
+  std::transform(local_stats2store.begin(), local_stats2store.end(),
+                 std::back_inserter(stats),
+                 [](const std::pair<GL_INDEX_ID, SeIndexStats> &s) {
+                   return s.second;
+                 });
+  m_dict->add_stats(wb.get(), stats);
+  m_dict->commit(wb.get(), sync);
+}
+
+// Check whethter we can safely purge given subtable.
+// We only can safely purge it if
+//   (1) no related SeKeyDef object in uncommited hash table;
+//   (2) no associated dd::Table object from global data dictionary.
+bool SeDdlManager::can_purge_subtable(THD* thd, const GL_INDEX_ID& gl_index_id)
+{
+  if (m_index_num_to_uncommitted_keydef.find(gl_index_id) !=
+      m_index_num_to_uncommitted_keydef.end())
+    return false;
+
+  uint32_t subtable_id = gl_index_id.index_id;
+  auto it = m_index_num_to_keydef.find(gl_index_id);
+  if (it != m_index_num_to_keydef.end()) {
+    auto& tbl_name = it->second.first;
+    uint keyno = it->second.second;
+    // Normally, SeKeyDef object always exists with SeTableDef object together
+    std::shared_ptr<SeTableDef> table_def = find_tbl_from_cache(tbl_name);
+    if (!table_def) {
+      /* Exception case 1:
+       *   SeTableDef object with the name is removed but index cache entry of
+       *   SeKeyDef in the SeTableDef is kept.
+       *   The SeTableDef object may be loaded again later.
+       */
+      HANDLER_LOG(ERROR, "SE: unexpected error, key cache entry exists without table cache entry",
+                  "table_name", tbl_name);
+      return false;
+    } else if (!table_def->m_key_descr_arr || keyno > table_def->m_key_count ||
+               !table_def->m_key_descr_arr[keyno] ||
+               subtable_id != table_def->m_key_descr_arr[keyno]->get_index_number()) {
+      /* Exception case 2:
+       *   old SeTableDef object with the name is removed and new
+       *   SeTableDef object is added but index cache entry of SeKeyDef in
+       *   old SeTableDef is kept
+       */
+      HANDLER_LOG(ERROR, "SE: found invalid index_id in m_index_num_to_keydef "
+                  "without related SeTableDef/SeKeyDef object", K(subtable_id));
+      m_index_num_to_keydef.erase(it);
+      return true;
+    }
+
+    // SeKeyDef object is still present with SeTableDef object in cache
+    // name string in SeTableDef is from filename format, to acquire dd object
+    // we should use table name format which uses different charset
+    char schema_name[FN_REFLEN+1], table_name[FN_REFLEN+1];
+    filename_to_tablename(table_def->base_dbname().c_str(), schema_name, sizeof(schema_name));
+    filename_to_tablename(table_def->base_tablename().c_str(), table_name, sizeof(table_name));
+    dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+    const dd::Table *dd_table = nullptr;
+    MDL_ticket *tbl_ticket = nullptr;
+    // try to acquire and check existence of dd::Table object
+    if (SeDdHelper::acquire_se_table(
+            thd, purge_acquire_lock_timeout, schema_name,
+            table_name, dd_table, tbl_ticket)) {
+      // if failed to acquire dd::Table object we treat as lock wait timeout
+      // and related dd::Table is locked by other thread
+      return false;
+    } else if (nullptr != dd_table) {
+      HANDLER_LOG(WARN, "SE: subtable associated table is still present in global data dictionary!",
+                  K(subtable_id), K(schema_name), K(table_name));
+      if (tbl_ticket) dd::release_mdl(thd, tbl_ticket);
+      return false;
+    } else {
+      // SeTableDef is only present in cache
+      // remove cache entry
+      remove_cache(tbl_name);
+      return true;
+    }
+  }
+
+  return true;
+}
+
+int SeDdlManager::scan_for_tables(Se_tables_scanner *const tables_scanner)
+{
+  assert(tables_scanner != nullptr);
+  int ret = 0;
+  SeTableDef *rec = nullptr;
+
+  mysql_rwlock_rdlock(&m_rwlock);
+  for (const auto &it : m_ddl_hash) {
+    ret = tables_scanner->add_table(it.second.get());
+    if (ret)
+      break;
+  }
+  mysql_rwlock_unlock(&m_rwlock);
+
+  return ret;
 }
 
 bool SeDdlManager::upgrade_system_cf_version1(THD* thd)
@@ -514,519 +808,6 @@ bool SeDdlManager::populate_existing_tables(THD *const thd)
   return error;
 }
 
-int SeDdlManager::update_max_index_id(uint64_t index_id)
-{
-  assert(nullptr != m_dict);
-  int ret = Status::kOk;
-
-  std::unique_ptr<db::WriteBatch> write_batch = m_dict->begin();
-  if (IS_NULL(write_batch.get())) {
-    ret = Status::kInvalidArgument;
-    HANDLER_LOG(ERROR, "SE: failed to allocate write batch", K(ret), KP(write_batch.get()));
-  } else if (FAILED(m_dict->update_max_index_id(write_batch.get(), index_id))) {
-    HANDLER_LOG(ERROR, "SE: failed to update max_index_id", K(ret), K(index_id));
-  } else if (FAILED(m_dict->commit(write_batch.get()))) {
-    HANDLER_LOG(ERROR, "SE: failed to commit max_index_id", K(ret), K(index_id));
-  } else {
-#ifndef NDEBUG
-    HANDLER_LOG(INFO, "SE: successfully update max_index_id", K(index_id));
-#endif
-  }
-
-  return ret;
-}
-
-bool SeDdlManager::update_max_table_id(uint64_t table_id)
-{
-  auto write_batch = m_dict->begin();
-  if (nullptr == write_batch) {
-    HANDLER_LOG(ERROR, "SE: failed to begin wrtiebatch");
-    return true;
-  }
-
-  bool res = false;
-  m_dict->update_max_table_id(write_batch.get(), table_id);
-  if (m_dict->commit(write_batch.get())) {
-    HANDLER_LOG(ERROR, "SE: failed to update max_table_id", K(table_id));
-    res = true;
-  }
-  return res;
-}
-
-bool SeDdlManager::update_system_cf_version(uint16_t system_cf_version)
-{
-  auto write_batch = m_dict->begin();
-  if (!write_batch) {
-    HANDLER_LOG(ERROR, "SE: failed to begin wrtiebatch");
-    return true;
-  }
-
-  bool res = false;
-  m_dict->update_system_cf_version(write_batch.get(), system_cf_version);
-  if (m_dict->commit(write_batch.get())) {
-    HANDLER_LOG(ERROR, "SE: failed to update system_cf_version", "version", system_cf_version);
-    res = true;
-  }
-  return res;
-}
-
-std::shared_ptr<SeTableDef> SeDdlManager::find(const std::string &table_name,
-                                               bool* from_dict,
-                                               bool lock/* = true*/)
-{
-  assert(!table_name.empty() && nullptr != from_dict);
-  std::shared_ptr<SeTableDef> tbl = find_tbl_from_cache(table_name, lock);
-  *from_dict = false;
-  // for rename_cache during ha_post_recover, current_thd is nullptr
-  if (nullptr == tbl && nullptr != current_thd) {
-    // SeTableDef* tbl_def = find_tbl_from_dict(table_name);
-    // try to acquire dd::Table object from dictionary and
-    // restore SeTableDef from dd::Table
-    SeTableDef* tbl_def = restore_table_from_dd(current_thd, table_name);
-    if (nullptr != tbl_def) {
-      *from_dict = true;
-      tbl.reset(tbl_def);
-    }
-  }
-
-  return tbl;
-}
-
-std::shared_ptr<SeTableDef> SeDdlManager::find(const char *table_name,
-                                               int64_t name_len,
-                                               bool* from_dict,
-                                               bool lock/* = true*/)
-{
-  return find(std::string(table_name, name_len), from_dict, lock);
-}
-
-std::shared_ptr<SeTableDef> SeDdlManager::find(const dd::Table* dd_table,
-                                               const std::string& table_name,
-                                               bool* from_dict,
-                                               bool lock/* = true*/)
-{
-  assert(!table_name.empty() && nullptr != from_dict);
-  std::shared_ptr<SeTableDef> tbl = find_tbl_from_cache(table_name, lock);
-  *from_dict = false;
-  if (nullptr == tbl) {
-    assert(nullptr != dd_table);
-    // restore SeTableDef from dd::Table
-    SeTableDef* tbl_def = restore_table_from_dd(dd_table, table_name);
-    if (nullptr != tbl_def) {
-      *from_dict = true;
-      tbl.reset(tbl_def);
-    }
-  }
-  return tbl;
-}
-
-std::shared_ptr<SeTableDef> SeDdlManager::find(THD* thd,
-                                               const std::string& table_name,
-                                               bool* from_dict,
-                                               bool lock/* = true*/)
-{
-  assert(!table_name.empty() && nullptr != from_dict);
-  std::shared_ptr<SeTableDef> tbl = find_tbl_from_cache(table_name, lock);
-  *from_dict = false;
-  if (nullptr == tbl) {
-    assert(nullptr != thd);
-    // try to acquire dd::Table object from dictionary and
-    // restore SeTableDef from dd::Table
-    SeTableDef* tbl_def = restore_table_from_dd(thd, table_name);
-    if (nullptr != tbl_def) {
-      *from_dict = true;
-      tbl.reset(tbl_def);
-    }
-  }
-  return tbl;
-}
-
-std::shared_ptr<SeTableDef> SeDdlManager::find_tbl_from_cache(const std::string &table_name,
-                                                              bool lock/* = true*/)
-{
-  std::shared_ptr<SeTableDef> tbl;
-  if (lock) {
-    mysql_rwlock_rdlock(&m_rwlock);
-  }
-
-  const auto &it = m_ddl_hash.find(table_name);
-  if (it != m_ddl_hash.end())
-    tbl = it->second;
-
-  if (lock) {
-    mysql_rwlock_unlock(&m_rwlock);
-  }
-
-  return tbl;
-}
-
-int SeDdlManager::get_index_dict(const std::string& table_name,
-                                 const GL_INDEX_ID &gl_index_id,
-                                 uint max_index_id_in_dict,
-                                 uint16 &index_dict_version,
-                                 uchar &index_type,
-                                 uint16 &kv_version,
-                                 uint &flags)
-{
-  int ret = false;
-  index_dict_version = 0;
-  index_type = 0;
-  kv_version = 0;
-  flags = 0;
-
-  if (!m_dict->get_index_info(gl_index_id, &index_dict_version, &index_type,
-                              &kv_version)) {
-    sql_print_error("SE: Could not get index information "
-                    "for Index Number (%u,%u), table %s",
-                    gl_index_id.cf_id, gl_index_id.index_id, table_name.c_str());
-    return true;
-  }
-
-  if (max_index_id_in_dict < gl_index_id.index_id) {
-    sql_print_error("SE: Found max index id %u from data dictionary "
-                    "but also found larger index id %u from dictionary. "
-                    "This should never happen and possibly a bug.",
-                    max_index_id_in_dict, gl_index_id.index_id);
-    return true;
-  }
-
-  if (!m_dict->get_cf_flags(gl_index_id.cf_id, &flags)) {
-    sql_print_error("SE: Could not get Column Family Flags "
-                    "for CF Number %d, table %s",
-                    gl_index_id.cf_id, table_name.c_str());
-    return true;
-  }
-
-  return ret;
-}
-
-// this is a safe version of the find() function below.  It acquires a read
-// lock on m_rwlock to make sure the SeKeyDef is not discarded while we
-// are finding it.  Copying it into 'ret' increments the count making sure
-// that the object will not be discarded until we are finished with it.
-std::shared_ptr<const SeKeyDef> SeDdlManager::safe_find(GL_INDEX_ID gl_index_id)
-{
-  std::shared_ptr<const SeKeyDef> ret(nullptr);
-
-  mysql_rwlock_rdlock(&m_rwlock);
-
-  auto it = m_index_num_to_keydef.find(gl_index_id);
-  if (it != m_index_num_to_keydef.end()) {
-    bool from_dict = false;
-    const auto table_def = find(it->second.first, &from_dict, false);
-    if (table_def && it->second.second < table_def->m_key_count) {
-      const auto &kd = table_def->m_key_descr_arr[it->second.second];
-      if (kd->max_storage_fmt_length() != 0) {
-        ret = kd;
-      }
-      if (from_dict) {
-        // put into cache need write lock
-        mysql_rwlock_unlock(&m_rwlock);
-        put(table_def);
-        mysql_rwlock_rdlock(&m_rwlock);
-      }
-    }
-  } else {
-    auto it = m_index_num_to_uncommitted_keydef.find(gl_index_id);
-    if (it != m_index_num_to_uncommitted_keydef.end()) {
-      const auto &kd = it->second;
-      if (kd->max_storage_fmt_length() != 0) {
-        ret = kd;
-      }
-    }
-  }
-
-  mysql_rwlock_unlock(&m_rwlock);
-
-  return ret;
-}
-
-// this method assumes write lock on m_rwlock
-const std::shared_ptr<SeKeyDef> &SeDdlManager::find(GL_INDEX_ID gl_index_id)
-{
-  auto it = m_index_num_to_keydef.find(gl_index_id);
-  if (it != m_index_num_to_keydef.end()) {
-    bool from_dict = false;
-    auto table_def = find(it->second.first, &from_dict, false);
-    if (table_def) {
-      if (from_dict) put(table_def, false);
-
-      if (it->second.second < table_def->m_key_count) {
-        return table_def->m_key_descr_arr[it->second.second];
-      }
-    }
-  } else {
-    auto it = m_index_num_to_uncommitted_keydef.find(gl_index_id);
-    if (it != m_index_num_to_uncommitted_keydef.end()) {
-      return it->second;
-    }
-  }
-
-  static std::shared_ptr<SeKeyDef> empty = nullptr;
-
-  return empty;
-}
-
-void SeDdlManager::set_stats(
-    const std::unordered_map<GL_INDEX_ID, SeIndexStats> &stats)
-{
-  mysql_rwlock_wrlock(&m_rwlock);
-  for (auto src : stats) {
-    const auto &keydef = find(src.second.m_gl_index_id);
-    if (keydef) {
-      keydef->m_stats = src.second;
-      m_stats2store[keydef->m_stats.m_gl_index_id] = keydef->m_stats;
-    }
-  }
-  mysql_rwlock_unlock(&m_rwlock);
-}
-
-void SeDdlManager::adjust_stats2(SeIndexStats stats, const bool increment)
-{
-  mysql_rwlock_wrlock(&m_rwlock);
-  const auto &keydef = find(stats.m_gl_index_id);
-  if (keydef) {
-    keydef->m_stats.m_distinct_keys_per_prefix.resize(
-       keydef->get_key_parts());
-    keydef->m_stats.merge(stats, increment, keydef->max_storage_fmt_length());
-    m_stats2store[keydef->m_stats.m_gl_index_id] = keydef->m_stats;
-  }
-
-  const bool should_save_stats = !m_stats2store.empty();
-  mysql_rwlock_unlock(&m_rwlock);
-  if (should_save_stats) {
-    // Queue an async persist_stats(false) call to the background thread.
-    se_queue_save_stats_request();
-  }
-}
-
-void SeDdlManager::adjust_stats(SeIndexStats stats)
-{
-  mysql_rwlock_wrlock(&m_rwlock);
-  const auto &keydef = find(stats.m_gl_index_id);
-  if (keydef) {
-    keydef->m_stats.m_distinct_keys_per_prefix.resize(keydef->get_key_parts());
-    keydef->m_stats.update(stats, keydef->max_storage_fmt_length());
-    m_stats2store[keydef->m_stats.m_gl_index_id] = keydef->m_stats;
-  }
-
-  const bool should_save_stats = !m_stats2store.empty();
-  mysql_rwlock_unlock(&m_rwlock);
-  if (should_save_stats) {
-    // Queue an async persist_stats(false) call to the background thread.
-    se_queue_save_stats_request();
-  }
-}
-
-void SeDdlManager::persist_stats(const bool &sync)
-{
-  mysql_rwlock_wrlock(&m_rwlock);
-  const auto local_stats2store = std::move(m_stats2store);
-  m_stats2store.clear();
-  mysql_rwlock_unlock(&m_rwlock);
-
-  // Persist stats
-  const std::unique_ptr<db::WriteBatch> wb = m_dict->begin();
-  std::vector<SeIndexStats> stats;
-  std::transform(local_stats2store.begin(), local_stats2store.end(),
-                 std::back_inserter(stats),
-                 [](const std::pair<GL_INDEX_ID, SeIndexStats> &s) {
-                   return s.second;
-                 });
-  m_dict->add_stats(wb.get(), stats);
-  m_dict->commit(wb.get(), sync);
-}
-
-/**
-  Put table definition of `tbl` into the mapping, and also write it to the
-  on-disk data dictionary.
-
-  @param tbl, se_tbl_def put to cache
-  @param batch, transaction buffer on current session
-  @param ddl_log_manager
-  @param thread_id, session thread_id
-  @param write_ddl_log, for create-table, we need write remove_cache log to remove rubbish, for alter-table, we just invalid cache, make sure cache is consistent with dictionary.
-*/
-
-int SeDdlManager::put_and_write(const std::shared_ptr<SeTableDef>& tbl,
-                                db::WriteBatch *const batch,
-                                SeDdlLogManager *const ddl_log_manager,
-                                ulong thread_id,
-                                bool write_ddl_log)
-{
-  const std::string &dbname_tablename = tbl->full_tablename();
-
-  if (write_ddl_log) {
-    if (ddl_log_manager->write_remove_cache_log(batch,
-                                                dbname_tablename,
-                                                thread_id)) {
-      sql_print_error(
-          "write remove cache ddl_log error, table_name(%s), thread_id(%d)",
-          dbname_tablename.c_str(), thread_id);
-      return HA_EXIT_FAILURE;
-    } else {
-      put(tbl);
-    }
-  } else {
-    remove_cache(dbname_tablename);
-  }
-
-  return HA_EXIT_SUCCESS;
-}
-
-/* TODO:
-  This function modifies m_ddl_hash and m_index_num_to_keydef.
-  However, these changes need to be reversed if dict_manager.commit fails
-  See the discussion here: https://reviews.facebook.net/D35925#inline-259167
-  Tracked by https://github.com/facebook/mysql-5.6/issues/33
-*/
-void SeDdlManager::put(const std::shared_ptr<SeTableDef>& tbl, bool lock/* = true*/)
-{
-  const std::string &dbname_tablename = tbl->full_tablename();
-
-  if (lock)
-    mysql_rwlock_wrlock(&m_rwlock);
-
-  // We have to do this find because 'tbl' is not yet in the list.  We need
-  // to find the one we are replacing ('rec')
-  const auto &it = m_ddl_hash.find(dbname_tablename);
-  if (it != m_ddl_hash.end()) {
-    m_ddl_hash.erase(it);
-  }
-  m_ddl_hash.insert({dbname_tablename, tbl});
-
-  for (uint keyno = 0; keyno < tbl->m_key_count; keyno++) {
-    m_index_num_to_keydef[tbl->m_key_descr_arr[keyno]->get_gl_index_id()] =
-        std::make_pair(dbname_tablename, keyno);
-  }
-
-  if (lock)
-    mysql_rwlock_unlock(&m_rwlock);
-}
-
-void SeDdlManager::remove_cache(const std::string &dbname_tablename, bool lock/* = true */)
-{
-  if (lock) {
-    mysql_rwlock_wrlock(&m_rwlock);
-  }
-
-  const auto &it = m_ddl_hash.find(dbname_tablename);
-  if (it != m_ddl_hash.end()) {
-    // m_index_num_to_keydef is inserted during put
-    // we should remove here not other place
-    if (it->second && it->second->m_key_descr_arr) {
-      for (uint keyno = 0; keyno < it->second->m_key_count; keyno++) {
-        auto kd = it->second->m_key_descr_arr[keyno];
-        assert(kd);
-        m_index_num_to_keydef.erase(kd->get_gl_index_id());
-      }
-    }
-    m_ddl_hash.erase(it);
-  }
-
-  if (lock) {
-    mysql_rwlock_unlock(&m_rwlock);
-  }
-}
-
-bool SeDdlManager::rename_cache(const std::string &from, const std::string &to)
-{
-  std::shared_ptr<SeTableDef> tbl;
-  bool from_dict = false;
-  if (!(tbl = find(from, &from_dict))) {
-    /** if not found, that's ok for we may executed many times */
-    HANDLER_LOG(WARN, "Table doesn't exist when rename_cache", K(from), K(to));
-    return false;
-  }
-
-  return rename_cache(tbl.get(), to);
-}
-
-bool SeDdlManager::rename_cache(SeTableDef* tbl, const std::string &to)
-{
-  assert(nullptr != tbl);
-  auto new_tbl = std::make_shared<SeTableDef>(to);
-
-  new_tbl->m_key_count = tbl->m_key_count;
-  new_tbl->m_auto_incr_val =
-      tbl->m_auto_incr_val.load(std::memory_order_relaxed);
-  new_tbl->m_key_descr_arr = tbl->m_key_descr_arr;
-  // so that it's not free'd when deleting the old rec
-  tbl->m_key_descr_arr = nullptr;
-
-  mysql_rwlock_wrlock(&m_rwlock);
-  /** update dictionary cache */
-  put(new_tbl, false);
-  remove_cache(tbl->full_tablename(), false);
-
-  mysql_rwlock_unlock(&m_rwlock);
-
-  DBUG_EXECUTE_IF("ddl_log_inject_rollback_rename_process",{return true;});
-  return false;
-}
-
-void SeDdlManager::cleanup()
-{
-  m_ddl_hash.clear();
-  mysql_rwlock_destroy(&m_rwlock);
-}
-
-void SeDdlManager::reset()
-{
-  // TODO(Zhao Dongsheng): reset the table cache and repopulate it from data dictionary.
-  mysql_rwlock_wrlock(&m_rwlock);
-  m_ddl_hash.clear();
-  mysql_rwlock_unlock(&m_rwlock);
-}
-
-int SeDdlManager::scan_for_tables(Se_tables_scanner *const tables_scanner)
-{
-  int ret = 0;
-  SeTableDef *rec = nullptr;
-
-  assert(tables_scanner != nullptr);
-
-  mysql_rwlock_rdlock(&m_rwlock);
-
-  ret = 0;
-
-  for (const auto &it : m_ddl_hash) {
-    ret = tables_scanner->add_table(it.second.get());
-    if (ret)
-      break;
-  }
-
-  mysql_rwlock_unlock(&m_rwlock);
-  return ret;
-}
-
-int SeDdlManager::alloc_index_id(uint64_t &index_id)
-{
-  assert(nullptr != m_dict);
-  int ret = common::Status::kOk;
-
-  mysql_rwlock_wrlock(&m_rwlock);
-  if (FAILED(update_max_index_id(m_next_index_id))) {
-    HANDLER_LOG(ERROR, "SE: failed to update max index id", K(ret), K(m_next_index_id));
-  } else {
-    index_id = m_next_index_id++;
-  }
-  mysql_rwlock_unlock(&m_rwlock);
-
-  return ret;
-}
-
-bool SeDdlManager::get_table_id(uint64_t &table_id)
-{
-  bool res = true;
-  mysql_rwlock_wrlock(&m_rwlock);
-  if (!(res = update_max_table_id(m_next_table_id))) {
-    table_id = m_next_table_id++;
-  }
-  mysql_rwlock_unlock(&m_rwlock);
-  return res;
-}
-
 SeKeyDef* SeDdlManager::restore_index_from_dd(const dd::Properties& prop,
                                               const std::string &table_name,
                                               const std::string &index_name,
@@ -1063,8 +844,7 @@ SeKeyDef* SeDdlManager::restore_index_from_dd(const dd::Properties& prop,
   }
 }
 
-SeTableDef* SeDdlManager::restore_table_from_dd(const dd::Table* dd_table,
-                                                const std::string& table_name)
+SeTableDef* SeDdlManager::restore_table_from_dd(const dd::Table* dd_table, const std::string& table_name)
 {
   SeTableDef* tbl_def = nullptr;
   uint32_t hidden_subtable_id = DD_SUBTABLE_ID_INVALID;
@@ -1173,6 +953,188 @@ SeTableDef* SeDdlManager::restore_table_from_dd(THD* thd, const std::string& tab
   }
 
   return tbl;
+}
+
+int SeDdlManager::update_max_index_id(uint64_t index_id)
+{
+  assert(nullptr != m_dict);
+  int ret = Status::kOk;
+
+  std::unique_ptr<db::WriteBatch> write_batch = m_dict->begin();
+  if (IS_NULL(write_batch.get())) {
+    ret = Status::kInvalidArgument;
+    HANDLER_LOG(ERROR, "SE: failed to allocate write batch", K(ret), KP(write_batch.get()));
+  } else if (FAILED(m_dict->update_max_index_id(write_batch.get(), index_id))) {
+    HANDLER_LOG(ERROR, "SE: failed to update max_index_id", K(ret), K(index_id));
+  } else if (FAILED(m_dict->commit(write_batch.get()))) {
+    HANDLER_LOG(ERROR, "SE: failed to commit max_index_id", K(ret), K(index_id));
+  } else {
+#ifndef NDEBUG
+    HANDLER_LOG(INFO, "SE: successfully update max_index_id", K(index_id));
+#endif
+  }
+
+  return ret;
+}
+
+bool SeDdlManager::update_max_table_id(uint64_t table_id)
+{
+  auto write_batch = m_dict->begin();
+  if (nullptr == write_batch) {
+    HANDLER_LOG(ERROR, "SE: failed to begin wrtiebatch");
+    return true;
+  }
+
+  bool res = false;
+  m_dict->update_max_table_id(write_batch.get(), table_id);
+  if (m_dict->commit(write_batch.get())) {
+    HANDLER_LOG(ERROR, "SE: failed to update max_table_id", K(table_id));
+    res = true;
+  }
+  return res;
+}
+
+bool SeDdlManager::update_system_cf_version(uint16_t system_cf_version)
+{
+  auto write_batch = m_dict->begin();
+  if (!write_batch) {
+    HANDLER_LOG(ERROR, "SE: failed to begin wrtiebatch");
+    return true;
+  }
+
+  bool res = false;
+  m_dict->update_system_cf_version(write_batch.get(), system_cf_version);
+  if (m_dict->commit(write_batch.get())) {
+    HANDLER_LOG(ERROR, "SE: failed to update system_cf_version", "version", system_cf_version);
+    res = true;
+  }
+  return res;
+}
+
+int SeDdlManager::get_index_dict(const std::string& table_name,
+                                 const GL_INDEX_ID &gl_index_id,
+                                 uint max_index_id_in_dict,
+                                 uint16 &index_dict_version,
+                                 uchar &index_type,
+                                 uint16 &kv_version,
+                                 uint &flags)
+{
+  int ret = false;
+  index_dict_version = 0;
+  index_type = 0;
+  kv_version = 0;
+  flags = 0;
+
+  if (!m_dict->get_index_info(gl_index_id, &index_dict_version, &index_type,
+                              &kv_version)) {
+    sql_print_error("SE: Could not get index information "
+                    "for Index Number (%u,%u), table %s",
+                    gl_index_id.cf_id, gl_index_id.index_id, table_name.c_str());
+    return true;
+  }
+
+  if (max_index_id_in_dict < gl_index_id.index_id) {
+    sql_print_error("SE: Found max index id %u from data dictionary "
+                    "but also found larger index id %u from dictionary. "
+                    "This should never happen and possibly a bug.",
+                    max_index_id_in_dict, gl_index_id.index_id);
+    return true;
+  }
+
+  if (!m_dict->get_cf_flags(gl_index_id.cf_id, &flags)) {
+    sql_print_error("SE: Could not get Column Family Flags "
+                    "for CF Number %d, table %s",
+                    gl_index_id.cf_id, table_name.c_str());
+    return true;
+  }
+
+  return ret;
+}
+
+std::shared_ptr<SeTableDef> SeDdlManager::find_tbl_from_cache(const std::string &table_name,
+                                                              bool lock/* = true*/)
+{
+  std::shared_ptr<SeTableDef> tbl;
+  if (lock) {
+    mysql_rwlock_rdlock(&m_rwlock);
+  }
+
+  const auto &it = m_ddl_hash.find(table_name);
+  if (it != m_ddl_hash.end())
+    tbl = it->second;
+
+  if (lock) {
+    mysql_rwlock_unlock(&m_rwlock);
+  }
+
+  return tbl;
+}
+
+// this method assumes write lock on m_rwlock
+const std::shared_ptr<SeKeyDef> &SeDdlManager::find(GL_INDEX_ID gl_index_id)
+{
+  auto it = m_index_num_to_keydef.find(gl_index_id);
+  if (it != m_index_num_to_keydef.end()) {
+    bool from_dict = false;
+    auto table_def = find(it->second.first, &from_dict, false);
+    if (table_def) {
+      if (from_dict) put(table_def, false);
+
+      if (it->second.second < table_def->m_key_count) {
+        return table_def->m_key_descr_arr[it->second.second];
+      }
+    }
+  } else {
+    auto it = m_index_num_to_uncommitted_keydef.find(gl_index_id);
+    if (it != m_index_num_to_uncommitted_keydef.end()) {
+      return it->second;
+    }
+  }
+
+  static std::shared_ptr<SeKeyDef> empty = nullptr;
+
+  return empty;
+}
+
+// this is a safe version of the find() function below.  It acquires a read
+// lock on m_rwlock to make sure the SeKeyDef is not discarded while we
+// are finding it.  Copying it into 'ret' increments the count making sure
+// that the object will not be discarded until we are finished with it.
+std::shared_ptr<const SeKeyDef> SeDdlManager::safe_find(GL_INDEX_ID gl_index_id)
+{
+  std::shared_ptr<const SeKeyDef> ret(nullptr);
+
+  mysql_rwlock_rdlock(&m_rwlock);
+
+  auto it = m_index_num_to_keydef.find(gl_index_id);
+  if (it != m_index_num_to_keydef.end()) {
+    bool from_dict = false;
+    const auto table_def = find(it->second.first, &from_dict, false);
+    if (table_def && it->second.second < table_def->m_key_count) {
+      const auto &kd = table_def->m_key_descr_arr[it->second.second];
+      if (kd->max_storage_fmt_length() != 0) {
+        ret = kd;
+      }
+      if (from_dict) {
+        // put into cache need write lock
+        mysql_rwlock_unlock(&m_rwlock);
+        put(table_def);
+        mysql_rwlock_rdlock(&m_rwlock);
+      }
+    }
+  } else {
+    auto it = m_index_num_to_uncommitted_keydef.find(gl_index_id);
+    if (it != m_index_num_to_uncommitted_keydef.end()) {
+      const auto &kd = it->second;
+      if (kd->max_storage_fmt_length() != 0) {
+        ret = kd;
+      }
+    }
+  }
+
+  mysql_rwlock_unlock(&m_rwlock);
+
+  return ret;
 }
 
 } //namespace smartengine

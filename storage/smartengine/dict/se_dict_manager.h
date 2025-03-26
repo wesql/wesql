@@ -22,7 +22,6 @@
 
 namespace smartengine
 {
-
 namespace db
 {
 class WriteBatchBase;
@@ -80,102 +79,69 @@ class WriteBatchBase;
   begin() and commit() to make it easier to do atomic operations.
 
 */
-class SeDictionaryManager {
-private:
-  mysql_mutex_t m_mutex;
-  db::DB *m_db = nullptr;
-  db::ColumnFamilyHandle *m_system_cfh = nullptr;
-  /* Utility to put INDEX_INFO and CF_DEFINITION */
-
-  uchar m_key_buf_max_index_id[SeKeyDef::INDEX_NUMBER_SIZE] = {0};
-  common::Slice m_key_slice_max_index_id;
-
-  uchar m_key_buf_max_table_id[SeKeyDef::INDEX_NUMBER_SIZE] = {0};
-  common::Slice m_key_slice_max_table_id;
-
-  uchar m_key_buf_server_version[SeKeyDef::SERVER_VERSION_SIZE] = {0};
-  common::Slice m_key_slice_server_version;
-
-  std::unordered_set<dd::Object_id> dd_table_ids;
-
-  static void dump_index_id(uchar *const netbuf,
-                            SeKeyDef::DATA_DICT_TYPE dict_type,
-                            const GL_INDEX_ID &gl_index_id);
-
+class SeDictionaryManager
+{
 public:
+  SeDictionaryManager();
   SeDictionaryManager(const SeDictionaryManager &) = delete;
   SeDictionaryManager &operator=(const SeDictionaryManager &) = delete;
-  SeDictionaryManager() = default;
 
-  bool init(db::DB *const se_dict, const common::ColumnFamilyOptions &cf_options);
-
+  bool init(db::DB *const se_db, const common::ColumnFamilyOptions &cf_options);
   inline void cleanup() { mysql_mutex_destroy(&m_mutex); }
-
   inline void lock() { SE_MUTEX_LOCK_CHECK(m_mutex); }
-
   inline void unlock() { SE_MUTEX_UNLOCK_CHECK(m_mutex); }
-
-  /* Raw se operations */
   std::unique_ptr<db::WriteBatch> begin() const;
-
   int commit(db::WriteBatch *batch, const bool &sync = true) const;
-
-  common::Status get_value(const common::Slice &key, std::string *const value) const;
-
   void put_key(db::WriteBatchBase *const batch,
                const common::Slice &key,
                const common::Slice &value) const;
-
   void delete_key(db::WriteBatchBase *batch, const common::Slice &key) const;
-
+  common::Status get_value(const common::Slice &key, std::string *const value) const;
   db::Iterator *new_iterator() const;
-
   void delete_index_info(db::WriteBatch *batch, const GL_INDEX_ID &index_id) const;
-
   // Kept for upgrading from old version
   bool get_index_info(const GL_INDEX_ID &gl_index_id,
                       uint16_t *index_dict_version,
                       uchar *index_type,
                       uint16_t *kv_version) const;
-
-  static bool is_valid_index_version(uint16_t index_dict_version);
-
-  static bool is_valid_kv_version(uchar index_type, uint16_t kv_version);
-
   void drop_cf_flags(db::WriteBatch *const batch, uint32_t cf_id) const;
-
   // Kept for upgrading from old version
   bool get_cf_flags(const uint &cf_id, uint *const cf_flags) const;
-
   void delete_with_prefix(db::WriteBatch *const batch,
                           SeKeyDef::DATA_DICT_TYPE dict_type,
                           const GL_INDEX_ID &gl_index_id) const;
-
   /* Functions for fast CREATE/DROP TABLE/INDEX */
   // Kept for upgrading from old version
   void get_ongoing_index_operation(std::unordered_set<GL_INDEX_ID> *gl_index_ids, SeKeyDef::DATA_DICT_TYPE dd_type) const;
-
   bool get_max_index_id(uint32_t *const index_id) const;
-
   int update_max_index_id(db::WriteBatch *batch, uint32_t index_id) const;
-
-  bool get_system_cf_version(uint16_t* system_cf_version) const;
-
-  bool update_system_cf_version(db::WriteBatch *const batch, uint16_t system_cf_version) const;
-
   bool get_max_table_id(uint64_t *table_id) const;
-
   bool update_max_table_id(db::WriteBatch *const batch, uint64_t table_id) const;
-
   void add_stats(db::WriteBatch *const batch, const std::vector<SeIndexStats> &stats) const;
-
   SeIndexStats get_stats(GL_INDEX_ID gl_index_id) const;
-
+  bool get_system_cf_version(uint16_t* system_cf_version) const;
+  bool update_system_cf_version(db::WriteBatch *const batch, uint16_t system_cf_version) const;
   int set_server_version();
-
   int get_server_version(uint *version);
-
   int insert_dd_table_id(dd::Object_id table_id);
+  static bool is_valid_index_version(uint16_t index_dict_version);
+  static bool is_valid_kv_version(uchar index_type, uint16_t kv_version);
+  void dump_index_id(uchar *const netbuf, SeKeyDef::DATA_DICT_TYPE dict_type, const GL_INDEX_ID &gl_index_id) const;
+
+private:
+  mysql_mutex_t m_mutex;
+  db::DB *m_db;
+  db::ColumnFamilyHandle *m_system_cfh;
+  std::unordered_set<dd::Object_id> dd_table_ids;
+
+  uchar m_key_buf_max_index_id[SeKeyDef::INDEX_NUMBER_SIZE];
+  common::Slice m_key_slice_max_index_id;
+
+  uchar m_key_buf_max_table_id[SeKeyDef::INDEX_NUMBER_SIZE];
+  common::Slice m_key_slice_max_table_id;
+
+  uchar m_key_buf_server_version[SeKeyDef::SERVER_VERSION_SIZE];
+  common::Slice m_key_slice_server_version;
 };
 
 } //namespace smartengine
