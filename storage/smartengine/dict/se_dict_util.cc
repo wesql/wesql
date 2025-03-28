@@ -92,6 +92,7 @@ const char *const RENEW_LEASE_LOCK_THREAD_NAME = "se-renewal";
 static const std::set<const my_core::CHARSET_INFO *> SE_INDEX_COLLATIONS =
   {&my_charset_bin, &my_charset_latin1_bin,
    &my_charset_utf8mb3_bin, &my_charset_utf8mb3_general_ci,
+   &my_charset_utf8mb3_tolower_ci,
    &my_charset_gbk_bin, &my_charset_gbk_chinese_ci,
    &my_charset_utf8mb4_bin, &my_charset_utf8mb4_general_ci,
    &my_charset_utf8mb4_0900_ai_ci};

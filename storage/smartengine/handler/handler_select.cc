@@ -226,6 +226,13 @@ int ha_smartengine::index_next(uchar *const buf)
   DBUG_RETURN(rc);
 }
 
+int ha_smartengine::index_next_same(uchar *buf, const uchar *key [[maybe_unused]], uint length [[maybe_unused]])
+{
+  DBUG_TRACE;
+  ha_statistic_increment(&SSV::ha_read_next_count);
+  return index_next(buf);
+}
+
 int ha_smartengine::index_prev(uchar *const buf)
 {
   DBUG_ENTER_FUNC();
@@ -2085,8 +2092,9 @@ int ha_smartengine::index_read_map_impl(uchar *const buf,
                                       key, keypart_map);
   }
 
-  if ((pushed_idx_cond && pushed_idx_cond_keyno == active_index) &&
-      (find_flag == HA_READ_KEY_EXACT || find_flag == HA_READ_PREFIX_LAST)) {
+//  if ((pushed_idx_cond && pushed_idx_cond_keyno == active_index) &&
+//      (find_flag == HA_READ_KEY_EXACT || find_flag == HA_READ_PREFIX_LAST)) 
+  {
     /*
       We are doing a point index lookup, and ICP is enabled. It is possible
       that this call will be followed by ha_smartengine->index_next_same() call.
@@ -2223,7 +2231,7 @@ int ha_smartengine::find_icp_matching_index_rec(
 {
   assert(buf != nullptr);
 
-  if (pushed_idx_cond && pushed_idx_cond_keyno == active_index) {
+
     const SeKeyDef &kd = *m_key_descr_arr[active_index];
 
     while (1) {
@@ -2246,39 +2254,41 @@ int ha_smartengine::find_icp_matching_index_rec(
           return HA_ERR_END_OF_FILE;
         }
       }
+      if (pushed_idx_cond && pushed_idx_cond_keyno == active_index) {
+        const common::Slice value = m_scan_it->value();
+        if (kd.unpack_record(table, buf, &rkey, &value, m_verify_row_debug_checksums)) {
+          return HA_ERR_INTERNAL_ERROR;
+        }
 
-      const common::Slice value = m_scan_it->value();
-      if (kd.unpack_record(table, buf, &rkey, &value,
-                           m_verify_row_debug_checksums)) {
-        return HA_ERR_INTERNAL_ERROR;
-      }
-
-      const enum icp_result icp_status = check_index_cond();
-      if (icp_status == ICP_NO_MATCH) {
-        if (move_forward)
-          m_scan_it->Next();
-        else
-          m_scan_it->Prev();
-        continue; /* Get the next (or prev) index tuple */
-      } else if (icp_status == ICP_OUT_OF_RANGE) {
-        /* We have walked out of range we are scanning */
-        //table->status = STATUS_NOT_FOUND;
-        return HA_ERR_END_OF_FILE;
-      } else /* icp_status == ICP_MATCH */
-      {
-        /* Index Condition is satisfied. We have rc==0, proceed to fetch the
-         * row. */
-        break;
-      }
-      /*
-        TODO: should we have this here, or RockDB handles this internally?
-        if (my_core::thd_killed(current_thd))
+        const enum icp_result icp_status = check_index_cond();
+        if (icp_status == ICP_NO_MATCH) {
+          if (move_forward)
+            m_scan_it->Next();
+          else
+            m_scan_it->Prev();
+          continue; /* Get the next (or prev) index tuple */
+        } else if (icp_status == ICP_OUT_OF_RANGE) {
+          /* We have walked out of range we are scanning */
+          //table->status = STATUS_NOT_FOUND;
+          return HA_ERR_END_OF_FILE;
+        } else /* icp_status == ICP_MATCH */
         {
-          rc= HA_ERR_INTERNAL_ERROR; // doesn't matter
+          /* Index Condition is satisfied. We have rc==0, proceed to fetch the
+           * row. */
           break;
         }
-      */
-    }
+        /*
+          TODO: should we have this here, or RockDB handles this internally?
+          if (my_core::thd_killed(current_thd))
+          {
+            rc= HA_ERR_INTERNAL_ERROR; // doesn't matter
+            break;
+          }
+        */
+      } 
+      else {
+        break;
+      }
   }
 
   return HA_EXIT_SUCCESS;
@@ -3157,6 +3167,14 @@ int ha_smartengine::rnd_next_with_direction(uchar *const buf, bool move_forward)
     if (!m_pk_descr->covers_key(key)) {
       rc = HA_ERR_END_OF_FILE;
       break;
+    }
+
+    if (m_sk_match_prefix) {
+      const common::Slice prefix((const char *)m_sk_match_prefix, m_sk_match_length);
+      if (!m_pk_descr->value_matches_prefix(key, prefix)) {
+        rc = HA_ERR_END_OF_FILE;
+        break;
+      }
     }
 
     if (m_lock_rows != SE_LOCK_NONE) {
