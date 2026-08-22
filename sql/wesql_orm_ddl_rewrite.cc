@@ -23,6 +23,12 @@
 
 namespace {
 
+/*
+  unicode_ci is compiled in strings/ctype-uca.cc but not declared in
+  include/m_ctype.h. Keep the same extern the mysys charset tables use.
+*/
+extern CHARSET_INFO my_charset_utf8mb4_unicode_ci;
+
 const CHARSET_INFO *k_unicode_ci = &my_charset_utf8mb4_unicode_ci;
 const CHARSET_INFO *k_general_ci = &my_charset_utf8mb4_general_ci;
 
