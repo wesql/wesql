@@ -12,6 +12,17 @@ CREATE TABLE c (id INT PRIMARY KEY, p_id INT, CONSTRAINT c_fk FOREIGN KEY (p_id)
 --error ER_UNKNOWN_ERROR
 CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(191), UNIQUE KEY (email)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+--echo # ON: CREATE TABLE with inline FK
+SET SESSION wesql_orm_ddl_rewrite=ON;
+CREATE TABLE cr_p (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE cr_c (
+  id INT PRIMARY KEY,
+  p_id INT NOT NULL,
+  CONSTRAINT cr_fk FOREIGN KEY (p_id) REFERENCES cr_p(id)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+SHOW WARNINGS;
+SHOW CREATE TABLE cr_c;
+
 --echo # ON: FK stripped, no leftover generated index
 SET SESSION wesql_orm_ddl_rewrite=ON;
 CREATE TABLE a_parent (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -36,5 +47,5 @@ CREATE TABLE mix_c (id INT PRIMARY KEY, p_id INT, extra INT);
 --error ER_WESQL_ORM_ALTER_NOT_REWRITABLE
 ALTER TABLE mix_c ADD extra2 INT, ADD CONSTRAINT mix_fk FOREIGN KEY (p_id) REFERENCES mix_p(id);
 
-DROP TABLE a_child, a_parent, User, p, tdef, mix_c, mix_p;
+DROP TABLE a_child, a_parent, User, p, tdef, mix_c, mix_p, cr_c, cr_p;
 SET SESSION wesql_orm_ddl_rewrite=OFF;

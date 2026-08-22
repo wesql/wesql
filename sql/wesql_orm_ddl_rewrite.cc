@@ -7,6 +7,7 @@
 #include "sql/create_field.h"
 #include "sql/dd/types/column.h"
 #include "sql/field.h"
+#include "sql/item.h"
 #include "sql/table.h"
 #include "sql/derror.h"
 #include "sql/handler.h"
@@ -17,7 +18,11 @@
 #include "sql/sql_table.h"
 #include "sql/system_variables.h"
 
+#include <vector>
+
 namespace {
+
+thread_local std::vector<std::string> tls_remapped_columns;
 
 const CHARSET_INFO *k_unicode_ci = &my_charset_utf8mb4_unicode_ci;
 const CHARSET_INFO *k_general_ci = &my_charset_utf8mb4_general_ci;
@@ -86,8 +91,13 @@ void append_ident(std::string *out, const char *name) {
   out->push_back('`');
 }
 
-bool print_column_def(const Create_field *field, std::string *out) {
+bool print_column_def(THD *thd, const Create_field *field, std::string *out) {
   if (has_unprintable_column(field)) return true;
+  if (field->constant_default != nullptr) {
+    String def_buf;
+    field->constant_default->print(thd, &def_buf, QT_ORDINARY);
+    if (def_buf.length() == 0) return true;
+  }
   append_ident(out, field->field_name);
   out->push_back(' ');
   switch (field->sql_type) {
@@ -127,6 +137,12 @@ bool print_column_def(const Create_field *field, std::string *out) {
     *out += field->charset->m_coll_name;
   }
   *out += field->is_nullable ? " NULL" : " NOT NULL";
+  if (field->constant_default != nullptr) {
+    String def_buf;
+    field->constant_default->print(thd, &def_buf, QT_ORDINARY);
+    *out += " DEFAULT ";
+    out->append(def_buf.ptr(), def_buf.length());
+  }
   if (field->comment.str != nullptr && field->comment.length > 0) {
     *out += " COMMENT '";
     out->append(field->comment.str, field->comment.length);
@@ -147,6 +163,7 @@ static uint rewrite_indexed_unicode_columns(THD *thd,
     if (!field_is_indexed(alter_info, field->field_name)) continue;
     field->charset = k_general_ci;
     field->is_explicit_collation = true;
+    tls_remapped_columns.emplace_back(field->field_name);
     warn_collation(thd, field->field_name);
     ++n;
   }
@@ -161,7 +178,7 @@ bool wesql_is_smartengine(const HA_CREATE_INFO *create_info) {
 }
 
 static Wesql_orm_rewrite_result strip_fk_pair(THD *thd, Alter_info *alter_info,
-                                              bool enabled) {
+                                              bool enabled, bool is_alter) {
   Wesql_orm_rewrite_result result;
   if (alter_info == nullptr) return result;
 
@@ -191,8 +208,11 @@ static Wesql_orm_rewrite_result strip_fk_pair(THD *thd, Alter_info *alter_info,
 
   if (!enabled) return result;
 
-  bool mixed = alter_info->create_list.elements > 0;
-  if (alter_info->flags & ~Alter_info::ADD_FOREIGN_KEY) mixed = true;
+  bool mixed = false;
+  if (is_alter) {
+    if (alter_info->create_list.elements > 0) mixed = true;
+    if (alter_info->flags & ~Alter_info::ADD_FOREIGN_KEY) mixed = true;
+  }
   for (Key_spec *k : kept) {
     if (!(k->type == KEYTYPE_MULTIPLE && k->generated)) mixed = true;
   }
@@ -218,7 +238,8 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_create(THD *thd,
   if (!wesql_is_smartengine(create_info)) return result;
 
   const bool on = rewrite_enabled(thd);
-  result = strip_fk_pair(thd, alter_info, on);
+  tls_remapped_columns.clear();
+  result = strip_fk_pair(thd, alter_info, on, false);
   if (result.action == Wesql_orm_rewrite_action::kReject) return result;
 
   if (on) {
@@ -250,7 +271,7 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_alter_fk(THD *thd,
                                                     Alter_info *alter_info) {
   Wesql_orm_rewrite_result result;
   if (!wesql_is_smartengine(create_info)) return result;
-  result = strip_fk_pair(thd, alter_info, rewrite_enabled(thd));
+  result = strip_fk_pair(thd, alter_info, rewrite_enabled(thd), true);
   if (result.action == Wesql_orm_rewrite_action::kRewritten &&
       (alter_info->flags &
        ~(Alter_info::ADD_FOREIGN_KEY | Alter_info::ALTER_RECREATE)) == 0 &&
@@ -272,6 +293,7 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_alter_collation(
   Wesql_orm_rewrite_result result;
   if (!wesql_is_smartengine(create_info) || !rewrite_enabled(thd))
     return result;
+  tls_remapped_columns.clear();
   result.collation_rewritten =
       rewrite_indexed_unicode_columns(thd, create_info, alter_info);
   if (result.collation_rewritten > 0)
@@ -300,9 +322,14 @@ bool wesql_orm_build_alter_binlog_sql(THD *thd, HA_CREATE_INFO *,
   List_iterator<Create_field> it(alter_info->create_list);
   Create_field *field;
   while ((field = it++)) {
-    if (field->charset != k_general_ci &&
-        !field_is_indexed(alter_info, field->field_name))
-      continue;
+    bool remapped = false;
+    for (const std::string &n : tls_remapped_columns) {
+      if (field->field_name != nullptr && n == field->field_name) {
+        remapped = true;
+        break;
+      }
+    }
+    if (!remapped) continue;
     if (has_unprintable_column(field)) {
       my_error(ER_WESQL_ORM_ALTER_NOT_REWRITABLE, MYF(0),
                "wesql_orm_ddl_rewrite=ON");
@@ -311,7 +338,7 @@ bool wesql_orm_build_alter_binlog_sql(THD *thd, HA_CREATE_INFO *,
     sql += first ? " " : ", ";
     first = false;
     sql += "MODIFY COLUMN ";
-    if (print_column_def(field, &sql)) {
+    if (print_column_def(thd, field, &sql)) {
       my_error(ER_WESQL_ORM_ALTER_NOT_REWRITABLE, MYF(0),
                "wesql_orm_ddl_rewrite=ON");
       return true;
