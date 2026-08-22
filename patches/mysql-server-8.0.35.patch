@@ -2516,15 +2516,7 @@ index b8e1541b2a9..81fcfe57ad2 100644
      case binary_log::TRANSACTION_PAYLOAD_EVENT:
        return "Transaction_payload";
      default:
-@@ -1039,6 +1049,7 @@ int Log_event::do_update_pos(Relay_log_info *rli) {
-   int error = 0;
-   assert(!rli->belongs_to_client());
- 
-+  (void)RUN_HOOK(binlog_applier, on_stmt_done, (rli));
-   if (rli) error = rli->stmt_done(common_header->log_pos);
-   return error;
- }
-@@ -1202,6 +1216,7 @@ bool Log_event::need_checksum() {
+@@ -1202,6 +1210,7 @@ bool Log_event::need_checksum() {
                which IO thread instantiates via queue_binlog_ver_3_event.
             */
             get_type_code() == binary_log::ROTATE_EVENT ||
@@ -2532,46 +2524,7 @@ index b8e1541b2a9..81fcfe57ad2 100644
             /*
                The previous event has its checksum option defined
                according to the format description event.
-@@ -2648,6 +2665,7 @@ Slave_worker *Log_event::get_slave_worker(Relay_log_info *rli) {
-       rli->mts_groups_assigned++;
- 
-       rli->curr_group_isolated = false;
-+      (void)RUN_HOOK(binlog_applier, on_mts_groups_assigned, (rli, &group));
-       group.reset(common_header->log_pos, rli->mts_groups_assigned);
-       // the last occupied GAQ's array index
-       gaq->assigned_group_index = gaq->en_queue(&group);
-@@ -6249,6 +6271,7 @@ int Xid_apply_log_event::do_apply_event(Relay_log_info const *rli) {
-       goto err;
-   }
- 
-+  (void)RUN_HOOK(binlog_applier, on_commit_positions, (rli_ptr, nullptr, true));
-   DBUG_PRINT(
-       "info",
-       ("do_apply group source %s %llu  group relay %s %llu event %s %llu\n",
-@@ -6298,13 +6324,14 @@ int Xid_apply_log_event::do_apply_event(Relay_log_info const *rli) {
-                       rli_ptr->get_group_master_log_pos(),
-                       rli_ptr->get_group_relay_log_name(),
-                       rli_ptr->get_group_relay_log_pos()));
-   mysql_mutex_unlock(&rli_ptr->data_lock);
-   error = do_commit(thd);
-   mysql_mutex_lock(&rli_ptr->data_lock);
-   if (error) {
-     rli->report(ERROR_LEVEL, thd->get_stmt_da()->mysql_errno(),
-                 "Error in Xid_log_event: Commit could not be completed, '%s'",
-                 thd->get_stmt_da()->message_text());
-+    (void)RUN_HOOK(binlog_applier, on_rollback_positions, (rli_ptr));
-   } else {
-     DBUG_EXECUTE_IF(
-         "crash_after_commit_before_update_pos",
-@@ -10310,6 +10341,7 @@ int Rows_log_event::do_update_pos(Relay_log_info *rli) {
-       Step the group log position if we are not in a transaction,
-       otherwise increase the event log position.
-     */
-+    (void)RUN_HOOK(binlog_applier, on_stmt_done, (rli));
-     error = rli->stmt_done(common_header->log_pos);
-   } else {
-     rli->inc_event_relay_log_pos();
-@@ -14340,3 +14375,4 @@ std::pair<bool, binary_log::Log_event_basic_info> extract_log_event_basic_info(
+@@ -14340,3 +14349,4 @@ std::pair<bool, binary_log::Log_event_basic_info> extract_log_event_basic_info(
        uint2korr(buf + FLAGS_OFFSET) & LOG_EVENT_IGNORABLE_F;
    return std::make_pair(false, event_info);
  }
