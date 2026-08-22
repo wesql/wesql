@@ -8,6 +8,7 @@
 #include "sql/dd/types/column.h"
 #include "sql/field.h"
 #include "sql/item.h"
+#include "sql/sql_base.h"
 #include "sql/table.h"
 #include "sql/derror.h"
 #include "sql/handler.h"
@@ -71,6 +72,20 @@ bool field_is_indexed(const Alter_info *alter_info, const char *field_name) {
   return false;
 }
 
+bool field_is_in_new_keys(const THD *thd, const char *field_name) {
+  if (field_name == nullptr) return false;
+  for (const THD::Wesql_orm_key_snap &key : thd->m_wesql_orm_alter_new_keys) {
+    if (key.generated) continue;
+    for (const THD::Wesql_orm_key_part_snap &part : key.columns) {
+      if (!part.name.empty() &&
+          my_strcasecmp(system_charset_info, part.name.c_str(), field_name) ==
+              0)
+        return true;
+    }
+  }
+  return false;
+}
+
 bool has_unprintable_column(const Create_field *field) {
   if (field->is_gcol() || field->m_default_val_expr != nullptr) return true;
   if (field->hidden != dd::Column::enum_hidden_type::HT_VISIBLE) return true;
@@ -122,23 +137,29 @@ bool print_column_def(THD *thd, const Create_field *field, std::string *out) {
     out->append(def_buf.ptr(), def_buf.length());
   }
   if (field->comment.str != nullptr && field->comment.length > 0) {
-    *out += " COMMENT '";
-    out->append(field->comment.str, field->comment.length);
-    *out += "'";
+    *out += " COMMENT ";
+    String cmt;
+    append_unescaped(&cmt, field->comment.str, field->comment.length);
+    out->append(cmt.ptr(), cmt.length());
   }
   return false;
 }
 
 static uint rewrite_indexed_unicode_columns(THD *thd,
                                             HA_CREATE_INFO *create_info,
-                                            Alter_info *alter_info) {
+                                            Alter_info *alter_info,
+                                            bool use_new_key_snapshot) {
   uint n = 0;
   List_iterator<Create_field> it(alter_info->create_list);
   Create_field *field;
   while ((field = it++)) {
     const CHARSET_INFO *cs = field_charset(field, create_info);
     if (cs != k_unicode_ci) continue;
-    if (!field_is_indexed(alter_info, field->field_name)) continue;
+    const bool indexed =
+        use_new_key_snapshot
+            ? field_is_in_new_keys(thd, field->field_name)
+            : field_is_indexed(alter_info, field->field_name);
+    if (!indexed) continue;
     field->charset = k_general_ci;
     field->is_explicit_collation = true;
     thd->m_wesql_orm_remapped_columns.emplace_back(field->field_name);
@@ -148,11 +169,57 @@ static uint rewrite_indexed_unicode_columns(THD *thd,
   return n;
 }
 
+void snapshot_this_statement_keys(THD *thd, Alter_info *alter_info) {
+  thd->m_wesql_orm_alter_new_keys.clear();
+  thd->m_wesql_orm_alter_orig_flags =
+      (alter_info != nullptr) ? alter_info->flags : 0;
+  if (alter_info == nullptr) return;
+  for (const Key_spec *key : alter_info->key_list) {
+    if (key->type == KEYTYPE_FOREIGN) continue;
+    THD::Wesql_orm_key_snap snap;
+    snap.type = static_cast<int>(key->type);
+    if (key->name.str != nullptr)
+      snap.name.assign(key->name.str, key->name.length);
+    snap.generated = key->generated;
+    snap.is_visible = key->key_create_info.is_visible;
+    if (key->key_create_info.is_algorithm_explicit ||
+        key->key_create_info.block_size != 0 ||
+        (key->key_create_info.comment.str != nullptr &&
+         key->key_create_info.comment.length > 0) ||
+        key->key_create_info.parser_name.str != nullptr ||
+        !key->key_create_info.is_visible ||
+        (key->key_create_info.m_engine_attribute.str != nullptr &&
+         key->key_create_info.m_engine_attribute.length > 0) ||
+        (key->key_create_info.m_secondary_engine_attribute.str != nullptr &&
+         key->key_create_info.m_secondary_engine_attribute.length > 0))
+      snap.unprintable = true;
+    for (const Key_part_spec *part : key->columns) {
+      if (part->has_expression() || !part->is_ascending() ||
+          part->is_explicit())
+        snap.unprintable = true;
+      THD::Wesql_orm_key_part_snap p;
+      if (part->get_field_name() != nullptr) p.name = part->get_field_name();
+      p.prefix_length = part->get_prefix_length();
+      snap.columns.push_back(std::move(p));
+    }
+    thd->m_wesql_orm_alter_new_keys.push_back(std::move(snap));
+  }
+}
+
 }  // namespace
 
 bool wesql_is_smartengine(const HA_CREATE_INFO *create_info) {
   return create_info != nullptr && create_info->db_type != nullptr &&
          create_info->db_type->db_type == DB_TYPE_SMARTENGINE;
+}
+
+void wesql_orm_reset_statement_state(THD *thd) {
+  if (thd == nullptr) return;
+  thd->m_wesql_orm_binlog_sql.clear();
+  thd->m_wesql_orm_use_binlog_sql = false;
+  thd->m_wesql_orm_remapped_columns.clear();
+  thd->m_wesql_orm_alter_new_keys.clear();
+  thd->m_wesql_orm_alter_orig_flags = 0;
 }
 
 static Wesql_orm_rewrite_result strip_fk_pair(THD *thd, Alter_info *alter_info,
@@ -213,6 +280,16 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_create(THD *thd,
                                                   HA_CREATE_INFO *create_info,
                                                   Alter_info *alter_info) {
   Wesql_orm_rewrite_result result;
+  /*
+    create_table_impl() is also the ALTER copy path. Do not wipe the
+    landed ALTER SQL that mysql_alter_table() already built.
+  */
+  if (thd != nullptr && thd->lex != nullptr &&
+      thd->lex->sql_command != SQLCOM_ALTER_TABLE &&
+      thd->lex->sql_command != SQLCOM_CREATE_INDEX &&
+      thd->lex->sql_command != SQLCOM_DROP_INDEX) {
+    wesql_orm_reset_statement_state(thd);
+  }
   if (!wesql_is_smartengine(create_info)) return result;
 
   const bool on = rewrite_enabled(thd);
@@ -222,7 +299,7 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_create(THD *thd,
 
   if (on) {
     result.collation_rewritten =
-        rewrite_indexed_unicode_columns(thd, create_info, alter_info);
+        rewrite_indexed_unicode_columns(thd, create_info, alter_info, false);
     if (result.collation_rewritten > 0)
       result.action = Wesql_orm_rewrite_action::kRewritten;
   } else if (alter_info != nullptr) {
@@ -248,9 +325,18 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_alter_fk(THD *thd,
                                                     HA_CREATE_INFO *create_info,
                                                     Alter_info *alter_info) {
   Wesql_orm_rewrite_result result;
+  wesql_orm_reset_statement_state(thd);
   if (!wesql_is_smartengine(create_info)) return result;
   thd->m_wesql_orm_remapped_columns.clear();
   result = strip_fk_pair(thd, alter_info, rewrite_enabled(thd), true);
+  if (result.action == Wesql_orm_rewrite_action::kReject) return result;
+
+  /*
+    prepare_fields_and_keys() copies every old index into key_list.
+    Snapshot this-statement keys now so landed SQL only prints new ones.
+  */
+  snapshot_this_statement_keys(thd, alter_info);
+
   if (result.action == Wesql_orm_rewrite_action::kRewritten &&
       (alter_info->flags &
        ~(Alter_info::ADD_FOREIGN_KEY | Alter_info::ALTER_RECREATE)) == 0 &&
@@ -274,9 +360,35 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_alter_collation(
     return result;
   thd->m_wesql_orm_remapped_columns.clear();
   result.collation_rewritten =
-      rewrite_indexed_unicode_columns(thd, create_info, alter_info);
-  if (result.collation_rewritten > 0)
-    result.action = Wesql_orm_rewrite_action::kRewritten;
+      rewrite_indexed_unicode_columns(thd, create_info, alter_info, true);
+  if (result.collation_rewritten == 0) return result;
+
+  /*
+    Landed SQL only prints remapped columns + this-statement indexes.
+    Any other original clause (ADD/MODIFY/DROP COLUMN, table options, …)
+    would be dropped on replay. Reject unless flags are ADD INDEX only.
+    Index direction / visibility / algorithm / comment cannot be printed
+    losslessly — 7518 rather than silently drop them.
+  */
+  const ulonglong extra =
+      thd->m_wesql_orm_alter_orig_flags & ~Alter_info::ALTER_ADD_INDEX;
+  bool unprintable_key = false;
+  for (const THD::Wesql_orm_key_snap &key : thd->m_wesql_orm_alter_new_keys) {
+    if (key.generated) continue;
+    if (key.unprintable ||
+        (key.type != KEYTYPE_UNIQUE && key.type != KEYTYPE_MULTIPLE)) {
+      unprintable_key = true;
+      break;
+    }
+  }
+  if (extra != 0 || unprintable_key) {
+    my_error(ER_WESQL_ORM_ALTER_NOT_REWRITABLE, MYF(0),
+             "wesql_orm_ddl_rewrite=ON");
+    result.action = Wesql_orm_rewrite_action::kReject;
+    return result;
+  }
+
+  result.action = Wesql_orm_rewrite_action::kRewritten;
   return result;
 }
 
@@ -324,26 +436,26 @@ bool wesql_orm_build_alter_binlog_sql(THD *thd, HA_CREATE_INFO *,
     }
   }
 
-  for (const Key_spec *key : alter_info->key_list) {
-    if (key->type == KEYTYPE_FOREIGN) continue;
-    if (key->generated) continue;
-    if (key->type != KEYTYPE_UNIQUE && key->type != KEYTYPE_MULTIPLE) {
+  for (const THD::Wesql_orm_key_snap &key : thd->m_wesql_orm_alter_new_keys) {
+    if (key.generated) continue;
+    if (key.unprintable ||
+        (key.type != KEYTYPE_UNIQUE && key.type != KEYTYPE_MULTIPLE)) {
       my_error(ER_WESQL_ORM_ALTER_NOT_REWRITABLE, MYF(0),
                "wesql_orm_ddl_rewrite=ON");
       return true;
     }
     sql += first ? " " : ", ";
     first = false;
-    sql += (key->type == KEYTYPE_UNIQUE) ? "ADD UNIQUE INDEX " : "ADD INDEX ";
-    if (key->name.str != nullptr) append_ident(&sql, key->name.str);
+    sql += (key.type == KEYTYPE_UNIQUE) ? "ADD UNIQUE INDEX " : "ADD INDEX ";
+    if (!key.name.empty()) append_ident(&sql, key.name.c_str());
     sql += " (";
     bool first_col = true;
-    for (const Key_part_spec *part : key->columns) {
+    for (const THD::Wesql_orm_key_part_snap &part : key.columns) {
       if (!first_col) sql += ", ";
       first_col = false;
-      append_ident(&sql, part->get_field_name());
-      if (part->get_prefix_length() > 0)
-        sql += "(" + std::to_string(part->get_prefix_length()) + ")";
+      append_ident(&sql, part.name.c_str());
+      if (part.prefix_length > 0)
+        sql += "(" + std::to_string(part.prefix_length) + ")";
     }
     sql += ")";
   }

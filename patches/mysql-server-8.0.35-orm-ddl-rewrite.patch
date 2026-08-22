@@ -52,7 +52,7 @@
 +#include <vector>
  
  #include "dur_prop.h"  // durability_properties
-@@ -4696,6 +4696,10 @@
+@@ -4696,6 +4696,26 @@
   public:
    bool add_external(unsigned int slot, void *data);
    void *fetch_external(unsigned int slot);
@@ -61,6 +61,21 @@
 +  std::string m_wesql_orm_binlog_sql;
 +  bool m_wesql_orm_use_binlog_sql{false};
 +  std::vector<std::string> m_wesql_orm_remapped_columns;
++  /* This-statement keys/flags, snapshotted before prepare_fields_and_keys. */
++  struct Wesql_orm_key_part_snap {
++    std::string name;
++    uint prefix_length{0};
++  };
++  struct Wesql_orm_key_snap {
++    int type{0};
++    std::string name;
++    bool generated{false};
++    bool is_visible{true};
++    bool unprintable{false};
++    std::vector<Wesql_orm_key_part_snap> columns;
++  };
++  std::vector<Wesql_orm_key_snap> m_wesql_orm_alter_new_keys;
++  ulonglong m_wesql_orm_alter_orig_flags{0};
  
   private:
    std::unordered_map<unsigned int, void *> external_store_;
@@ -74,7 +89,7 @@
    binlog_archive_replica.cc
 --- a/sql/sql_class.cc
 +++ b/sql/sql_class.cc
-@@ -1745,6 +1745,12 @@
+@@ -1745,6 +1745,14 @@
  }
  
  void THD::cleanup_after_query() {
@@ -82,6 +97,8 @@
 +  m_wesql_orm_binlog_sql.clear();
 +  m_wesql_orm_use_binlog_sql = false;
 +  m_wesql_orm_remapped_columns.clear();
++  m_wesql_orm_alter_new_keys.clear();
++  m_wesql_orm_alter_orig_flags = 0;
 +#endif
    /*
      Reset rand_used so that detection of calls to rand() will save random
@@ -100,6 +117,24 @@
  
  #include <assert.h>
  #include <errno.h>
+@@ -9136,9 +9139,12 @@
+                                 bool find_parent_keys, bool *is_trans,
+                                 handlerton **post_ddl_ht) {
++#ifdef WESQL
++  wesql_orm_reset_statement_state(thd);
++#endif
+   KEY *not_used_1;
+   uint not_used_2;
+   FOREIGN_KEY *not_used_3 = nullptr;
+@@ -16323,7 +16329,10 @@
+                        Alter_info *alter_info) {
+   DBUG_TRACE;
++#ifdef WESQL
++  wesql_orm_reset_statement_state(thd);
++#endif
+ 
+   /*
+     Check if we attempt to alter mysql.slow_log or
 @@ -8751,6 +8754,15 @@
    }
  

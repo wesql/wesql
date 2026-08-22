@@ -14,6 +14,7 @@ patch -p1 < patches/mysql-server-8.0.35-orm-ddl-rewrite.patch
 - `wesql_orm_ddl_rewrite` 开关（默认关）
 - 客户端错误 7516/7517/7518
 - CREATE/ALTER 钩子和 binlog buffer（不 `set_query`）
+- 每条 CREATE/ALTER 入口复位 binlog 状态；prepare 前快照本次新增索引
 - CMake 加入 `wesql_orm_ddl_rewrite.cc`
 
 自有代码在 overlay：`sql/wesql_orm_ddl_rewrite.*`。

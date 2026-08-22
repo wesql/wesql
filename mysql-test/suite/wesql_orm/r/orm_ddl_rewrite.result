@@ -1,0 +1,176 @@
+SET default_storage_engine=SMARTENGINE;
+# OFF: FK still rejected
+SET SESSION wesql_orm_ddl_rewrite=OFF;
+CREATE TABLE p (id INT PRIMARY KEY);
+CREATE TABLE c (id INT PRIMARY KEY, p_id INT, CONSTRAINT c_fk FOREIGN KEY (p_id) REFERENCES p(id));
+ERROR 42000: This version of MySQL doesn't yet support 'foreign key constraints'
+# OFF: unicode_ci unique still rejected
+CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(191), UNIQUE KEY (email)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ERROR HY000: Unknown error
+# ON: CREATE TABLE with inline FK
+SET SESSION wesql_orm_ddl_rewrite=ON;
+CREATE TABLE cr_p (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE cr_c (
+  id INT PRIMARY KEY,
+  p_id INT NOT NULL,
+  CONSTRAINT cr_fk FOREIGN KEY (p_id) REFERENCES cr_p(id)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+SHOW WARNINGS;
+Level	Code	Message
+Warning	7517	wesql_orm_ddl_rewrite=ON: removed foreign key 'cr_fk'. Parent/child checks and ON DELETE CASCADE are not enforced.
+SHOW CREATE TABLE cr_c;
+Table	Create Table
+cr_c	CREATE TABLE `cr_c` (
+  `id` int NOT NULL,
+  `p_id` int NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+# ON: FK stripped, no leftover generated index
+SET SESSION wesql_orm_ddl_rewrite=ON;
+CREATE TABLE a_parent (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE a_child (id INT PRIMARY KEY, parent_id INT NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+ALTER TABLE a_child ADD CONSTRAINT a_child_fk FOREIGN KEY (parent_id) REFERENCES a_parent(id);
+SHOW WARNINGS;
+Level	Code	Message
+Warning	7517	wesql_orm_ddl_rewrite=ON: removed foreign key 'a_child_fk'. Parent/child checks and ON DELETE CASCADE are not enforced.
+SHOW CREATE TABLE a_child;
+Table	Create Table
+a_child	CREATE TABLE `a_child` (
+  `id` int NOT NULL,
+  `parent_id` int NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+# ON: Prisma-style unique index remaps column
+CREATE TABLE User (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE UNIQUE INDEX User_email_key ON User(email);
+SHOW WARNINGS;
+Level	Code	Message
+Warning	7516	wesql_orm_ddl_rewrite=ON: remapped collation of indexed column 'email' from utf8mb4_unicode_ci to utf8mb4_general_ci. Comparison rules changed.
+SHOW CREATE TABLE User;
+Table	Create Table
+User	CREATE TABLE `User` (
+  `id` int NOT NULL,
+  `email` varchar(191) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `User_email_key` (`email`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+# ON: table-default unicode_ci inherited by indexed column
+CREATE TABLE tdef (id INT PRIMARY KEY, email VARCHAR(191), UNIQUE KEY (email)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SHOW CREATE TABLE tdef;
+Table	Create Table
+tdef	CREATE TABLE `tdef` (
+  `id` int NOT NULL,
+  `email` varchar(191) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `email` (`email`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+# ON: mixed FK + extra clause rejected
+CREATE TABLE mix_p (id INT PRIMARY KEY);
+CREATE TABLE mix_c (id INT PRIMARY KEY, p_id INT, extra INT);
+ALTER TABLE mix_c ADD extra2 INT, ADD CONSTRAINT mix_fk FOREIGN KEY (p_id) REFERENCES mix_p(id);
+ERROR HY000: wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+# ON: same connection, FK no-op then ordinary ALTER
+CREATE TABLE seq_p (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE seq_c (id INT PRIMARY KEY, p_id INT) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+ALTER TABLE seq_c ADD CONSTRAINT seq_fk FOREIGN KEY (p_id) REFERENCES seq_p(id);
+ALTER TABLE seq_c ADD extra INT;
+SHOW CREATE TABLE seq_c;
+Table	Create Table
+seq_c	CREATE TABLE `seq_c` (
+  `id` int NOT NULL,
+  `p_id` int DEFAULT NULL,
+  `extra` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+# ON: rewritten CREATE then ordinary ALTER
+CREATE TABLE seq_u (id INT PRIMARY KEY, email VARCHAR(191), UNIQUE KEY (email)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ALTER TABLE seq_u ADD extra INT;
+SHOW CREATE TABLE seq_u;
+Table	Create Table
+seq_u	CREATE TABLE `seq_u` (
+  `id` int NOT NULL,
+  `email` varchar(191) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `extra` int DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `email` (`email`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+# ON: ADD UNIQUE + ADD COLUMN rejected so replay cannot drop extra
+CREATE TABLE mix_idx (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ALTER TABLE mix_idx ADD UNIQUE INDEX (email), ADD extra INT;
+ERROR HY000: wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+SHOW CREATE TABLE mix_idx;
+Table	Create Table
+mix_idx	CREATE TABLE `mix_idx` (
+  `id` int NOT NULL,
+  `email` varchar(191) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+# ON: COMMENT quotes/backslash, DEFAULT, prefix+composite index
+CREATE TABLE cmt (
+  id INT PRIMARY KEY,
+  email VARCHAR(191) NOT NULL DEFAULT 'none' COMMENT 'owner''s email\\path'
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE UNIQUE INDEX cmt_email_key ON cmt(email);
+SHOW WARNINGS;
+Level	Code	Message
+Warning	7516	wesql_orm_ddl_rewrite=ON: remapped collation of indexed column 'email' from utf8mb4_unicode_ci to utf8mb4_general_ci. Comparison rules changed.
+SHOW CREATE TABLE cmt;
+Table	Create Table
+cmt	CREATE TABLE `cmt` (
+  `id` int NOT NULL,
+  `email` varchar(191) COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'none' COMMENT 'owner''s email\\path',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `cmt_email_key` (`email`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+CREATE TABLE pref (
+  id INT PRIMARY KEY,
+  a VARCHAR(191) NOT NULL,
+  b VARCHAR(191) NOT NULL
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE INDEX pref_ab ON pref(a(10), b);
+SHOW CREATE TABLE pref;
+Table	Create Table
+pref	CREATE TABLE `pref` (
+  `id` int NOT NULL,
+  `a` varchar(191) COLLATE utf8mb4_general_ci NOT NULL,
+  `b` varchar(191) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `pref_ab` (`a`(10),`b`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+# ON: index direction / invisible / algorithm / index comment -> 7518
+CREATE TABLE inv (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE UNIQUE INDEX inv_email ON inv(email) INVISIBLE;
+ERROR HY000: wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+ALTER TABLE inv ADD INDEX inv_desc (email DESC);
+ERROR HY000: wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+ALTER TABLE inv ADD INDEX inv_algo (email) USING BTREE;
+ERROR HY000: wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+ALTER TABLE inv ADD INDEX inv_cmt (email) COMMENT 'idx';
+ERROR HY000: wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+SHOW CREATE TABLE inv;
+Table	Create Table
+inv	CREATE TABLE `inv` (
+  `id` int NOT NULL,
+  `email` varchar(191) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+# ON: stored procedure, FK no-op then ordinary ALTER in one CALL
+CREATE TABLE proc_p (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE proc_c (id INT PRIMARY KEY, p_id INT) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE PROCEDURE orm_seq_ddl()
+BEGIN
+  ALTER TABLE proc_c ADD CONSTRAINT proc_fk FOREIGN KEY (p_id) REFERENCES proc_p(id);
+  ALTER TABLE proc_c ADD extra INT;
+END|
+CALL orm_seq_ddl();
+SHOW CREATE TABLE proc_c;
+Table	Create Table
+proc_c	CREATE TABLE `proc_c` (
+  `id` int NOT NULL,
+  `p_id` int DEFAULT NULL,
+  `extra` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+DROP PROCEDURE orm_seq_ddl;
+DROP TABLE a_child, a_parent, User, p, tdef, mix_c, mix_p, cr_c, cr_p, seq_c, seq_p, seq_u, mix_idx, cmt, pref, inv, proc_c, proc_p;
+SET SESSION wesql_orm_ddl_rewrite=OFF;

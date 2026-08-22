@@ -107,6 +107,21 @@ DO 0 /* wesql_orm_ddl_rewrite stripped fk */
 
 仍把原始 `thd->query()` 传给现有写盘。不 `set_query()`。
 
+### 5.6 语句入口复位与本次索引快照
+
+`m_wesql_orm_use_binlog_sql` / `m_wesql_orm_binlog_sql` 是 THD 生命周期。  
+`cleanup_after_query()` 只作兜底：存储过程里多条 DDL 在同一次顶层 query 内连续执行，中间不保证走它。
+
+必须在每条用户 CREATE/ALTER 入口无条件清掉 flag、buffer、改写列名、索引快照：
+
+- `mysql_create_table_no_lock()` / `mysql_alter_table()` 开头
+- `wesql_orm_rewrite_alter_fk()` 判断 SmartEngine 之前
+- `wesql_orm_rewrite_create()` 判断 SmartEngine 之前，但 **ALTER copy 再进 `create_table_impl` 时不清**（`SQLCOM_ALTER_TABLE` / `CREATE_INDEX` / `DROP_INDEX`）
+
+`mysql_prepare_alter_table()` → `prepare_fields_and_keys()` 会把表上旧索引复制进 `key_list`。  
+必须在 prepare 前把“本次新增索引”做成结构化快照；落地 SQL 只打印快照，不遍历 prepare 后的完整 `key_list`。  
+字符序改写触发时，原始 flags 只允许 `ALTER_ADD_INDEX`；夹 ADD/MODIFY/DROP COLUMN、表选项等一律 7518。
+
 ## 6. 错误码
 
 `messages_to_clients.txt` 保留区 7500–7999，本任务：
