@@ -1,32 +1,63 @@
 # WeSQL
 
-WeSQL is an innovative MySQL distribution that adopts a compute-storage separation architecture, with storage backed by S3 (and S3-compatible systems).
-It can run on any cloud, ensuring no vendor lock-in.
+WeSQL is a MySQL distribution with a compute-storage separation architecture.
+Its SmartEngine storage engine stores persistent data in S3 or an S3-compatible
+object store, while local disks act as cache.
 
-WeSQL has completely replaced MySQL’s traditional disk storage with S3. All MySQL data—binlogs, schemas, storage engine metadata, WAL, and data files—are **entirely** (**not partially!**) 
-stored as objects in S3.
-The 11 nines of durability provided by S3 significantly enhances data reliability.
-Additionally, WeSQL can start from a clean, empty instance, connect to S3, load the data, and begin serving immediately with no additional setup required.
+## Try WeSQL locally
 
-It is ideal for users who need an easy-to-manage, cost-effective, and developer-friendly MySQL database solution, 
-especially for those needing support for both Serverless and BYOC (Bring Your Own Cloud).
+The standalone developer path starts one WeSQL server and MinIO with Docker
+Compose. It does not require an AWS account.
 
-Feel free to start trying WeSQL in your development and testing environments!
+Prerequisites:
 
-## How to build
+- Git
+- Docker Engine or Docker Desktop with Docker Compose v2
+- Free local ports `3306`, `9000`, and `9001`
 
-[Compile](https://wesql.io/docs/tutorial/binary/install)
+```bash
+git clone --branch 8.0 https://github.com/wesql/wesql.git
+cd wesql/docker/standalone
+./scripts/try.sh
+```
 
-## Docs with WeSQL
+The script waits for WeSQL to become ready, creates a SmartEngine table,
+restarts WeSQL, verifies that the row is still present, and prints recent logs.
+It uses the pinned image
+`apecloud/wesql-server:8.0.35-0.1.0_beta5.40`.
 
-[Architecture](https://wesql.io/docs/architecture)
+Connect from inside the container:
 
-[Tutorial](https://wesql.io/docs/tutorial)
+```bash
+docker compose exec wesql mysql -uroot -ppasswd
+```
 
-For further information on WeSQL or additional documentation, visit
-  <https://wesql.io/docs/introduction>
+Remove the trial containers and volumes:
+
+```bash
+./scripts/cleanup.sh
+```
+
+See the [standalone trial guide](docker/standalone/README.md) for configuration
+and the [full quick start](https://wesql.io/docs/tutorial/standalone) for
+troubleshooting.
+
+> **Local trial only:** this Compose setup runs one data node without logger
+> nodes or high availability. It is not a production deployment. SmartEngine
+> also has documented MySQL feature differences, including foreign keys and
+> some indexed collations. Review the
+> [compatibility limits](https://wesql.io/docs/usage/compatibility) before
+> migrating an application.
+
+## Learn more
+
+- [Introduction](https://wesql.io/docs/introduction)
+- [Architecture](https://wesql.io/docs/architecture)
+- [Tutorials](https://wesql.io/docs/tutorial)
+- [Build from source](https://wesql.io/docs/tutorial/binary/install)
 
 ## Community
+
 Join our [Discord](https://discord.com/channels/1308609231498510427/1308609231498510430) to discuss features, get help, and connect with other users.
 
 ## Licensing
