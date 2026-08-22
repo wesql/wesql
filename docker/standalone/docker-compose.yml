@@ -24,7 +24,9 @@ services:
       start_period: 10s
 
   minio-init:
-    image: minio/mc:RELEASE.2024-12-18T13-15-44Z
+    # Docker Hub has no mc tag matching the 2024-12-18 server. Use a real
+    # tag from quay.io so Docker Hub / DaoCloud 403s do not block startup.
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       minio:
         condition: service_healthy
