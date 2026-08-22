@@ -7,7 +7,7 @@ index 2f26c3b342e..2d02eaa0c94 100644
  ENDIF()
  
 +OPTION(WITH_WESQL "use wesql mode" ON)
-+OPTION(WITH_RAFT_REPLICATION "use consensus cluster mode" ON)
++OPTION(WITH_RAFT_REPLICATION "use consensus cluster mode" OFF)
 +OPTION(WITH_WESQL_TEST "wesql test mode" OFF)
 +
 +IF(WITH_WESQL)

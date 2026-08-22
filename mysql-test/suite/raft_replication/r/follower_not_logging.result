@@ -1,8 +1,0 @@
-create table t1(id int);
-insert into t1 values(1);
-insert into t1 values(2);
-ERROR HY000: Binary logging not possible. Message: Consensus Not Leader
-select * from t1;
-id
-1
-drop table t1;

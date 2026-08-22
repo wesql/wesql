@@ -1,6 +1,0 @@
-set global debug= '+d,signal_after_downgrade_init_rli,signal_before_downgrade_init_rli';
-call dbms_consensus.change_leader("127.0.0.1:MYPORT_CONSENSUS_2");
-No such row
-set debug_sync='before_rotate_consensus_log SIGNAL signal_downgrade_init_rli wait_for after_downgrade_init_rli';
-flush logs;
-set global debug= default;

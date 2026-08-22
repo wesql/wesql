@@ -1,4 +1,0 @@
-!include suite/raft_replication/my.cnf
-
-[mysqld]
-raft_replication_log_cache_size=1

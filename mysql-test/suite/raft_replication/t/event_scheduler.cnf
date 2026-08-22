@@ -1,5 +1,0 @@
-!include suite/raft_replication/my.cnf
-
-[mysqld]
-event_scheduler=ON
-raft_replication_election_timeout=1000

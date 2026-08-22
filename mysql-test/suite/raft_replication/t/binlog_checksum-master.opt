@@ -1,2 +1,0 @@
---binlog-checksum='crc32' --max_binlog_size=1M --max_relay_log_size=1M --slave_sql_verify_checksum=OFF
---force-restart

@@ -1,2 +1,0 @@
-call dbms_consensus.add_learner("127.0.0.1:1098");
-ERROR HY000: The cluster has too many nodes.

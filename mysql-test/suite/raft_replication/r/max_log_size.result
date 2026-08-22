@@ -1,8 +1,0 @@
-use test;
-create table t1 (data varchar(1024));
-insert into t1 values ("test");
-insert into t1 values (REPEAT('test',100));
-# Kill and restart: --raft_replication_max_log_size=512 --raft_replication_large_trx=OFF
-insert into t1 values ("test");
-insert into t1 values (REPEAT('test',100));
-ERROR HY000: The consensus log is too large for consensus replication, please split the transcation to small ones.

@@ -1,7 +1,0 @@
-!include suite/raft_replication/my.cnf
-
-[mysqld]
-raft_replication_large_trx=ON
-max_allowed_packet=1G
-slave_pending_jobs_size_max=1G
-slave_max_allowed_packet=1G

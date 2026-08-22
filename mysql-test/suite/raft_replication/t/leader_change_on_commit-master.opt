@@ -1,6 +1,0 @@
---force-restart
---gtid-mode=ON
---enforce-gtid-consistency=ON
---sync-binlog=1
---innodb_flush_log_at_trx_commit=1
---slave-parallel-workers=0
