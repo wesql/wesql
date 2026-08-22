@@ -24,6 +24,10 @@ docker compose up -d
 ./scripts/cleanup.sh
 ```
 
+`wait-ready.sh` waits for Docker health, then for
+`INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL` to show `ROLE=Leader` and
+`SERVER_READY_FOR_RW=Yes`. `mysqladmin ping` alone is too early.
+
 Or run the same loop in one command:
 
 ```bash
