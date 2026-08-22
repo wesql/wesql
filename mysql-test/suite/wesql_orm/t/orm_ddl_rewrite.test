@@ -1,0 +1,30 @@
+--source include/have_binlog_format_row.inc
+
+SET default_storage_engine=SMARTENGINE;
+
+--echo # OFF: FK still rejected
+SET SESSION wesql_orm_ddl_rewrite=OFF;
+CREATE TABLE p (id INT PRIMARY KEY);
+--error ER_NOT_SUPPORTED_YET
+CREATE TABLE c (id INT PRIMARY KEY, p_id INT, CONSTRAINT c_fk FOREIGN KEY (p_id) REFERENCES p(id));
+
+--echo # OFF: unicode_ci unique still rejected
+--error ER_UNKNOWN_ERROR
+CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(191), UNIQUE KEY (email)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+--echo # ON: FK stripped, no leftover generated index
+SET SESSION wesql_orm_ddl_rewrite=ON;
+CREATE TABLE a_parent (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE a_child (id INT PRIMARY KEY, parent_id INT NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+ALTER TABLE a_child ADD CONSTRAINT a_child_fk FOREIGN KEY (parent_id) REFERENCES a_parent(id);
+SHOW WARNINGS;
+SHOW CREATE TABLE a_child;
+
+--echo # ON: Prisma-style unique index remaps column
+CREATE TABLE User (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE UNIQUE INDEX User_email_key ON User(email);
+SHOW WARNINGS;
+SHOW CREATE TABLE User;
+
+DROP TABLE a_child, a_parent, User, p;
+SET SESSION wesql_orm_ddl_rewrite=OFF;
