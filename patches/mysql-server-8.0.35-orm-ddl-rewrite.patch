@@ -1,5 +1,5 @@
---- a/share/messages_to_clients.txt	2026-08-22 15:49:55
-+++ b/share/messages_to_clients.txt	2026-08-22 15:46:48
+--- a/share/messages_to_clients.txt
++++ b/share/messages_to_clients.txt
 @@ -10032,7 +10032,16 @@
  
  ER_WARN_PURGE_LOG_NOT_PERSISTED
@@ -17,8 +17,8 @@
  ################################################################################
  # DO NOT add messages for the error-log to this file;
  # they go in messages_to_error_log.txt in the same
---- a/sql/system_variables.h	2026-08-22 15:49:55
-+++ b/sql/system_variables.h	2026-08-22 15:46:48
+--- a/sql/system_variables.h
++++ b/sql/system_variables.h
 @@ -337,6 +337,7 @@
      instead of NOT NULL by default.
    */
@@ -27,8 +27,8 @@
  
    bool sysdate_is_now;
    bool binlog_rows_query_log_events;
---- a/sql/sys_vars.cc	2026-08-22 15:49:55
-+++ b/sql/sys_vars.cc	2026-08-22 15:47:05
+--- a/sql/sys_vars.cc
++++ b/sql/sys_vars.cc
 @@ -7577,6 +7577,12 @@
      "wesql_version", "Version of the WeSQL",
      READ_ONLY GLOBAL_VAR(wesql_version_ptr), NO_CMD_LINE, IN_SYSTEM_CHARSET,
@@ -42,21 +42,20 @@
  #endif
  
  static bool check_set_require_row_format(sys_var *, THD *thd, set_var *var) {
---- a/sql/sql_class.h	2026-08-22 15:49:55
-+++ b/sql/sql_class.h	2026-08-22 15:47:05
+--- a/sql/sql_class.h
++++ b/sql/sql_class.h
 @@ -46,6 +46,7 @@
- #include <bitset>
  #include <memory>
  #include <new>
  #include <string>
 +#include <vector>
  
  #include "dur_prop.h"  // durability_properties
-@@ -4696,6 +4696,26 @@
-  public:
+ #include "lex_string.h"
+@@ -4697,6 +4698,26 @@
    bool add_external(unsigned int slot, void *data);
    void *fetch_external(unsigned int slot);
-+
+ 
 + public:
 +  std::string m_wesql_orm_binlog_sql;
 +  bool m_wesql_orm_use_binlog_sql{false};
@@ -76,21 +75,24 @@
 +  };
 +  std::vector<Wesql_orm_key_snap> m_wesql_orm_alter_new_keys;
 +  ulonglong m_wesql_orm_alter_orig_flags{0};
- 
++
   private:
    std::unordered_map<unsigned int, void *> external_store_;
---- a/sql/CMakeLists.txt	2026-08-22 15:49:55
-+++ b/sql/CMakeLists.txt	2026-08-22 15:46:48
+ };  // End of class THD
+--- a/sql/CMakeLists.txt
++++ b/sql/CMakeLists.txt
 @@ -1022,6 +1022,7 @@
    binlog/decompressing_event_object_istream.cc
    binlog.cc
    binlog_archive.cc
 +  wesql_orm_ddl_rewrite.cc
    binlog_archive_replica.cc
+   binlog_archive_command.cc
+   binlog_istream.cc
 --- a/sql/sql_class.cc
 +++ b/sql/sql_class.cc
-@@ -1745,6 +1745,14 @@
- }
+@@ -1745,6 +1745,13 @@
+ */
  
  void THD::cleanup_after_query() {
 +#ifdef WESQL
@@ -103,10 +105,8 @@
    /*
      Reset rand_used so that detection of calls to rand() will save random
      seeds if needed by the slave.
-   binlog_archive_command.cc
-   binlog_istream.cc
---- a/sql/sql_table.cc	2026-08-22 15:49:55
-+++ b/sql/sql_table.cc	2026-08-22 15:48:28
+--- a/sql/sql_table.cc
++++ b/sql/sql_table.cc
 @@ -25,6 +25,9 @@
  /* drop and alter of tables */
  
@@ -117,24 +117,6 @@
  
  #include <assert.h>
  #include <errno.h>
-@@ -9136,9 +9139,12 @@
-                                 bool find_parent_keys, bool *is_trans,
-                                 handlerton **post_ddl_ht) {
-+#ifdef WESQL
-+  wesql_orm_reset_statement_state(thd);
-+#endif
-   KEY *not_used_1;
-   uint not_used_2;
-   FOREIGN_KEY *not_used_3 = nullptr;
-@@ -16323,7 +16329,10 @@
-                        Alter_info *alter_info) {
-   DBUG_TRACE;
-+#ifdef WESQL
-+  wesql_orm_reset_statement_state(thd);
-+#endif
- 
-   /*
-     Check if we attempt to alter mysql.slow_log or
 @@ -8751,6 +8754,15 @@
    }
  
@@ -151,7 +133,17 @@
  
    const char *alias = table_case_name(create_info, table_name);
  
-@@ -10192,7 +10204,11 @@
+@@ -9127,6 +9139,9 @@
+                                 Alter_info *alter_info, uint select_field_count,
+                                 bool find_parent_keys, bool *is_trans,
+                                 handlerton **post_ddl_ht) {
++#ifdef WESQL
++  wesql_orm_reset_statement_state(thd);
++#endif
+   KEY *not_used_1;
+   uint not_used_2;
+   FOREIGN_KEY *not_used_3 = nullptr;
+@@ -10192,7 +10207,11 @@
          variable, but rely on logging what really has been done instead.
        */
        if ((create_table->table == nullptr && !create_table->is_view()) &&
@@ -164,7 +156,7 @@
          /*
            Open table to generate CREATE TABLE statement. For non-temporary
            table we already have exclusive lock here.
-@@ -13741,17 +13757,43 @@
+@@ -13741,17 +13760,43 @@
    DBUG_EXECUTE_IF("sleep_alter_before_main_binlog", my_sleep(6000000););
    DEBUG_SYNC(thd, "alter_table_before_main_binlog");
  
@@ -208,7 +200,17 @@
  
    {
      Uncommitted_tables_guard uncommitted_tables(thd);
-@@ -16682,6 +16724,23 @@
+@@ -16282,6 +16327,9 @@
+                        HA_CREATE_INFO *create_info, Table_ref *table_list,
+                        Alter_info *alter_info) {
+   DBUG_TRACE;
++#ifdef WESQL
++  wesql_orm_reset_statement_state(thd);
++#endif
+ 
+   /*
+     Check if we attempt to alter mysql.slow_log or
+@@ -16682,6 +16730,23 @@
     create_info->db_type is set here, check to parent table access is delayed
     till this point for the alter operation.
    */
@@ -232,11 +234,10 @@
    if ((alter_info->flags & Alter_info::ADD_FOREIGN_KEY) &&
        check_fk_parent_table_access(thd, create_info, alter_info))
      return true;
-@@ -16943,7 +17002,27 @@
-   if (mysql_prepare_alter_table(thd, old_table_def, table, create_info,
+@@ -16944,6 +17009,26 @@
                                  alter_info, &alter_ctx)) {
      return true;
-+  }
+   }
 +#ifdef WESQL
 +  {
 +    Wesql_orm_rewrite_result r =
@@ -255,12 +256,12 @@
 +      thd->m_wesql_orm_binlog_sql = std::move(sql);
 +      thd->m_wesql_orm_use_binlog_sql = true;
 +    }
-   }
++  }
 +#endif
  
    // Check restrictions on ALTER TABLE operations that affects GIPK and PK.
    if (check_primary_key_alter_restrictions(thd, create_info->db_type,
-@@ -18143,9 +18222,22 @@
+@@ -18143,9 +18228,22 @@
    DBUG_EXECUTE_IF("sleep_alter_before_main_binlog", my_sleep(6000000););
    DEBUG_SYNC(thd, "alter_table_before_main_binlog");
  
@@ -283,7 +284,7 @@
  
    assert(!(mysql_bin_log.is_open() &&
             thd->is_current_stmt_binlog_format_row() &&
-@@ -18156,9 +18248,21 @@
+@@ -18156,9 +18254,21 @@
      We can't use binlog's trx cache in this case as it requires active
      transaction with valid XID.
    */
