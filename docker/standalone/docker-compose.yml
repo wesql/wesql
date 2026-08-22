@@ -11,6 +11,13 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-wesqlminio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-wesqlminio123}
+      # Pinned WeSQL image uses AWS SDK virtual-hosted addressing, so it
+      # looks up ${bucket}.minio instead of path-style minio/${bucket}.
+      MINIO_DOMAIN: minio
+    networks:
+      default:
+        aliases:
+          - ${WESQL_OBJECTSTORE_BUCKET:-wesql-storage}.minio
     volumes:
       - minio-data:/data
     ports:

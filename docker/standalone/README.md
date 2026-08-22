@@ -9,6 +9,8 @@ This is the Phase 1 single-node developer path.
 
 Need Docker Compose v2. Port 3306, 9000, and 9001 should be free, or override them in `.env`.
 
+The pinned WeSQL image talks to MinIO with virtual-hosted names (`wesql-storage.minio`). Compose gives MinIO that DNS alias and sets `MINIO_DOMAIN=minio`. Changing the bucket name also requires that alias to match.
+
 ## 10-minute loop
 
 ```bash
