@@ -232,14 +232,13 @@ diff --git a/libbinlogevents/src/CMakeLists.txt b/libbinlogevents/src/CMakeLists
 index c21d493e40b..a7a4b1a2cfa 100644
 --- a/libbinlogevents/src/CMakeLists.txt
 +++ b/libbinlogevents/src/CMakeLists.txt
-@@ -55,6 +55,7 @@ SET(REPLICATION_SOURCES
+@@ -53,5 +53,6 @@ SET(REPLICATION_SOURCES
+   trx_boundary_parser.cpp
    uuid.cpp
++  control_consensus_events.cc
    )
-+  LIST(APPEND REPLICATION_SOURCES control_consensus_events.cc)
- 
- MY_CHECK_CXX_COMPILER_WARNING("-Wmissing-profile" HAS_MISSING_PROFILE
- IF(HAS_MISSING_PROFILE)
-   ADD_COMPILE_FLAGS(
+
+ MY_CHECK_CXX_COMPILER_WARNING("-Wmissing-profile" HAS_MISSING_PROFILE)
 diff --git a/libbinlogevents/src/control_events.cpp b/libbinlogevents/src/control_events.cpp
 index b3525d006f4..fe901b8d81b 100644
 --- a/libbinlogevents/src/control_events.cpp
@@ -1129,21 +1128,6 @@ index 00000000000..11111111111 100644
    mtr_add_arg($args, "--verbose");
    mtr_add_arg($args, "--logdir=%s/tmp",  $opt_vardir);
  
-diff --git a/mysql-test/r/innodb_mysql_sync.result b/mysql-test/r/innodb_mysql_sync.result
-index 02a6bc0ec60..82ee723f1d2 100644
---- a/mysql-test/r/innodb_mysql_sync.result
-+++ b/mysql-test/r/innodb_mysql_sync.result
-@@ -86,9 +86,7 @@ KILL QUERY ID;
- SET DEBUG_SYNC= 'now SIGNAL killed';
- # Connection con1
- # Reaping: OPTIMIZE TABLE t1
--Table	Op	Msg_type	Msg_text
--test.t1	optimize	note	Table does not support optimize, doing recreate + analyze instead
--test.t1	optimize	status	Operation failed
-+ERROR HY000: Error on observer while running replication hook 'before_commit'.
- # Connection default
- DROP TABLE t1;
- SET DEBUG_SYNC= 'RESET';
 diff --git a/mysql-test/r/mysqld--help-notwin.result b/mysql-test/r/mysqld--help-notwin.result
 index 967a0bd6bf6..fd8074ca1a0 100644
 --- a/mysql-test/r/mysqld--help-notwin.result
@@ -1544,54 +1528,11 @@ index 967a0bd6bf6..fd8074ca1a0 100644
  sort-buffer-size 262144
  source-verify-checksum FALSE
  sporadic-binlog-dump-fail FALSE
-diff --git a/mysql-test/r/rename_sync.result b/mysql-test/r/rename_sync.result
-index c4ffc0f30dc..4d843adc6cc 100644
---- a/mysql-test/r/rename_sync.result
-+++ b/mysql-test/r/rename_sync.result
-@@ -21,7 +21,8 @@ SET DEBUG_SYNC= 'now SIGNAL cont';
- connection con1;
- # Reap the rename and try to drop the table being renamed. Without the patch,
- # the drop leads to an assert.
--DROP TABLE t2;
-+ERROR HY000: Error on observer while running replication hook 'before_commit'.
-+DROP TABLE t1;
- connection default;
- # Disconnect and cleanup.
- disconnect con1;
-diff --git a/mysql-test/r/session_tracker.result b/mysql-test/r/session_tracker.result
-index 23013ed3a8a..b96bb3c2911 100644
---- a/mysql-test/r/session_tracker.result
-+++ b/mysql-test/r/session_tracker.result
-@@ -217,7 +217,8 @@ SET @@session.sql_mode= @sql_mode_saved;
- -- sql_mode
- -- ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
- -- statement_id
---- 60
-+-- 74
- 
- # Switch off the session system variables tracker (using empty string).
- SET @@session.session_track_system_variables='';
-diff --git a/mysql-test/suite/auth_sec/include/auth_sec_assert_binlog_events.inc b/mysql-test/suite/auth_sec/include/auth_sec_assert_binlog_events.inc
-index e0dbac3d8a5..39b3dd609fd 100644
---- a/mysql-test/suite/auth_sec/include/auth_sec_assert_binlog_events.inc
-+++ b/mysql-test/suite/auth_sec/include/auth_sec_assert_binlog_events.inc
-@@ -22,5 +22,11 @@ if ($invert == 1)
- }
- 
- --let $dont_print_pattern= 1
----let $event_sequence= $gtid_event # $event
-+{
-+  --let $event_sequence= Consensus_log # $gtid_event # $event
-+}
-+{
-+  --let $event_sequence= $gtid_event # $event
-+}
- --source include/assert_binlog_events.inc
 diff --git a/mysql-test/suite/funcs_1/t/is_engines.test b/mysql-test/suite/funcs_1/t/is_engines.test
 index b1aa71cf382..6b0a95ff21b 100644
 --- a/mysql-test/suite/funcs_1/t/is_engines.test
 +++ b/mysql-test/suite/funcs_1/t/is_engines.test
-@@ -117,9 +117,7 @@ DROP TABLE information_schema.engines;
+@@ -117,9 +117,6 @@ DROP TABLE information_schema.engines;
  
  --error ER_DBACCESS_DENIED_ERROR
  ALTER TABLE information_schema.engines RENAME db_datadict.engines;
@@ -1601,60 +1542,6 @@ index b1aa71cf382..6b0a95ff21b 100644
  # Cleanup
  DROP DATABASE db_datadict;
  
-diff --git a/mysql-test/suite/innodb_undo/include/truncate_at_shutdown.inc b/mysql-test/suite/innodb_undo/include/truncate_at_shutdown.inc
-index 1215878a42b..2006edb74fe 100644
---- a/mysql-test/suite/innodb_undo/include/truncate_at_shutdown.inc
-+++ b/mysql-test/suite/innodb_undo/include/truncate_at_shutdown.inc
-@@ -197,7 +197,13 @@ if ($CRASH_ON_SHUTDOWN == 1)
- # The truncate will get started during shutdown using the settings above.
- # The restarted engine does not need these settings to complete the truncate
- # if the injected crash was far enough along.
----let $restart_parameters="restart:"
-+{
-+}
-+{
-+  --let $restart_parameters="restart:"
-+}
-+-- echo restart_parameters: "$restart_parameters"
- --let $explicit_default_wait_counter = 15000
- --source include/start_mysqld.inc
- 
-diff --git a/mysql-test/suite/rpl/r/rpl_encryption_max_binlog_size.result b/mysql-test/suite/rpl/r/rpl_encryption_max_binlog_size.result
-index a687ae7f40b..40b8517b44a 100644
---- a/mysql-test/suite/rpl/r/rpl_encryption_max_binlog_size.result
-+++ b/mysql-test/suite/rpl/r/rpl_encryption_max_binlog_size.result
-@@ -7,6 +7,6 @@ FLUSH LOGS;
- include/assert.inc [Rotate shall be the 3rd event in first binary log]
- CREATE TABLE t1 (c1 INT PRIMARY KEY, c2 VARCHAR(255));
- # Inserting 100 transactions
--# Assert that all 11 binary logs considered the encryption header
-+# Assert that all 13 binary logs considered the encryption header
- DROP TABLE t1;
- include/rpl_end.inc
-diff --git a/mysql-test/suite/rpl/r/rpl_perfschema_applier_config.result b/mysql-test/suite/rpl/r/rpl_perfschema_applier_config.result
-index fc71057b4ff..3833198e8b7 100644
---- a/mysql-test/suite/rpl/r/rpl_perfschema_applier_config.result
-+++ b/mysql-test/suite/rpl/r/rpl_perfschema_applier_config.result
-@@ -3,7 +3,6 @@ Warnings:
- Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
- Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
- [connection master]
--include/assert.inc [On master, the table should return an empty set.]
- 
- # Verify that SELECT works and produces an output similar to
- # the corresponding field in SHOW SLAVE STATUS(SSS) in all scenarios.
-diff --git a/mysql-test/suite/rpl/r/rpl_perfschema_connect_config.result b/mysql-test/suite/rpl/r/rpl_perfschema_connect_config.result
-index 85d7a0d7930..4b23c050df6 100644
---- a/mysql-test/suite/rpl/r/rpl_perfschema_connect_config.result
-+++ b/mysql-test/suite/rpl/r/rpl_perfschema_connect_config.result
-@@ -5,7 +5,6 @@ Note	####	Storing MySQL user name or password information in the connection meta
- [connection master]
- call mtr.add_suppression("Source command COM_REGISTER_REPLICA failed.");
- call mtr.add_suppression(" * does not exist in the InnoDB internal");
--include/assert.inc [On master, the table should return an empty set.]
- 
- # Verify that SELECT works for every field and produces an output
- # similar to the corresponding field in SHOW SLAVE STATUS(SSS).
 diff --git a/mysql-test/suite/rpl/t/rpl_drop_scheduled_event.test b/mysql-test/suite/rpl/t/rpl_drop_scheduled_event.test
 index e8e9d2dbb69..80e2088759b 100644
 --- a/mysql-test/suite/rpl/t/rpl_drop_scheduled_event.test
@@ -1795,7 +1682,7 @@ diff --git a/scripts/CMakeLists.txt b/scripts/CMakeLists.txt
 index c4ef5694b34..63f9a9f7494 100644
 --- a/scripts/CMakeLists.txt
 +++ b/scripts/CMakeLists.txt
-@@ -150,17 +150,53 @@ ADD_CUSTOM_COMMAND(
+@@ -150,17 +150,42 @@ ADD_CUSTOM_COMMAND(
    ${CMAKE_CURRENT_SOURCE_DIR}/firewall_stored_procedures.sql
  )
  
@@ -1809,16 +1696,6 @@ index c4ef5694b34..63f9a9f7494 100644
 +    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 +    DEPENDS comp_sql
 +    ${CMAKE_CURRENT_SOURCE_DIR}/wesql_system_tables.sql
-+  )
-+  ADD_CUSTOM_COMMAND(
-+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables_fix_wesql.h
-+    COMMAND comp_sql
-+    wesql_system_tables_fix
-+    ${CMAKE_CURRENT_SOURCE_DIR}/wesql_system_tables_fix.sql
-+    sql_commands_system_tables_fix_wesql.h
-+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-+    DEPENDS comp_sql
-+    ${CMAKE_CURRENT_SOURCE_DIR}/wesql_system_tables_fix.sql
 +  )
 +ENDIF()
  # Add target for the above to be built
@@ -1852,7 +1729,6 @@ index c4ef5694b34..63f9a9f7494 100644
 +      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables_data_fix.h
 +      ${CMAKE_CURRENT_BINARY_DIR}/sql_firewall_stored_procedures.h
 +      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables_wesql.h
-+      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables_fix_wesql.h
 +    )
 +  ENDIF()
  ENDIF()
@@ -2283,18 +2159,17 @@ diff --git a/sql/dd/impl/upgrade/server.cc b/sql/dd/impl/upgrade/server.cc
 index 9f222287e18..8ab9ed5ab1e 100644
 --- a/sql/dd/impl/upgrade/server.cc
 +++ b/sql/dd/impl/upgrade/server.cc
-@@ -65,6 +65,10 @@
+@@ -65,6 +65,9 @@
  #include "sql/trigger.h"  // Trigger
  #include "sql/trigger_def.h"
  
 +#ifdef WESQL
 +#include "scripts/sql_commands_system_tables_wesql.h"
-+#include "scripts/sql_commands_system_tables_fix_wesql.h"
 +#endif
  typedef ulonglong sql_mode_t;
  extern const char *mysql_sys_schema[];
  extern const char *fill_help_tables[];
-@@ -955,5 +960,72 @@ bool I_S_upgrade_required() {
+@@ -955,5 +960,68 @@ bool I_S_upgrade_required() {
           opt_upgrade_mode == UPGRADE_FORCE;
  }
  
@@ -2335,10 +2210,6 @@ index 9f222287e18..8ab9ed5ab1e 100644
 +  }
 +  LogErr(INFORMATION_LEVEL, ER_SERVER_UPGRADE_MYSQL_TABLES);
 +  for (query_ptr = &wesql_system_tables[0]; *query_ptr != nullptr;
-+       query_ptr++)
-+    if (ignore_error_and_execute(thd, *query_ptr)) return true;
-+  LogErr(INFORMATION_LEVEL, ER_SERVER_UPGRADE_MYSQL_TABLES);
-+  for (query_ptr = &wesql_system_tables_fix[0]; *query_ptr != nullptr;
 +       query_ptr++)
 +    if (ignore_error_and_execute(thd, *query_ptr)) return true;
 +  return false;
@@ -2987,7 +2858,7 @@ index 3f94e768956..7c554929ddb 100644
    if (opt_initialize) log_output_options = LOG_FILE;
  
    /*
-@@ -6818,7 +6989,20 @@ static int init_server_components() {
+@@ -6818,6 +6989,19 @@ static int init_server_components() {
    /*
      Set the default storage engines
    */
@@ -3007,7 +2878,6 @@ index 3f94e768956..7c554929ddb 100644
    if (initialize_storage_engine(default_storage_engine, "",
                                  &global_system_variables.table_plugin))
      unireg_abort(MYSQLD_ABORT_EXIT);
-
 @@ -7531,6 +7731,10 @@ int mysqld_main(int argc, char **argv)
    */
    init_server_psi_keys();
