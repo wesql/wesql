@@ -17,8 +17,8 @@ enum class Wesql_orm_rewrite_action {
 struct Wesql_orm_rewrite_result {
   Wesql_orm_rewrite_action action{Wesql_orm_rewrite_action::kNone};
   std::string binlog_sql;
-  uint fk_stripped{0};
-  uint collation_rewritten{0};
+  unsigned int fk_stripped{0};
+  unsigned int collation_rewritten{0};
 };
 
 bool wesql_is_smartengine(const HA_CREATE_INFO *create_info);
