@@ -43,4 +43,3 @@ SET @str = IF(@@global.serverless AND @have_smartengine <> 0 AND @have_nose_slav
 PREPARE stmt FROM @str;
 EXECUTE stmt;
 DROP PREPARE stmt;
-
