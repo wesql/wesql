@@ -154,15 +154,6 @@ int start_consistent_archive() {
   LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
          "start snapshot archive ...");
 
-#ifdef WESQL_CLUSTER
-  // Check Logger mode.
-  if (is_consensus_replication_log_mode()) {
-    LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
-           "snapshot archive cannot be enabled in logger mode");
-    return 1;
-  }
-#endif
-
   if (!opt_consistent_snapshot_archive_dir) {
     opt_consistent_snapshot_archive_dir = mysql_tmpdir;
   }
@@ -853,16 +844,6 @@ void Consistent_archive::run() {
       if (!abort) continue;
       break;
     }
-#ifdef WESQL_CLUSTER
-    // Check whether consensus role is leader
-    if (!is_consensus_replication_state_leader(m_consensus_term)) {
-      std::chrono::seconds wait_timeout = std::chrono::seconds{1};
-      ret = wait_for_consistent_archive(wait_timeout, abort);
-      assert(ret == 0 || is_timeout(ret));
-      if (!abort) continue;
-      break;
-    }
-#endif
     // reload global options.
     m_innodb_tar_compression_mode = opt_consistent_snapshot_innodb_tar_mode;
     m_se_tar_compression_mode = opt_consistent_snapshot_se_tar_mode;
@@ -1236,76 +1217,12 @@ int Consistent_archive::archive_consistent_snapshot_binlog() {
     err_msg.append(":");
     err_msg.append(std::to_string(m_mysql_binlog_pos));
     err_msg.append(" persistent");
-#ifdef WESQL_CLUSTER
-    uint64 consensus_index = 0;
-    if (!NO_HOOK(binlog_manager)) {
-      if (RUN_HOOK(
-              binlog_manager, get_unique_index_from_pos,
-              (m_mysql_binlog_file, m_mysql_binlog_pos, consensus_index))) {
-        err_msg.append(" get consensus index using position failed.");
-        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
-               err_msg.c_str());
-        ret = 1;
-        goto err;
-      }
-      // If m_mysql_binlog_pos is less than or equal to 251, the consensus_index
-      // is not accurate, so it is necessary to retrieve the log/pos using
-      // consensus index again.
-      DBUG_EXECUTE_IF("check_consistent_snapshot_binlog_position", {
-        if (consensus_index > 0) {
-          char consensus_to_mysql_binlog[FN_REFLEN + 1] = {0};
-          my_off_t consensus_to_log_pos = 0;
-          if (RUN_HOOK(binlog_manager, get_pos_from_unique_index,
-                       (consensus_index, consensus_to_mysql_binlog,
-                        consensus_to_log_pos))) {
-            err_msg.append(" get log position using consensus index failed: ");
-            err_msg.append(std::to_string(consensus_index));
-            LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
-                   err_msg.c_str());
-            ret = 1;
-            goto err;
-          }
-          // diff mysqld binlog index entry name.
-          if (compare_log_name(consensus_to_mysql_binlog,
-                               m_mysql_binlog_file) != 0 ||
-              consensus_to_log_pos != m_mysql_binlog_pos) {
-            err_msg.append(" mysql binlog and position not match: consensus=");
-            err_msg.append(std::to_string(consensus_index));
-            err_msg.append(" using ");
-            err_msg.append(consensus_to_mysql_binlog);
-            err_msg.append(":");
-            err_msg.append(std::to_string(consensus_to_log_pos));
-            LogErr(INFORMATION_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
-                   err_msg.c_str());
-          }
-        }
-      });
-    }
-    m_consensus_index = consensus_index;
-
-    err_msg.append(" consensus_index=");
-    err_msg.append(std::to_string(m_consensus_index));
-    LogErr(INFORMATION_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
-           err_msg.c_str());
-
-    // wait archive binlog complete.
-    // And update mysql binlog filename to the archived binlog filename.
-    if (m_consensus_index > 0) {
-      errval = binlog_archive_wait_for_archive(
-          thd, m_mysql_binlog_file, m_binlog_file, m_mysql_binlog_pos,
-          m_consensus_index);
-    } else {
-      // no binlog.
-      m_binlog_file[0] = '\0';
-    }
-#else
     LogErr(INFORMATION_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
            err_msg.c_str());
     // wait archive binlog complete.
     // And update mysql binlog filename to the archived binlog filename.
     errval = binlog_archive_wait_for_archive(
         thd, m_mysql_binlog_file, m_binlog_file, m_mysql_binlog_pos, 0);
-#endif
     if (errval != 0) {
       err_msg.append(" failed.");
       LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,

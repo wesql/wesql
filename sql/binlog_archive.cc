@@ -43,9 +43,7 @@
 #include "sql/binlog_istream.h"
 #include "sql/binlog_ostream.h"
 #include "sql/binlog_reader.h"
-#ifdef WESQL_CLUSTER
 #include "sql/consensus_log_event.h"
-#endif
 #include "sql/consistent_archive.h"
 #include "sql/debug_sync.h"
 #include "sql/derror.h"
@@ -547,16 +545,8 @@ int start_binlog_archive() {
            "the binlog persistent not enabled");
     return 0;
   }
-  if (opt_binlog_archive_using_consensus_index) {
-#ifdef WESQL_CLUSTER
-    if (NO_HOOK(binlog_manager))
-#endif
-    {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_STARTUP,
-             "must enable consensus plugin");
-      return 1;
-    }
-  }
+  /* Single-node: consensus-index start is read from old archive names / events,
+     not from a Raft plugin. */
 
   if (!opt_binlog_archive_dir) {
     opt_binlog_archive_dir = mysql_tmpdir;
@@ -1002,10 +992,7 @@ void Binlog_archive::run() {
   assert(m_expected_slice_queue.m_Q.size() == m_expected_slice_queue.capacity);
 
   err_msg.assign("Binlog archive thread running");
-#ifdef WESQL_CLUSTER
-  err_msg.append(is_consensus_replication_log_mode() ? " in Logger mode"
-                                                     : " in Data mode");
-#endif
+
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_LOG, err_msg.c_str());
 
   // create binlog archive update index worker thread.
@@ -1049,24 +1036,7 @@ void Binlog_archive::run() {
     m_thd->clear_error();
     m_thd->get_stmt_da()->reset_diagnostics_area();
 
-#ifdef WESQL_CLUSTER
-    // Check whether consensus role is leader and fetch leader term
-    if (DBUG_EVALUATE_IF("fault_injection_binlog_archive_running", true,
-                         false) ||
-        !is_consensus_replication_state_leader(consensus_term)) {
-      struct timespec abstime;
-      set_timespec(&abstime, 1);
-      mysql_mutex_lock(&m_binlog_archive_run_lock);
-      // When demoted to a non-Leader role, the previous Leader role's consensus
-      // term remains unchanged, making it easier to query the binlog persistent
-      // view. m_consensus_term = 0;
-      error = mysql_cond_timedwait(&m_binlog_archive_run_cond,
-                                   &m_binlog_archive_run_lock, &abstime);
-      mysql_mutex_unlock(&m_binlog_archive_run_lock);
-      continue;
-    }
-    m_consensus_term = consensus_term;
-#endif
+
     snprintf(m_index_file_name, sizeof(m_index_file_name) - 1,
              BINLOG_ARCHIVE_INDEX_FILE_FORMAT,
              static_cast<my_off_t>(m_consensus_term));
@@ -1121,65 +1091,14 @@ void Binlog_archive::run() {
     mysql_start_binlog[0] = '\0';
     mysql_start_pos = BIN_LOG_HEADER_SIZE;
 
-    // Generate mysql start binlog name and position.
+    // Start from the last persisted file+pos. Old archive names may still
+    // carry a consensus index; read it from the index file, not a Raft hook.
     if (opt_binlog_archive_using_consensus_index) {
-#ifdef WESQL_CLUSTER
-      // get last consensus index from last persistent binlog
-      if (last_binlog_file_name[0] != '\0' && !NO_HOOK(binlog_manager)) {
-        std::string last_binlog_local_file;
-        last_binlog_local_file.assign(m_mysql_binlog_archive_dir);
-        last_binlog_local_file.append(last_binlog_file_name);
-
-        err_msg.assign("local bulid persist start binlog=");
-        err_msg.append(last_binlog_file_name);
-        LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_LOG, err_msg.c_str());
-        last_binlog_consensus_index = slice_end_consensus_index;
-
-        DBUG_EXECUTE_IF("check_binlog_archive_last_binlog_end_consensu_index", {
-          merge_slice_to_binlog_file(last_binlog_file_name,
-                                     last_binlog_local_file.c_str());
-          if (RUN_HOOK(binlog_manager, get_unique_index_from_pos,
-                       (last_binlog_local_file.c_str(), 0,
-                        last_binlog_consensus_index))) {
-            err_msg.assign(
-                "get consensus index using persistent binlog failed: ");
-            err_msg.append(last_binlog_file_name);
-            LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LOG, err_msg.c_str());
-          }
-          assert(slice_end_consensus_index == last_binlog_consensus_index);
-        });
-
-        if (last_binlog_consensus_index > 0) {
-          // get mysql binlog and end positiion using consensus index.
-          // generate mysql start binlog name and position.
-          char start_file[FN_REFLEN + 1];
-          my_off_t start_pos = 0;
-          if (RUN_HOOK(binlog_manager, get_pos_from_unique_index,
-                       (last_binlog_consensus_index, start_file, start_pos))) {
-            err_msg.assign(
-                "get mysql binlog and position using consensus index failed: ");
-            err_msg.append(std::to_string(last_binlog_consensus_index));
-            LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LOG, err_msg.c_str());
-            break;
-          }
-          // Only file name.
-          strmake(mysql_start_binlog, start_file + dirname_length(start_file),
-                  sizeof(mysql_start_binlog) - 1);
-          mysql_start_pos = start_pos;
-        } else {
-          // If the persisted binlog does not contain any consensus index,
-          // persistence will start from the first MySQL binlog.
-          mysql_start_binlog[0] = '\0';
-          mysql_start_pos = BIN_LOG_HEADER_SIZE;
-        }
-      }
-#endif
-    } else {
-      // Generate mysql start binlog name and position.
-      strmake(mysql_start_binlog, last_binlog_file_name,
-              sizeof(mysql_start_binlog) - 1);
-      mysql_start_pos = last_binlog_slice_max_num;
+      last_binlog_consensus_index = slice_end_consensus_index;
     }
+    strmake(mysql_start_binlog, last_binlog_file_name,
+            sizeof(mysql_start_binlog) - 1);
+    mysql_start_pos = last_binlog_slice_max_num;
 
     mysql_mutex_lock(&m_rotate_lock);
     m_mysql_binlog_start_pos = mysql_start_pos;
@@ -1449,27 +1368,7 @@ int Binlog_archive::archive_init() {
   return 0;
 }
 
-bool Binlog_archive::consensus_leader_is_changed() {
-#ifdef WESQL_CLUSTER
-  // Check whether consensus role is leader
-  uint64_t consensus_term = 0;
-  if (!is_consensus_replication_state_leader(consensus_term)) {
-    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LOG,
-           "consensus role had changed to non-leader");
-    return true;
-  }
-  if (m_consensus_term > 0 && m_consensus_term != consensus_term) {
-    std::string err_msg;
-    err_msg.assign("consensus leader term had changed ");
-    err_msg.append(std::to_string(m_consensus_term));
-    err_msg.append(" to ");
-    err_msg.append(std::to_string(consensus_term));
-    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LOG, err_msg.c_str());
-    return true;
-  }
-#endif
-  return false;
-}
+bool Binlog_archive::consensus_leader_is_changed() { return false; }
 
 /**
  * @brief Archives the MySQL binlog files.
@@ -1635,27 +1534,6 @@ int Binlog_archive::read_format_description_event(File_reader &reader) {
       dynamic_cast<Format_description_log_event &>(*ev));
   delete ev;
 
-#ifdef WESQL_CLUSTER
-  // Get mysql binlog previous consensus index
-  uint64 previous_consensus_index = 0;
-  if (!NO_HOOK(binlog_manager)) {
-    if (RUN_HOOK(binlog_manager, get_unique_index_from_pos,
-                 (m_mysql_linfo.log_file_name, BIN_LOG_HEADER_SIZE,
-                  previous_consensus_index))) {
-      err_msg.assign(
-          "Could not find previouse consensus index in mysql binlog ");
-      err_msg.append(m_mysql_linfo.log_file_name);
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LOG, err_msg.c_str());
-      return 1;
-    }
-    err_msg.assign("Found previouse consensus index in mysql binlog ");
-    err_msg.append(m_mysql_linfo.log_file_name);
-    err_msg.append(" previous_consensus_index=");
-    err_msg.append(std::to_string(previous_consensus_index));
-    LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_LOG, err_msg.c_str());
-  }
-  m_mysql_binlog_previouse_consensus_index = previous_consensus_index;
-#endif
   return 0;
 }
 
@@ -1837,14 +1715,12 @@ int Binlog_archive::archive_event(File_reader &reader, uchar *event_ptr,
         m_binlog_in_transaction = false;
         break;
       }
-#ifdef WESQL_CLUSTER
       case binary_log::CONSENSUS_LOG_EVENT: {
         Consensus_log_event ev(reinterpret_cast<char *>(event_ptr), event_len,
                                &reader.format_description_event());
         m_mysql_end_consensus_index = ev.get_index();
         break;
       }
-#endif
       default: {
         break;
       }
@@ -1948,9 +1824,7 @@ int Binlog_archive::archive_event(File_reader &reader, uchar *event_ptr,
   // slice.
   if (m_binlog_in_transaction == false &&
       !(type == binary_log::GTID_LOG_EVENT ||
-#ifdef WESQL_CLUSTER
         type == binary_log::CONSENSUS_LOG_EVENT ||
-#endif
         type == binary_log::ANONYMOUS_GTID_LOG_EVENT) &&
       !(type == binary_log::USER_VAR_EVENT ||
         type == binary_log::INTVAR_EVENT || type == binary_log::RAND_EVENT)) {

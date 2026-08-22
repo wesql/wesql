@@ -1920,10 +1920,6 @@ int Consistent_recovery::get_last_persistent_binlog_consensus_index() {
   if (!opt_serverless || !opt_recovery_from_objstore) return 0;
     // Only in Logger Node, the last persistent binlog consensus index is
     // needed.
-#ifdef WESQL_CLUSTER
-  if (!is_consensus_replication_log_mode()) return 0;
-#endif
-
   if (init_objstore_in_recovery()) return 1;
   if (init_consistent_snapshot_recovery_context()) return 1;
 
