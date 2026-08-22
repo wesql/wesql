@@ -150,7 +150,8 @@ static bool recursive_create_dir(const std::string &dir,
                                  const std::string &root);
 static time_t calculate_auto_purge_lower_time_bound();
 static THD *set_thread_context();
-static uint64_t extract_term_from_index_file(const char *index_file_name);
+static bool extract_term_from_index_file(const char *index_file_name,
+                                         uint64_t *term);
 
 Binlog_archive_worker::Binlog_archive_worker(Binlog_archive *archive,
                                              int worker_id)
@@ -1184,9 +1185,7 @@ void Binlog_archive::run() {
     // persistence, it is essential to ensure that the local mysql binlogs are
     // still present after the cluster recovers.
     // Users can determine whether all binlogs have been fully persisted by
-    // comparing the `consensus_index` from
-    // `information_schema.BINLOG_PERSISTENT_TASK_INFO` with the `match_index`
-    // obtained from `information_schema.wesql_cluster_global`.
+    // reading `information_schema.BINLOG_PERSISTENT_TASK_INFO`.
     rotate_binlog_slice(0, true);
     mysql_mutex_lock(&m_rotate_lock);
     // If previous archived binlog slice is not closed, close it.
@@ -2969,7 +2968,11 @@ int Binlog_archive::move_crash_safe_index_file_to_index_file() {
     error = 1;
     goto err;
   }
-  m_opened_index_term = extract_term_from_index_file(index_keyid.c_str());
+  if (!extract_term_from_index_file(index_keyid.c_str(),
+                                    &m_opened_index_term)) {
+    error = 1;
+    goto err;
+  }
 
 err:
   return error;
@@ -3094,8 +3097,8 @@ bool Binlog_archive::open_index_file() {
     goto end;
   }
   if (!last_binlog_index_keyid.empty()) {
-    if ((m_opened_index_term = extract_term_from_index_file(
-             last_binlog_index_keyid.c_str())) == 0) {
+    if (!extract_term_from_index_file(last_binlog_index_keyid.c_str(),
+                                      &m_opened_index_term)) {
       LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_OPEN_INDEX,
              "invalid last persistent binlog index key",
              last_binlog_index_keyid.c_str());
@@ -3767,27 +3770,47 @@ int binlog_archive_wait_for_archive(THD *thd, const char *log_file_name,
 
 /**
  * @brief Extract the term value from the index file name.
- * Format like binlog-index.000001.index
+ * Format like binlog-index.000001.index or binlog-index.0000000000.index.
+ * Term 0 is valid for single-node archives. Return false only if the
+ * name cannot be parsed.
  */
-static uint64_t extract_term_from_index_file(const char *index_file_name) {
+static bool extract_term_from_index_file(const char *index_file_name,
+                                         uint64_t *term) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("extract_term_from_index_file"));
-  uint64_t term = 0;
-  size_t first_dot = 0;
-  size_t second_dot = 0;
-  std::string index_file;
-  index_file.assign(index_file_name);
-  first_dot = index_file.find('.');
+  if (index_file_name == nullptr || term == nullptr) {
+    return false;
+  }
+  std::string index_file(index_file_name);
+  size_t slash = index_file.find_last_of('/');
+  if (slash != std::string::npos) {
+    index_file = index_file.substr(slash + 1);
+  }
+  size_t first_dot = index_file.find('.');
   if (first_dot == std::string::npos) {
-    return term;
+    return false;
   }
-  second_dot = index_file.find('.', first_dot + 1);
+  size_t second_dot = index_file.find('.', first_dot + 1);
   if (second_dot == std::string::npos) {
-    return term;
+    // Legacy single-version names such as snapshot.index.
+    if (index_file.size() > 6 &&
+        index_file.compare(index_file.size() - 6, 6, ".index") == 0) {
+      *term = 0;
+      return true;
+    }
+    return false;
   }
-  std::string term_str = index_file.substr(first_dot + 1, second_dot);
-  term = std::stoull(term_str);
-  return term;
+  if (second_dot == first_dot + 1) {
+    return false;
+  }
+  std::string term_str =
+      index_file.substr(first_dot + 1, second_dot - first_dot - 1);
+  if (term_str.empty() ||
+      term_str.find_first_not_of("0123456789") != std::string::npos) {
+    return false;
+  }
+  *term = std::stoull(term_str);
+  return true;
 }
 
 /**
@@ -4225,8 +4248,8 @@ err:
       if (!error) {
         for (const auto &object : objects) {
           uint64_t consensus_term = 0;
-          if ((consensus_term =
-                   extract_term_from_index_file(object.key.c_str())) == 0) {
+          if (!extract_term_from_index_file(object.key.c_str(),
+                                            &consensus_term)) {
             LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_LOG,
                    "invalid binlog-index key: ", object.key.c_str());
             continue;

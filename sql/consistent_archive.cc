@@ -135,7 +135,8 @@ static size_t convert_datetime_to_str(char *str, time_t ts);
 static const char *convert_archive_progress_to_str(
     Consistent_snapshot_archive_progress archive_progress);
 static int check_archive_file_version_type(std::string &archive_file_name);
-static uint64_t extract_term_from_index_file(const char *index_file_name);
+static bool extract_term_from_index_file(const char *index_file_name,
+                                         uint64_t *term);
 /**
  * @brief Creates a consistent archive object and starts the consistent snapshot
  * archive thread.
@@ -2535,7 +2536,10 @@ int Consistent_archive::move_crash_safe_index_file_to_index_file(
     if (fd >= 0) mysql_file_close(fd, MYF(0));
     goto err;
   }
-  *index_term = extract_term_from_index_file(index_keyid.c_str());
+  if (!extract_term_from_index_file(index_keyid.c_str(), index_term)) {
+    error = 1;
+    goto err;
+  }
 
 err:
   return error;
@@ -2735,8 +2739,10 @@ bool Consistent_archive::open_index_file(const char *index_file_name_arg,
   // Check if the index file exists in s3, if so, download it to local.
   // And rename it to index_file_name.
   if (!index_obj_keyid.empty()) {
-    // 0 if snapshot.index
-    *index_term = extract_term_from_index_file(index_obj_keyid.c_str());
+    if (!extract_term_from_index_file(index_obj_keyid.c_str(), index_term)) {
+      error = true;
+      goto end;
+    }
 
     std::string index_file_name_str;
     index_file_name_str.assign(crash_safe_index_file_name);
@@ -3611,11 +3617,12 @@ int Consistent_archive::purge_archive_index_garbage(uint64_t end_term,
   // snapshot.{term}.index
   for (const auto &object : objects) {
     // extract term from snapshot.{term}.index
-    uint64_t consensus_term = extract_term_from_index_file(object.key.c_str());
-    if (consensus_term == 0) {
+    uint64_t consensus_term = 0;
+    if (!extract_term_from_index_file(object.key.c_str(), &consensus_term)) {
       err_msg.assign("invalid index key: ");
       err_msg.append(object.key);
       LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      continue;
     }
 
     // If the term of the index file is smaller than the end_term,
@@ -3993,27 +4000,47 @@ int Consistent_archive::show_se_backup_snapshot(
 
 /**
  * @brief Extract the term value from the index file name.
- * Format like snapshot.000001.index
+ * Format like snapshot.000001.index or snapshot.0000000000.index.
+ * Term 0 is valid for single-node archives. Return false only if the
+ * name cannot be parsed.
  */
-static uint64_t extract_term_from_index_file(const char *index_file_name) {
+static bool extract_term_from_index_file(const char *index_file_name,
+                                         uint64_t *term) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("extract_term_from_index_file"));
-  uint64_t term = 0;
-  size_t first_dot = 0;
-  size_t second_dot = 0;
-  std::string index_file;
-  index_file.assign(index_file_name);
-  first_dot = index_file.find('.');
+  if (index_file_name == nullptr || term == nullptr) {
+    return false;
+  }
+  std::string index_file(index_file_name);
+  size_t slash = index_file.find_last_of('/');
+  if (slash != std::string::npos) {
+    index_file = index_file.substr(slash + 1);
+  }
+  size_t first_dot = index_file.find('.');
   if (first_dot == std::string::npos) {
-    return term;
+    return false;
   }
-  second_dot = index_file.find('.', first_dot + 1);
+  size_t second_dot = index_file.find('.', first_dot + 1);
   if (second_dot == std::string::npos) {
-    return term;
+    // Legacy single-version names such as snapshot.index.
+    if (index_file.size() > 6 &&
+        index_file.compare(index_file.size() - 6, 6, ".index") == 0) {
+      *term = 0;
+      return true;
+    }
+    return false;
   }
-  std::string term_str = index_file.substr(first_dot + 1, second_dot);
-  term = std::stoull(term_str);
-  return term;
+  if (second_dot == first_dot + 1) {
+    return false;
+  }
+  std::string term_str =
+      index_file.substr(first_dot + 1, second_dot - first_dot - 1);
+  if (term_str.empty() ||
+      term_str.find_first_not_of("0123456789") != std::string::npos) {
+    return false;
+  }
+  *term = std::stoull(term_str);
+  return true;
 }
 
 /**

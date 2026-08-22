@@ -1631,6 +1631,23 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
       LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
       return true;
     }
+    // Downloaded WAL/meta still names extents with the source repo prefix.
+    // Also place the original key in the destination bucket so dest start
+    // can open those objects.
+    if (destination_object_key != object.key) {
+      ss = init_destination_objstore->put_object(
+          m_init_destination_objstore_bucket, object.key, data);
+      if (!ss.is_succ()) {
+        err_msg.assign(
+            "put source-key object to destination object store failed: ");
+        err_msg.append("key=");
+        err_msg.append(object.key);
+        err_msg.append(" error=");
+        err_msg.append(ss.error_message());
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
+        return true;
+      }
+    }
   }
   m_state = CONSISTENT_RECOVERY_STATE_SST;
   LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,

@@ -13,8 +13,6 @@ where length(variable_name) > 50;
 There should be *no* long test name listed below:
 raft_replication_archive_recovery_stop_datetime
 raft_replication_archive_recovery_stop_datetime
-raft_replication_auto_leader_transfer_check_seconds
-raft_replication_auto_leader_transfer_check_seconds
 select variable_name as `There should be *no* variables listed below:` from t2
 left join t1 on variable_name=test_name where test_name is null ORDER BY variable_name;
 There should be *no* variables listed below:
@@ -87,10 +85,6 @@ raft_replication_archive_recovery
 raft_replication_archive_recovery
 raft_replication_archive_recovery_stop_datetime
 raft_replication_archive_recovery_stop_datetime
-raft_replication_auto_leader_transfer
-raft_replication_auto_leader_transfer
-raft_replication_auto_leader_transfer_check_seconds
-raft_replication_auto_leader_transfer_check_seconds
 raft_replication_auto_reset_match_index
 raft_replication_auto_reset_match_index
 raft_replication_check_commit_index_interval

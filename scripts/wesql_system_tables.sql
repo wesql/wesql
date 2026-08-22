@@ -2,8 +2,7 @@ use mysql;
 
 
 -- ------------------------------------------------------------------------
--- Following are set of "configuration tables" that used to configure
--- the Consensus replication.
+-- Following are set of "configuration tables".
 -- ------------------------------------------------------------------------
 set @have_innodb = (select count(engine) from information_schema.engines where engine='INNODB' and support != 'NO');
 set @have_smartengine = (select count(engine) from information_schema.engines where engine='SMARTENGINE' and support != 'NO');
