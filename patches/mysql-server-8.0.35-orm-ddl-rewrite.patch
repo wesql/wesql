@@ -19,18 +19,19 @@
  # they go in messages_to_error_log.txt in the same
 --- a/share/messages_to_error_log.txt
 +++ b/share/messages_to_error_log.txt
-@@ -12754,6 +12754,14 @@ ER_FORCE_DEFAULT_STORAGE_ENGINE_TO_SMARTENGINE
-   eng "Force to use smartengine as default storage engine in serverless mode, not %s."
+@@ -12753,6 +12753,12 @@
  
+ ER_FORCE_DEFAULT_STORAGE_ENGINE_TO_SMARTENGINE
+   eng "Force to use smartengine as default storage engine in serverless mode, not %s."
++
 +ER_WESQL_ORM_COLLATION_REWRITTEN_IN_LOG
 +  eng "wesql_orm_ddl_rewrite: remapped collation of indexed column '%s' from %s to %s. Comparison rules changed."
 +
 +ER_WESQL_ORM_FK_STRIPPED_IN_LOG
 +  eng "wesql_orm_ddl_rewrite: removed foreign key '%s'. Parent/child checks and ON DELETE CASCADE are not enforced."
-+
+ 
  #
  # End of WeSQL error messages intended to be logged to the server error log.
- #
 --- a/sql/system_variables.h
 +++ b/sql/system_variables.h
 @@ -337,6 +337,7 @@
