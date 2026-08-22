@@ -3827,11 +3827,13 @@ index 64f26eb21a9..078f5e81f66 100644
 +        QUERY_TRACE_BEGIN(smartengine::monitor::TracePoint::SERVER_OPERATION);
 +#endif
          mysql_thread_set_secondary_engine(false);
- 
+-
++
          /* PSI begin */
-@@ -2445,6 +2500,12 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
+@@ -2445,5 +2500,11 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
    }
- 
+-
++
  done:
 +#ifdef WITH_SMARTENGINE
 +  QUERY_TRACE_END(); // end SERVER_OPERATION trace
@@ -3841,7 +3843,6 @@ index 64f26eb21a9..078f5e81f66 100644
 +#endif
    assert(thd->open_tables == nullptr ||
           (thd->locked_tables_mode == LTM_LOCK_TABLES));
- 
 @@ -4712,6 +4855,10 @@ int mysql_execute_command(THD *thd, bool first_level) {
      case SQLCOM_ALTER_TABLESPACE:
      case SQLCOM_EXPLAIN_OTHER:
