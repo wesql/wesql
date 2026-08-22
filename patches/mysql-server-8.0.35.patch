@@ -976,7 +976,8 @@ index 00000000000..11111111111 100644
 -      }
 -    }
    }
- 
+-
++
    # Return immediately if no check proceess was started
 @@ -5984,8 +6182,10 @@
          }
@@ -1060,7 +1061,8 @@ index 00000000000..11111111111 100644
 -            unless -d $datadir;
 +          unless -d $datadir;
          }
- 
+-
++
          # Restore the value of bootstrap command for the next run.
          if ($initial_bootstrap_cmd ne $ENV{'MYSQLD_BOOTSTRAP_CMD'}) {
            $ENV{'MYSQLD_BOOTSTRAP_CMD'} = $initial_bootstrap_cmd;
@@ -3656,7 +3658,8 @@ index ee4add37b8f..83d1b7b7314 100644
 +QUEUE_EVENT_RESULT queue_event_from_objstore(Master_info *mi, const char *buf,
 +                                             ulong event_len,
 +                                             bool do_flush_mi = true);
- 
+-
++
  int heartbeat_queue_event(bool is_valid, Master_info *&mi,
                            std::string binlog_name, uint64_t position,
 diff --git a/sql/sp.cc b/sql/sp.cc
