@@ -26,5 +26,15 @@ CREATE UNIQUE INDEX User_email_key ON User(email);
 SHOW WARNINGS;
 SHOW CREATE TABLE User;
 
-DROP TABLE a_child, a_parent, User, p;
+--echo # ON: table-default unicode_ci inherited by indexed column
+CREATE TABLE tdef (id INT PRIMARY KEY, email VARCHAR(191), UNIQUE KEY (email)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SHOW CREATE TABLE tdef;
+
+--echo # ON: mixed FK + extra clause rejected
+CREATE TABLE mix_p (id INT PRIMARY KEY);
+CREATE TABLE mix_c (id INT PRIMARY KEY, p_id INT, extra INT);
+--error ER_WESQL_ORM_ALTER_NOT_REWRITABLE
+ALTER TABLE mix_c ADD extra2 INT, ADD CONSTRAINT mix_fk FOREIGN KEY (p_id) REFERENCES mix_p(id);
+
+DROP TABLE a_child, a_parent, User, p, tdef, mix_c, mix_p;
 SET SESSION wesql_orm_ddl_rewrite=OFF;
