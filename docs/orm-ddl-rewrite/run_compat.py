@@ -76,9 +76,14 @@ def main():
     ap.add_argument("--set-rewrite", choices=["on", "off"],
                     help="SET SESSION/GLOBAL wesql_orm_ddl_rewrite")
     ap.add_argument("--expect-fails", type=int,
-                    help="Required hard-fail count (gate). Omit to only collect.")
+                    help="Required hard-fail count. Prefer --expect-baseline.")
     ap.add_argument("--expect-total", type=int, default=20,
                     help="Required statement count (default 20).")
+    ap.add_argument("--expect-baseline",
+                    default=str(ROOT / "results" / "expected-20.json"),
+                    help="Per-statement expected ON/OFF file.")
+    ap.add_argument("--check-baseline", action="store_true",
+                    help="Assert each statement against --expect-baseline.")
     ap.add_argument("--glob", default="0[1-5]_*.sql",
                     help="SQL file glob under sql/ (default ORM 20-stmt set).")
     args = ap.parse_args()
@@ -133,13 +138,43 @@ def main():
     for k, n in sorted(by.items()):
         print(f"  {k[0]} / {k[1]}: {n}")
 
+    gate_fail = False
     if args.expect_fails is not None:
         if len(results) != args.expect_total or len(fails) != args.expect_fails:
             print(
                 f"GATE FAIL: total={len(results)} expected {args.expect_total}; "
                 f"fails={len(fails)} expected {args.expect_fails}",
                 file=sys.stderr)
-            return 1
+            gate_fail = True
+
+    if args.check_baseline:
+        mode = args.set_rewrite or "off"
+        expected = json.loads(Path(args.expect_baseline).read_text())
+        if len(results) != len(expected):
+            print(
+                f"GATE FAIL: ran {len(results)} statements, "
+                f"baseline has {len(expected)}",
+                file=sys.stderr)
+            gate_fail = True
+        else:
+            for i, (got, exp) in enumerate(zip(results, expected)):
+                want = exp[mode]
+                same_stmt = got["stmt"].strip() == exp["stmt"].strip()
+                same_suite = got["suite"] == exp["suite"]
+                same_fail = got["hard_fail"] == want["hard_fail"]
+                same_class = got["class"] == want["class"]
+                if not (same_stmt and same_suite and same_fail and same_class):
+                    print(
+                        f"GATE FAIL [{i}] {got.get('suite')} "
+                        f"got fail={got['hard_fail']} class={got['class']} "
+                        f"want fail={want['hard_fail']} class={want['class']}",
+                        file=sys.stderr)
+                    if not same_stmt:
+                        print("  statement text drifted from baseline",
+                              file=sys.stderr)
+                    gate_fail = True
+    if gate_fail:
+        return 1
     return 0
 
 

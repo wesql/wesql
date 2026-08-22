@@ -9,14 +9,26 @@ digest：`sha256:90d4c9e328e23785a26263b998835bbf8ca92bfa3449ceda70d513b375ead4f
 
 ## 跑
 
+只采集、不验收：
+
 ```
 python3 run_compat.py
 ```
 
-读 `sql/*.sql`，逐条执行，写 `results/compat-results.json`。
+读 `sql/01_*.sql`–`05_*.sql`，逐条执行，写 `results/compat-results.json`。
+
+门禁（会失败退出）：
+
+```
+# OFF：20 条里必须仍是那 11 条失败，分类与 results/expected-20.json 一致
+python3 run_compat.py --set-rewrite off --check-baseline --expect-fails 11
+
+# ON：20 条全过
+python3 run_compat.py --set-rewrite on --check-baseline --expect-fails 0
+```
 
 - `01`–`05`：五个 ORM 默认建表（20 条）
 - `00_probes.sql`：定性探针，不计入 20 条
 - `06_rewrite_cases.sql`：评审要求的未命名/多外键/复合外键/ALTER/字符集不变/InnoDB
-
-当前镜像没有 `wesql_orm_ddl_rewrite` 开关。脚本记录的是引擎现状。开关落地后，同一脚本应在 ON 下让 `01`–`05` 全过，OFF 下 11 条失败与 `results/compat-results.json` 一致。
+- `results/expected-20.json`：逐条 OFF/ON 预期（fail + class）
+- `results/compat-results.json`：旧镜像采集基线，不是门禁
