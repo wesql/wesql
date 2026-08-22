@@ -69,6 +69,9 @@ CREATE TABLE mix_p (id INT PRIMARY KEY);
 CREATE TABLE mix_c (id INT PRIMARY KEY, p_id INT, extra INT);
 ALTER TABLE mix_c ADD extra2 INT, ADD CONSTRAINT mix_fk FOREIGN KEY (p_id) REFERENCES mix_p(id);
 ERROR HY000: wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+SHOW WARNINGS;
+Level	Code	Message
+Error	7518	wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
 # ON: same connection, FK no-op then ordinary ALTER
 CREATE TABLE seq_p (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 CREATE TABLE seq_c (id INT PRIMARY KEY, p_id INT) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -98,6 +101,9 @@ seq_u	CREATE TABLE `seq_u` (
 CREATE TABLE mix_idx (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ALTER TABLE mix_idx ADD UNIQUE INDEX (email), ADD extra INT;
 ERROR HY000: wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+SHOW WARNINGS;
+Level	Code	Message
+Error	7518	wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
 SHOW CREATE TABLE mix_idx;
 Table	Create Table
 mix_idx	CREATE TABLE `mix_idx` (
@@ -172,5 +178,47 @@ proc_c	CREATE TABLE `proc_c` (
   PRIMARY KEY (`id`)
 ) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
 DROP PROCEDURE orm_seq_ddl;
-DROP TABLE a_child, a_parent, User, p, tdef, mix_c, mix_p, cr_c, cr_p, seq_c, seq_p, seq_u, mix_idx, cmt, pref, inv, proc_c, proc_p;
+# ON: unnamed / multiple / composite FK stripped
+CREATE TABLE m_p (id INT PRIMARY KEY, k INT, UNIQUE (k)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE m_c (
+  id INT PRIMARY KEY,
+  a INT,
+  b INT,
+  FOREIGN KEY (a) REFERENCES m_p(id),
+  CONSTRAINT m_comp FOREIGN KEY (a, b) REFERENCES m_p(id, k)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+SHOW CREATE TABLE m_c;
+Table	Create Table
+m_c	CREATE TABLE `m_c` (
+  `id` int NOT NULL,
+  `a` int DEFAULT NULL,
+  `b` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+# ON: InnoDB FK kept
+SET default_storage_engine=InnoDB;
+CREATE TABLE i_p (id INT PRIMARY KEY);
+CREATE TABLE i_c (id INT PRIMARY KEY, p_id INT, CONSTRAINT i_fk FOREIGN KEY (p_id) REFERENCES i_p(id));
+SHOW CREATE TABLE i_c;
+Table	Create Table
+i_c	CREATE TABLE `i_c` (
+  `id` int NOT NULL,
+  `p_id` int DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `i_fk` (`p_id`),
+  CONSTRAINT `i_fk` FOREIGN KEY (`p_id`) REFERENCES `i_p` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE i_c, i_p;
+SET default_storage_engine=SMARTENGINE;
+# ON: ENGINE_ATTRIBUTE cannot be printed losslessly
+CREATE TABLE ea (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL ENGINE_ATTRIBUTE='{"k":1}') DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE UNIQUE INDEX ea_email ON ea(email);
+ERROR HY000: wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+SHOW WARNINGS;
+Level	Code	Message
+Error	7518	wesql_orm_ddl_rewrite=ON: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement.
+# server log records successful rewrite only
+include/search_pattern.inc
+include/search_pattern.inc
+DROP TABLE a_child, a_parent, User, p, tdef, mix_c, mix_p, cr_c, cr_p, seq_c, seq_p, seq_u, mix_idx, cmt, pref, inv, proc_c, proc_p, m_c, m_p, ea;
 SET SESSION wesql_orm_ddl_rewrite=OFF;

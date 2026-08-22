@@ -41,14 +41,18 @@ void warn_collation(THD *thd, const char *field_name) {
       ER_THD(thd, ER_WESQL_ORM_COLLATION_REWRITTEN),
       "wesql_orm_ddl_rewrite=ON", field_name,
       "utf8mb4_unicode_ci", "utf8mb4_general_ci");
+  LogErr(WARNING_LEVEL, ER_WESQL_ORM_COLLATION_REWRITTEN_IN_LOG, field_name,
+         "utf8mb4_unicode_ci", "utf8mb4_general_ci");
 }
 
 void warn_fk(THD *thd, const char *name) {
+  const char *shown =
+      (name && name[0]) ? name : "unnamed foreign key";
   push_warning_printf(thd, Sql_condition::SL_WARNING,
                       ER_WESQL_ORM_FK_STRIPPED,
                       ER_THD(thd, ER_WESQL_ORM_FK_STRIPPED),
-                      "wesql_orm_ddl_rewrite=ON",
-                      (name && name[0]) ? name : "unnamed foreign key");
+                      "wesql_orm_ddl_rewrite=ON", shown);
+  LogErr(WARNING_LEVEL, ER_WESQL_ORM_FK_STRIPPED_IN_LOG, shown);
 }
 
 const CHARSET_INFO *field_charset(const Create_field *field,
@@ -90,6 +94,12 @@ bool has_unprintable_column(const Create_field *field) {
   if (field->is_gcol() || field->m_default_val_expr != nullptr) return true;
   if (field->hidden != dd::Column::enum_hidden_type::HT_VISIBLE) return true;
   if (field->auto_flags != Field::NONE) return true;
+  if (field->m_engine_attribute.length > 0) return true;
+  if (field->m_secondary_engine_attribute.length > 0) return true;
+  if (field->field_storage_type() != HA_SM_DEFAULT) return true;
+  if (field->column_format() != COLUMN_FORMAT_TYPE_DEFAULT) return true;
+  if (field->m_srid.has_value()) return true;
+  if (field->is_zerofill || field->is_array) return true;
   return false;
 }
 
@@ -145,11 +155,10 @@ bool print_column_def(THD *thd, const Create_field *field, std::string *out) {
   return false;
 }
 
-static uint rewrite_indexed_unicode_columns(THD *thd,
-                                            HA_CREATE_INFO *create_info,
-                                            Alter_info *alter_info,
-                                            bool use_new_key_snapshot) {
-  uint n = 0;
+static void collect_indexed_unicode_columns(
+    THD *thd, HA_CREATE_INFO *create_info, Alter_info *alter_info,
+    bool use_new_key_snapshot, std::vector<Create_field *> *out) {
+  if (alter_info == nullptr || out == nullptr) return;
   List_iterator<Create_field> it(alter_info->create_list);
   Create_field *field;
   while ((field = it++)) {
@@ -160,6 +169,14 @@ static uint rewrite_indexed_unicode_columns(THD *thd,
             ? field_is_in_new_keys(thd, field->field_name)
             : field_is_indexed(alter_info, field->field_name);
     if (!indexed) continue;
+    out->push_back(field);
+  }
+}
+
+static unsigned int apply_indexed_unicode_columns(
+    THD *thd, const std::vector<Create_field *> &fields) {
+  unsigned int n = 0;
+  for (Create_field *field : fields) {
     field->charset = k_general_ci;
     field->is_explicit_collation = true;
     thd->m_wesql_orm_remapped_columns.emplace_back(field->field_name);
@@ -228,19 +245,17 @@ static Wesql_orm_rewrite_result strip_fk_pair(THD *thd, Alter_info *alter_info,
   if (alter_info == nullptr) return result;
 
   Mem_root_array<Key_spec *> kept(thd->mem_root);
-  uint fk_count = 0;
+  Mem_root_array<const char *> fk_names(thd->mem_root);
   for (size_t i = 0; i < alter_info->key_list.size(); ++i) {
     Key_spec *key = alter_info->key_list[i];
     if (key->type == KEYTYPE_FOREIGN) {
-      ++fk_count;
       if (!enabled) {
         my_error(ER_NOT_SUPPORTED_YET, MYF(0),
                  "foreign key constraints");
         result.action = Wesql_orm_rewrite_action::kReject;
         return result;
       }
-      const char *name = key->name.str;
-      warn_fk(thd, name);
+      fk_names.push_back(key->name.str);
       continue;
     }
     if (enabled && key->type == KEYTYPE_MULTIPLE && key->generated) {
@@ -249,8 +264,7 @@ static Wesql_orm_rewrite_result strip_fk_pair(THD *thd, Alter_info *alter_info,
     kept.push_back(key);
   }
 
-  if (fk_count == 0) return result;
-
+  if (fk_names.empty()) return result;
   if (!enabled) return result;
 
   bool mixed = false;
@@ -271,7 +285,8 @@ static Wesql_orm_rewrite_result strip_fk_pair(THD *thd, Alter_info *alter_info,
   alter_info->key_list.clear();
   for (Key_spec *k : kept) alter_info->key_list.push_back(k);
   alter_info->flags &= ~Alter_info::ADD_FOREIGN_KEY;
-  result.fk_stripped = fk_count;
+  for (const char *name : fk_names) warn_fk(thd, name);
+  result.fk_stripped = static_cast<unsigned int>(fk_names.size());
   result.action = Wesql_orm_rewrite_action::kRewritten;
   return result;
 }
@@ -298,8 +313,10 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_create(THD *thd,
   if (result.action == Wesql_orm_rewrite_action::kReject) return result;
 
   if (on) {
-    result.collation_rewritten =
-        rewrite_indexed_unicode_columns(thd, create_info, alter_info, false);
+    std::vector<Create_field *> cols;
+    collect_indexed_unicode_columns(thd, create_info, alter_info, false,
+                                    &cols);
+    result.collation_rewritten = apply_indexed_unicode_columns(thd, cols);
     if (result.collation_rewritten > 0)
       result.action = Wesql_orm_rewrite_action::kRewritten;
   } else if (alter_info != nullptr) {
@@ -359,9 +376,9 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_alter_collation(
   if (!wesql_is_smartengine(create_info) || !rewrite_enabled(thd))
     return result;
   thd->m_wesql_orm_remapped_columns.clear();
-  result.collation_rewritten =
-      rewrite_indexed_unicode_columns(thd, create_info, alter_info, true);
-  if (result.collation_rewritten == 0) return result;
+  std::vector<Create_field *> cols;
+  collect_indexed_unicode_columns(thd, create_info, alter_info, true, &cols);
+  if (cols.empty()) return result;
 
   /*
     Landed SQL only prints remapped columns + this-statement indexes.
@@ -369,6 +386,8 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_alter_collation(
     would be dropped on replay. Reject unless flags are ADD INDEX only.
     Index direction / visibility / algorithm / comment cannot be printed
     losslessly — 7518 rather than silently drop them.
+    Do not mutate or emit success warnings/logs until the statement is
+    accepted.
   */
   const ulonglong extra =
       thd->m_wesql_orm_alter_orig_flags & ~Alter_info::ALTER_ADD_INDEX;
@@ -381,13 +400,21 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_alter_collation(
       break;
     }
   }
-  if (extra != 0 || unprintable_key) {
+  bool unprintable_col = false;
+  for (const Create_field *field : cols) {
+    if (has_unprintable_column(field)) {
+      unprintable_col = true;
+      break;
+    }
+  }
+  if (extra != 0 || unprintable_key || unprintable_col) {
     my_error(ER_WESQL_ORM_ALTER_NOT_REWRITABLE, MYF(0),
              "wesql_orm_ddl_rewrite=ON");
     result.action = Wesql_orm_rewrite_action::kReject;
     return result;
   }
 
+  result.collation_rewritten = apply_indexed_unicode_columns(thd, cols);
   result.action = Wesql_orm_rewrite_action::kRewritten;
   return result;
 }

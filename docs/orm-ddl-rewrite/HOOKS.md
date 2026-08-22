@@ -9,6 +9,8 @@ patch -p1 < patches/mysql-server-8.0.35-orm-ddl-rewrite.patch
 
 或 `scripts/apply-wesql-patches.sh`。
 
+CI / RPM / get-version 也必须走这个脚本，不能只 `git apply` 第一张补丁。
+
 第二补丁包含：
 
 - `wesql_orm_ddl_rewrite` 开关（默认关）

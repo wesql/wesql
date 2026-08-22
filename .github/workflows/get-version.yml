@@ -53,7 +53,7 @@ jobs:
       - name: Apply WeSQL Patches
         run: |
           cp -r ./wesql/* ./
-          git apply patches/mysql-server-8.0.35.patch
+          bash scripts/apply-wesql-patches.sh
 
       - name: get release version
         id: get_release_version

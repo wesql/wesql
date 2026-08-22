@@ -70,9 +70,32 @@ def classify(err: str) -> str:
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="WeSQL ORM DDL rewrite gate. Exit 1 on count mismatch.")
+    ap.add_argument("--set-rewrite", choices=["on", "off"],
+                    help="SET SESSION/GLOBAL wesql_orm_ddl_rewrite")
+    ap.add_argument("--expect-fails", type=int,
+                    help="Required hard-fail count (gate). Omit to only collect.")
+    ap.add_argument("--expect-total", type=int, default=20,
+                    help="Required statement count (default 20).")
+    ap.add_argument("--glob", default="0[1-5]_*.sql",
+                    help="SQL file glob under sql/ (default ORM 20-stmt set).")
+    args = ap.parse_args()
+
+    if args.set_rewrite:
+        val = "ON" if args.set_rewrite == "on" else "OFF"
+        code, err, _ = run_sql(
+            "mysql",
+            f"SET GLOBAL wesql_orm_ddl_rewrite={val}; "
+            f"SET SESSION wesql_orm_ddl_rewrite={val};")
+        if code != 0:
+            print(err, file=sys.stderr)
+            return 2
+
     results = []
     # create per-suite databases
-    for sql_file in sorted(SQL_DIR.glob("*.sql")):
+    for sql_file in sorted(SQL_DIR.glob(args.glob)):
         suite = sql_file.stem
         db = "c_" + re.sub(r"[^a-z0-9_]", "_", suite)
         code, err, _ = run_sql("mysql", f"DROP DATABASE IF EXISTS `{db}`; CREATE DATABASE `{db}`;")
@@ -110,6 +133,15 @@ def main():
     for k, n in sorted(by.items()):
         print(f"  {k[0]} / {k[1]}: {n}")
 
+    if args.expect_fails is not None:
+        if len(results) != args.expect_total or len(fails) != args.expect_fails:
+            print(
+                f"GATE FAIL: total={len(results)} expected {args.expect_total}; "
+                f"fails={len(fails)} expected {args.expect_fails}",
+                file=sys.stderr)
+            return 1
+    return 0
+
 
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    sys.exit(main())
