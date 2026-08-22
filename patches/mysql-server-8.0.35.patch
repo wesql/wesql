@@ -421,12 +421,11 @@ diff --git a/mysql-test/include/log_multiple_files_test_begin.inc b/mysql-test/i
 index 3b8ab743d01..d8dc99ccc81 100644
 --- a/mysql-test/include/log_multiple_files_test_begin.inc
 +++ b/mysql-test/include/log_multiple_files_test_begin.inc
-@@ -11,6 +11,9 @@ let $INNODB_PAGE_SIZE = `select @@innodb_page_size`;
+@@ -11,6 +11,8 @@ let $INNODB_PAGE_SIZE = `select @@innodb_page_size`;
  let MYSQLD_EXTRA_ARGS = --innodb-redo-log-capacity=8388608 --innodb_page_size=$INNODB_PAGE_SIZE;
  
  --echo # Initialize new data directory...
 +{
-+  --let $CLUSTER_INFO = '127.0.0.1:27738@1'
 +}
  --source include/initialize_datadir.inc
  
@@ -489,65 +488,22 @@ diff --git a/mysql-test/include/wait_time_until_connected_again.inc b/mysql-test
 index f17f72227f7..f7ffe1e1f76 100644
 --- a/mysql-test/include/wait_time_until_connected_again.inc
 +++ b/mysql-test/include/wait_time_until_connected_again.inc
-@@ -23,5 +23,17 @@ while ($mysql_errno)
+@@ -23,5 +23,15 @@ while ($mysql_errno)
    }
    --sleep 0.5
  }
 +
 +{
-+  # wait leader election
 +  --sleep 1
 +  let $wait_timeout= 60;
 +  --source include/wait_condition.inc
 +
-+  # wait leader enable read/write
 +  let $wait_timeout= 60;
 +  --source include/wait_condition.inc
 +}
 +
  --enable_query_log
  --enable_result_log
-diff --git a/mysql-test/include/wait_until_connected_again.inc b/mysql-test/include/wait_until_connected_again.inc
-index 0e3441bec2e..c0dd14cb908 100644
---- a/mysql-test/include/wait_until_connected_again.inc
-+++ b/mysql-test/include/wait_until_connected_again.inc
-@@ -85,6 +85,36 @@ if ($SECONDARY_ENGINE_TEST) {
-   }
- }
- 
-+{
-+  if($CONSENSUS_IS_ENABLE_IN_THIS_MYSQLD)
-+  {
-+    # wait leader election
-+    if (!$wait_follower)
-+    {
-+      # wait leader from consensus
-+      --let $counter = 6000
-+      --let $check_counter = 10
-+      while ($counter > 0) {
-+        if ($success) {
-+          let $counter= 0;
-+        }
-+        if (!$success) {
-+          --dec $check_counter
-+          if ($check_counter == 0) {
-+            let $check_counter= 10;
-+          }
-+          --sleep 0.1
-+          --dec $counter
-+        }
-+      }
-+
-+      # wait leader enable read/write
-+      let $wait_timeout= 60;
-+      --source include/wait_condition.inc
-+    }
-+  }
-+}
-+
- # Reset $wait_counter so that its value won't be used on subsequent
- # calls, and default will be used instead.
- if (!$explicit_default_wait_counter)
 diff --git a/mysql-test/lib/mtr_cases.pm b/mysql-test/lib/mtr_cases.pm
 index b9c7bd70e23..835824a02fd 100644
 --- a/mysql-test/lib/mtr_cases.pm
@@ -668,16 +624,14 @@ index b9c7bd70e23..835824a02fd 100644
  
    # Check that test wth "ndb" in their suite name
    # have been tagged as 'ndb_test', this is normally fixed
-@@ -1384,6 +1429,14 @@ sub collect_one_test_case {
+@@ -1384,6 +1429,12 @@ sub collect_one_test_case {
        skip_test($tinfo, "No replication tests, --skip-rpl is enabled.");
        return $tinfo;
      }
-+      skip_test($tinfo, "No replication tests, --consensus_replication is enabled.");
 +      return $tinfo;
 +    }
 +  }
 +
-+      skip_test($tinfo, "No consensus_replication tests, --consensus_replication is disabled.");
 +      return $tinfo;
 +    }
    }
@@ -775,15 +729,6 @@ index 26e6c92cf64..97cbe5923f6 100755
  
  #
  # Suites run by default (i.e. when invoking ./mtr without parameters)
-@@ -299,6 +304,8 @@ our $opt_user                      = "root";
- our $opt_valgrind                  = 0;
- our $opt_valgrind_secondary_engine = 0;
- our $opt_verbose                   = 0;
-+our $consensus_cluster_id_cnt      = 1;
-+our $consensus_cluster_info_prefix;
- # Visual Studio produces executables in different sub-directories
- # based on the configuration used to build them. To make life easier,
- # an environment variable or command-line option may be specified to
 @@ -446,6 +455,8 @@ sub main {
  
    command_line_setup();
@@ -1133,13 +1078,12 @@ index 26e6c92cf64..97cbe5923f6 100755
  
    if (defined $init_file) {
      # Append the contents of the init-file to the end of bootstrap.sql
-@@ -4358,11 +4563,24 @@ sub mysql_install_db {
+@@ -4358,11 +4563,23 @@ sub mysql_install_db {
      exit(0);
    }
  
 +    #args
 +    mtr_add_arg($args, "--skip-slave-start=OFF");
-+      $consensus_cluster_id_cnt++;
 +    }
 +  } else {
 +  }
@@ -1210,78 +1154,6 @@ index 26e6c92cf64..97cbe5923f6 100755
    # Command line mysqld options should not have precedence over the opt
    # file options.
    unshift(@$opt_file_options, @opt_extra_mysqld_opt);
-@@ -4889,6 +5135,13 @@ sub run_testcase ($) {
-   mtr_verbose("Running test:", $tinfo->{name});
-   resfile_report_test($tinfo) if $opt_resfile;
- 
-+  # Skip tests if --skip-bin-log is specified
-+    $tinfo->{'skip'} = 1;
-+    $tinfo->{'comment'} = "Skip test because --skip-bin-log is specified";
-+    mtr_report_test_skipped($tinfo);
-+    return;
-+  }
-+
-   # Skip secondary engine tests if the support doesn't exist.
-   if (defined $tinfo->{'secondary-engine'} and !$secondary_engine_support) {
-     $tinfo->{'skip'}    = 1;
-@@ -5008,6 +5262,57 @@ sub run_testcase ($) {
-   }
-   mark_time_used('restart');
- 
-+    my $ret;
-+    my $err_cnt = 0;
-+    my $mysqld_servers = 0;
-+    foreach my $mysqld ( mysqlds() ) {
-+      my $check_cnt = 10;
-+      my $mysqld_leader = 0;
-+      $mysqld_servers++;
-+      if (!sleep_until_pid_file_created($mysqld->value('pid-file'),
-+                                    $opt_start_timeout,
-+                                    $mysqld->{'proc'})
-+      ) {
-+        my $mname = $mysqld->name();
-+        mtr_error("Failed to wait the restart mysqld");
-+      }
-+      # remember the new leader
-+      if ($mysqld->name() eq "mysqld.1") {
-+        $mysqld_leader = 1;
-+        mtr_verbose("I will become leader: " . $mysqld->name());
-+      }
-+
-+      while (1) {
-+        # hack: wait server read-write or read-only
-+        my $query = $mysqld_leader ? "FLUSH PRIVILEGES" : "SELECT 1";
-+        $ret = run_query($mysqld, $query);
-+        last if ($ret == 0);
-+
-+        $check_cnt--;
-+        # transfer leader to 1
-+        if ($mysqld_leader && $check_cnt == 0) {
-+          mtr_verbose("Run leader promote query: " . $mysqld->name() . "  " . $mysqld->value('port') . "  " . $mysqld->value('socket'));
-+          $ret = run_query($mysqld, $query);
-+          $check_cnt = 10;
-+        }
-+
-+        sleep(0.1);
-+
-+        $err_cnt++;
-+        if ($err_cnt < 1000) {
-+          mtr_report("Fail to check role, try again...");
-+        } else {
-+          mtr_warning("Fail to check role after $err_cnt times trying!!!");
-+          report_failure_and_restart($tinfo);
-+          return 1;
-+        }
-+      }
-+    }
-+
-+    $err_cnt = 0;
-+    mtr_verbose("Finish leader promote query.");
-+  }
-+
-   # If '--start' or '--start-dirty' given, stop here to let user manually
-   # run tests. If '--wait-all' is also given, do the same, but don't die
-   # if one server exits.
 @@ -5160,6 +5467,17 @@ sub run_testcase ($) {
      if ($proc eq $test) {
        my $res = $test->exit_status();
@@ -1436,35 +1308,26 @@ index 26e6c92cf64..97cbe5923f6 100755
      }
    }
  
-@@ -6888,6 +7251,17 @@ sub start_servers($) {
+@@ -6888,6 +7251,9 @@ sub start_servers($) {
  
    my $server_id = 0;
    # Start mysqlds
-+  $consensus_cluster_id_cnt= 1;
-+  #generate consensus_cluster_info_prefix
-+  $consensus_cluster_info_prefix= '';
-+    my $consensus_cluster_info_arr= ();
 +    foreach my $mysqld (mysqlds()) {
-+      # CONSENSUS_PORT = (server_port + 8000)
-+      push (@$consensus_cluster_info_arr, '127.0.0.1:'.($mysqld->value('port')+8000));
 +    }
-+    mtr_verbose('consensus_cluster_info_prefix: ' . join(';', @$consensus_cluster_info_arr));
-+    $consensus_cluster_info_prefix= join(';', @$consensus_cluster_info_arr);
 +  }
  
    foreach my $mysqld (mysqlds()) {
      # Group Replication requires a local port to be open on each server
-@@ -6907,6 +7282,9 @@ sub start_servers($) {
+@@ -6907,6 +7282,8 @@ sub start_servers($) {
        $ENV{$xcom_server} = $xcom_port;
      }
  
-+      $consensus_cluster_info_prefix = '127.0.0.1:'.($mysqld->value('port')+8000);
 +    }
 +
      if ($mysqld->{proc}) {
        # Already started, write start of testcase to log file
        mark_testcase_start_in_logs($mysqld, $tinfo);
-@@ -6944,34 +7323,44 @@ sub start_servers($) {
+@@ -6944,34 +7323,43 @@ sub start_servers($) {
      if ($basedir eq $mysqld_basedir) {
        # If dirty, keep possibly grown system db
        if (!$opt_start_dirty) {
@@ -1515,7 +1378,6 @@ index 26e6c92cf64..97cbe5923f6 100755
      if ($mysqld->{need_reinitialization}) {
        clean_dir($datadir);
 -      mysql_install_db($mysqld, $datadir, $bootstrap_opts);
-+        $consensus_cluster_id_cnt--;
 +      }
 +      mysql_install_db($mysqld, $datadir, $bootstrap_opts, $tinfo);
        $tinfo->{'reinitialized'} = 1;
@@ -2033,17 +1895,15 @@ diff --git a/mysql-test/suite/auth_sec/include/skip_grant_protocols.inc b/mysql-
 index b8c6cba9284..17889881a1e 100644
 --- a/mysql-test/suite/auth_sec/include/skip_grant_protocols.inc
 +++ b/mysql-test/suite/auth_sec/include/skip_grant_protocols.inc
-@@ -17,7 +17,15 @@ let $start_page_size=`SELECT variable_value FROM performance_schema.global_statu
+@@ -17,7 +17,13 @@ let $start_page_size=`SELECT variable_value FROM performance_schema.global_statu
  CREATE DATABASE test;
  EOF
  
 -let NEW_CMD = $MYSQLD --no-defaults --initialize-insecure --datadir=$MYSQLD_DATADIR1 --init-file=$BOOTSTRAP_SQL</dev/null>>$MYSQLTEST_VARDIR/tmp/bootstrap.log 2>&1 --innodb-page-size=$start_page_size;
-+if (!$USE_CONSENSUS_REPLICATION)
 +{
 +  let NEW_CMD = $MYSQLD --no-defaults --initialize-insecure --datadir=$MYSQLD_DATADIR1 --init-file=$BOOTSTRAP_SQL</dev/null>>$MYSQLTEST_VARDIR/tmp/bootstrap.log 2>&1 --innodb-page-size=$start_page_size;
 +}
 +
-+if ($USE_CONSENSUS_REPLICATION)
 +{
 +  let NEW_CMD = $MYSQLD --no-defaults --initialize-insecure --datadir=$MYSQLD_DATADIR1 --cluster-start-index=1 --cluster-info=127.0.0.1:29210@1 --init-file=$BOOTSTRAP_SQL</dev/null>>$MYSQLTEST_VARDIR/tmp/bootstrap.log 2>&1 --innodb-page-size=$start_page_size;
 +}
@@ -2098,12 +1958,11 @@ diff --git a/mysql-test/suite/rpl/r/rpl_perfschema_applier_config.result b/mysql
 index fc71057b4ff..3833198e8b7 100644
 --- a/mysql-test/suite/rpl/r/rpl_perfschema_applier_config.result
 +++ b/mysql-test/suite/rpl/r/rpl_perfschema_applier_config.result
-@@ -3,7 +3,7 @@ Warnings:
+@@ -3,7 +3,6 @@ Warnings:
  Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
  Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
  [connection master]
 -include/assert.inc [On master, the table should return an empty set.]
-+include/assert.inc [On master, the table should return only consensus_replication_applier.]
  
  # Verify that SELECT works and produces an output similar to
  # the corresponding field in SHOW SLAVE STATUS(SSS) in all scenarios.
@@ -2111,12 +1970,11 @@ diff --git a/mysql-test/suite/rpl/r/rpl_perfschema_connect_config.result b/mysql
 index 85d7a0d7930..4b23c050df6 100644
 --- a/mysql-test/suite/rpl/r/rpl_perfschema_connect_config.result
 +++ b/mysql-test/suite/rpl/r/rpl_perfschema_connect_config.result
-@@ -5,7 +5,7 @@ Note	####	Storing MySQL user name or password information in the connection meta
+@@ -5,7 +5,6 @@ Note	####	Storing MySQL user name or password information in the connection meta
  [connection master]
  call mtr.add_suppression("Source command COM_REGISTER_REPLICA failed.");
  call mtr.add_suppression(" * does not exist in the InnoDB internal");
 -include/assert.inc [On master, the table should return an empty set.]
-+include/assert.inc [On master, the table should return only consensus_replication_applier.]
  
  # Verify that SELECT works for every field and produces an output
  # similar to the corresponding field in SHOW SLAVE STATUS(SSS).
@@ -2383,7 +2241,7 @@ diff --git a/share/messages_to_clients.txt b/share/messages_to_clients.txt
 index e010b378799..a6f94f8f194 100644
 --- a/share/messages_to_clients.txt
 +++ b/share/messages_to_clients.txt
-@@ -9978,6 +9978,40 @@ ER_WARN_DEPRECATED_WITH_NOTE
+@@ -9978,6 +9978,38 @@ ER_WARN_DEPRECATED_WITH_NOTE
  
  reserved-error-section 5000 5999
  
@@ -2400,10 +2258,8 @@ index e010b378799..a6f94f8f194 100644
 +
 +  eng "The server is not allowed to do current operation."
 +
-+  eng "Other consensus problem, retry."
 +
 +
-+  eng "Consensus configuration bad."
 +
 +  eng "The cluster has too many nodes."
 +
@@ -2428,7 +2284,7 @@ diff --git a/share/messages_to_error_log.txt b/share/messages_to_error_log.txt
 index cdef214ae5f..d51f84797cf 100644
 --- a/share/messages_to_error_log.txt
 +++ b/share/messages_to_error_log.txt
-@@ -12293,6 +12293,284 @@ ER_WARN_DEPRECATED_OR_BLOCKED_CIPHER
+@@ -12293,6 +12293,266 @@ ER_WARN_DEPRECATED_OR_BLOCKED_CIPHER
  # End of 8.0 error messages intended to be written to the server error log.
  #
  
@@ -2481,7 +2337,6 @@ index cdef214ae5f..d51f84797cf 100644
 +
 +
 +
-+  eng "Failed to find the index of the last leader term"
 +
 +
 +
@@ -2530,25 +2385,16 @@ index cdef214ae5f..d51f84797cf 100644
 +
 +  eng "Consensnsu archive recovery reached the log's stop point. next index: %llu."
 +
-+  eng "Consensus state leader degradation has %s, term: %llu, commit index: %llu"
-+
-+  eng "Consensus state change has ingored, term: %llu, commit index: %llu, reason: %s"
-+
-+  eng "Consensus state follower upgradation has %s, term: %llu, commit index: %llu"
-+
-+  eng "Consensus state follower changed term, term: %llu"
-+
-+  eng "Consensus commit advance thread wait for the commit index update, term: %llu, commit index: %llu."
-+
-+  eng "Consensus commit advance thread updated the commit position, log file: '%s', pos: %llu, term: %llu, commit index: %llu."
-+
-+  eng "Consensus commit index advanced, commit index: %llu, local system log index: %llu."
-+
-+  eng "Consensus writed local system log, index: %llu, commit index: %llu."
 +
 +
 +
-+  eng "Consensus MTS group recovery applier info based on Worker-Id: %lu, group_relay_log_name: %s, group_relay_log_pos: %llu, consensus_apply_index: %llu."
++
++
++
++
++
++
++
 +
 +
 +
@@ -2568,9 +2414,7 @@ index cdef214ae5f..d51f84797cf 100644
 +
 +  eng "Failed to create thread: %s."
 +
-+  eng "Consensus %s thread started"
 +
-+  eng "Consensus %s thread was terminated because of %s"
 +
 +  eng "The server is not allowed to do current operation."
 +
@@ -2578,7 +2422,6 @@ index cdef214ae5f..d51f84797cf 100644
 +
 +  eng "Write a large event, event size: %llu, batches: %lu, current progress: %llu/%llu"
 +
-+  eng "Write an empty entry for large event, current pos: %llu, empty log size: %lu, batch size: %llu, consensus_index: %llu, current event progress: %llu/%llu"
 +
 +
 +  eng "Write one entry for large transaction, current pos: %llu, batch_size %llu, index: %llu, current progress: %llu/%llu.",
@@ -2587,14 +2430,10 @@ index cdef214ae5f..d51f84797cf 100644
 +
 +
 +
-+  eng "Failed to append a consensus entry because of term mismatch, current term: %llu, entry term: %llu."
 +
-+  eng "Failed to append a consensus entry because of index mismatch, current index: %llu, entry index: %llu."
 +
-+  eng "Consensus libary failpoint '%s' is going to activate, type: %d, exec_count: %d, input_type: %d, probability: %1.2f"
 +
 +ER_COSENNSUS_FAILPOINT_DEACTIVE
-+  eng "Consensus libary failpoint '%s' is going to deactivate"
 +
 +
 +
@@ -2606,7 +2445,6 @@ index cdef214ae5f..d51f84797cf 100644
 +
 +
 +
-+  eng "Consensus prefetch cache %s truncate, channel_id: %llu, the first index of cache: %llu, the cache size: %u"
 +
 +
 +
@@ -3890,27 +3728,7 @@ index 3f94e768956..7c554929ddb 100644
    mysql_audit_finalize();
    Srv_session::module_deinit();
    delete_optimizer_cost_module();
-@@ -4272,6 +4355,8 @@ SHOW_VAR com_status_vars[] = {
-      (char *)offsetof(System_status_var,
-                       com_stat[(uint)SQLCOM_SHOW_BINLOG_EVENTS]),
-      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-+     (char *)offsetof(System_status_var,
-+     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-     {"show_binlogs",
-      (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_SHOW_BINLOGS]),
-      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-@@ -4443,6 +4530,10 @@ SHOW_VAR com_status_vars[] = {
-      (char *)offsetof(System_status_var,
-                       com_stat[(uint)SQLCOM_STOP_GROUP_REPLICATION]),
-      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-+     (char *)offsetof(System_status_var,
-+     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-+     (char *)offsetof(System_status_var,
-+     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-     {"stmt_execute", (char *)offsetof(System_status_var, com_stmt_execute),
-      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-     {"stmt_close", (char *)offsetof(System_status_var, com_stmt_close),
-@@ -4498,6 +4593,14 @@ SHOW_VAR com_status_vars[] = {
+@@ -4498,6 +4498,12 @@ SHOW_VAR com_status_vars[] = {
      {"xa_start",
       (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_XA_START]),
       SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
@@ -3919,8 +3737,6 @@ index 3f94e768956..7c554929ddb 100644
 +     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
 +    {"native_trans_proc",
 +     (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_TRANS_PROC]),
-+     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
-+     (char *)offsetof(System_status_var,
 +     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
      {NullS, NullS, SHOW_LONG, SHOW_SCOPE_ALL}};
  
@@ -4026,7 +3842,7 @@ index 3f94e768956..7c554929ddb 100644
    if (opt_initialize) log_output_options = LOG_FILE;
  
    /*
-@@ -6818,6 +6989,20 @@ static int init_server_components() {
+@@ -6818,7 +6989,21 @@ static int init_server_components() {
    /*
      Set the default storage engines
    */
@@ -4047,23 +3863,7 @@ index 3f94e768956..7c554929ddb 100644
    if (initialize_storage_engine(default_storage_engine, "",
                                  &global_system_variables.table_plugin))
      unireg_abort(MYSQLD_ABORT_EXIT);
-@@ -6890,7 +7075,15 @@ static int init_server_components() {
-     unireg_abort(MYSQLD_ABORT_EXIT);
-   }
- 
--  if (opt_bin_log) {
-+  // When Logger node startup, get last persisted binlog consensus index.
-+  // Use the next consensus index of the last persisted binlog as logger a
-+  // starting index.
-+  if (!opt_initialize && opt_serverless &&
-+      consistent_recovery.get_last_persistent_binlog_consensus_index()) {
-+    unireg_abort(MYSQLD_ABORT_EXIT);
-+  }
-+
-+      if (opt_bin_log) {
-     /*
-       Configures what object is used by the current log to store processed
-       gtid(s). This is necessary in the MYSQL_BIN_LOG::MYSQL_BIN_LOG to
+
 @@ -7531,6 +7731,11 @@ int mysqld_main(int argc, char **argv)
    */
    init_server_psi_keys();
@@ -4172,14 +3972,13 @@ index 3f94e768956..7c554929ddb 100644
    if (init_ssl_communication()) unireg_abort(MYSQLD_ABORT_EXIT);
    if (network_init()) unireg_abort(MYSQLD_ABORT_EXIT);
  
-@@ -8133,8 +8423,17 @@ int mysqld_main(int argc, char **argv)
+@@ -8133,8 +8423,16 @@ int mysqld_main(int argc, char **argv)
  
    initialize_information_schema_acl();
  
    (void)RUN_HOOK(server_state, after_recovery, (nullptr));
  
-+  // Start binlog and consistent snapshot thread, after consensus service.
-+  // The consensus service is started within the `after_recovery` hook.
++  // Start binlog and consistent snapshot threads after engine recovery.
 +  if (!opt_initialize) {
 +    // start binlog archive and consistent snapshot archive.
 +    if (start_binlog_archive() || start_consistent_archive()) {
