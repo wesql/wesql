@@ -43,7 +43,9 @@
 #include "sql/binlog_istream.h"
 #include "sql/binlog_ostream.h"
 #include "sql/binlog_reader.h"
+#ifdef WESQL_CLUSTER
 #include "sql/consensus_log_event.h"
+#endif
 #include "sql/consistent_archive.h"
 #include "sql/debug_sync.h"
 #include "sql/derror.h"
