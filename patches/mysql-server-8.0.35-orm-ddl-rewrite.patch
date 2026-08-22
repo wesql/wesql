@@ -72,6 +72,20 @@
    binlog_archive.cc
 +  wesql_orm_ddl_rewrite.cc
    binlog_archive_replica.cc
+--- a/sql/sql_class.cc
++++ b/sql/sql_class.cc
+@@ -1745,6 +1745,12 @@
+ }
+ 
+ void THD::cleanup_after_query() {
++#ifdef WESQL
++  m_wesql_orm_binlog_sql.clear();
++  m_wesql_orm_use_binlog_sql = false;
++  m_wesql_orm_remapped_columns.clear();
++#endif
+   /*
+     Reset rand_used so that detection of calls to rand() will save random
+     seeds if needed by the slave.
    binlog_archive_command.cc
    binlog_istream.cc
 --- a/sql/sql_table.cc	2026-08-22 15:49:55
