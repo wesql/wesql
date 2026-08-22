@@ -212,9 +212,9 @@ static Wesql_orm_rewrite_result strip_fk_pair(THD *thd, Alter_info *alter_info,
   if (is_alter) {
     if (alter_info->create_list.elements > 0) mixed = true;
     if (alter_info->flags & ~Alter_info::ADD_FOREIGN_KEY) mixed = true;
-  }
-  for (Key_spec *k : kept) {
-    if (!(k->type == KEYTYPE_MULTIPLE && k->generated)) mixed = true;
+    for (Key_spec *k : kept) {
+      if (!(k->type == KEYTYPE_MULTIPLE && k->generated)) mixed = true;
+    }
   }
   if (mixed) {
     my_error(ER_WESQL_ORM_ALTER_NOT_REWRITABLE, MYF(0),
