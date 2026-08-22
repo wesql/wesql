@@ -22,8 +22,6 @@
 
 namespace {
 
-thread_local std::vector<std::string> tls_remapped_columns;
-
 const CHARSET_INFO *k_unicode_ci = &my_charset_utf8mb4_unicode_ci;
 const CHARSET_INFO *k_general_ci = &my_charset_utf8mb4_general_ci;
 
@@ -100,36 +98,16 @@ bool print_column_def(THD *thd, const Create_field *field, std::string *out) {
   }
   append_ident(out, field->field_name);
   out->push_back(' ');
-  switch (field->sql_type) {
-    case MYSQL_TYPE_VARCHAR:
-      *out += "varchar(" +
-              std::to_string(field->max_display_width_in_codepoints()) + ")";
-      break;
-    case MYSQL_TYPE_STRING:
-      *out += "char(" +
-              std::to_string(field->max_display_width_in_codepoints()) + ")";
-      break;
-    case MYSQL_TYPE_LONG:
-      *out += (field->flags & UNSIGNED_FLAG) ? "int unsigned" : "int";
-      break;
-    case MYSQL_TYPE_LONGLONG:
-      *out += (field->flags & UNSIGNED_FLAG) ? "bigint unsigned" : "bigint";
-      break;
-    case MYSQL_TYPE_TINY:
-      *out += "tinyint";
-      break;
-    case MYSQL_TYPE_SHORT:
-      *out += "smallint";
-      break;
-    case MYSQL_TYPE_BLOB:
-    case MYSQL_TYPE_TINY_BLOB:
-    case MYSQL_TYPE_MEDIUM_BLOB:
-    case MYSQL_TYPE_LONG_BLOB:
-      *out += "text";
-      break;
-    default:
-      return true;
+  Field *org = nullptr;
+  if (thd->lex->query_tables != nullptr &&
+      thd->lex->query_tables->table != nullptr) {
+    org = find_field_in_table_sef(thd->lex->query_tables->table,
+                                  field->field_name);
   }
+  if (org == nullptr) return true;
+  String type;
+  org->sql_type(type);
+  out->append(type.ptr(), type.length());
   if (field->charset != nullptr) {
     *out += " CHARACTER SET ";
     *out += field->charset->csname;
@@ -163,7 +141,7 @@ static uint rewrite_indexed_unicode_columns(THD *thd,
     if (!field_is_indexed(alter_info, field->field_name)) continue;
     field->charset = k_general_ci;
     field->is_explicit_collation = true;
-    tls_remapped_columns.emplace_back(field->field_name);
+    thd->m_wesql_orm_remapped_columns.emplace_back(field->field_name);
     warn_collation(thd, field->field_name);
     ++n;
   }
@@ -238,7 +216,7 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_create(THD *thd,
   if (!wesql_is_smartengine(create_info)) return result;
 
   const bool on = rewrite_enabled(thd);
-  tls_remapped_columns.clear();
+  thd->m_wesql_orm_remapped_columns.clear();
   result = strip_fk_pair(thd, alter_info, on, false);
   if (result.action == Wesql_orm_rewrite_action::kReject) return result;
 
@@ -271,6 +249,7 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_alter_fk(THD *thd,
                                                     Alter_info *alter_info) {
   Wesql_orm_rewrite_result result;
   if (!wesql_is_smartengine(create_info)) return result;
+  thd->m_wesql_orm_remapped_columns.clear();
   result = strip_fk_pair(thd, alter_info, rewrite_enabled(thd), true);
   if (result.action == Wesql_orm_rewrite_action::kRewritten &&
       (alter_info->flags &
@@ -293,7 +272,7 @@ Wesql_orm_rewrite_result wesql_orm_rewrite_alter_collation(
   Wesql_orm_rewrite_result result;
   if (!wesql_is_smartengine(create_info) || !rewrite_enabled(thd))
     return result;
-  tls_remapped_columns.clear();
+  thd->m_wesql_orm_remapped_columns.clear();
   result.collation_rewritten =
       rewrite_indexed_unicode_columns(thd, create_info, alter_info);
   if (result.collation_rewritten > 0)
@@ -323,7 +302,7 @@ bool wesql_orm_build_alter_binlog_sql(THD *thd, HA_CREATE_INFO *,
   Create_field *field;
   while ((field = it++)) {
     bool remapped = false;
-    for (const std::string &n : tls_remapped_columns) {
+    for (const std::string &n : thd->m_wesql_orm_remapped_columns) {
       if (field->field_name != nullptr && n == field->field_name) {
         remapped = true;
         break;

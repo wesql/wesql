@@ -44,6 +44,14 @@
  static bool check_set_require_row_format(sys_var *, THD *thd, set_var *var) {
 --- a/sql/sql_class.h	2026-08-22 15:49:55
 +++ b/sql/sql_class.h	2026-08-22 15:47:05
+@@ -46,6 +46,7 @@
+ #include <bitset>
+ #include <memory>
+ #include <new>
+ #include <string>
++#include <vector>
+ 
+ #include "dur_prop.h"  // durability_properties
 @@ -4696,6 +4696,10 @@
   public:
    bool add_external(unsigned int slot, void *data);
@@ -52,6 +60,7 @@
 + public:
 +  std::string m_wesql_orm_binlog_sql;
 +  bool m_wesql_orm_use_binlog_sql{false};
++  std::vector<std::string> m_wesql_orm_remapped_columns;
  
   private:
    std::unordered_map<unsigned int, void *> external_store_;
