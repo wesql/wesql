@@ -1,4 +1,0 @@
-!include suite/raft_replication/my.cnf
-
-[mysqld]
-performance_schema=1

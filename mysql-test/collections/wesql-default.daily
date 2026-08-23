@@ -60,7 +60,6 @@ perl mysql-test-run.pl --force --timer    --testcase-timeout=60  --retry=0  --no
 perl mysql-test-run.pl --force --timer    --testcase-timeout=60  --retry=0  --nowarnings --comment=test_service_sql_api --vardir=var-test_service_sql_api --suite=test_service_sql_api
 perl mysql-test-run.pl --force --timer    --testcase-timeout=60  --retry=0  --nowarnings --comment=wesql --vardir=var-wesql --suite=wesql
 perl mysql-test-run.pl --force --timer    --testcase-timeout=60  --retry=0  --nowarnings --comment=x --vardir=var-x --suite=x
-perl mysql-test-run.pl --force --timer    --testcase-timeout=60  --retry=0  --nowarnings --comment=raft_replication --vardir=var-raft_replication --suite=raft_replication
 perl mysql-test-run.pl --force --timer    --testcase-timeout=60  --retry=0  --nowarnings  --comment=innodb --vardir=var-innodb  --suite=innodb
 perl mysql-test-run.pl --force --timer    --testcase-timeout=60  --retry=0  --nowarnings --comment=max_parts --vardir=var-max_parts --suite=max_parts
 perl mysql-test-run.pl --force --timer    --testcase-timeout=60  --retry=0  --nowarnings --comment=main --suite=main --vardir=var-main

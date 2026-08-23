@@ -1,5 +1,0 @@
-!include suite/raft_replication/my.cnf
-
-[mysqld]
-raft_replication_large_trx=ON
-slave_parallel_workers=0

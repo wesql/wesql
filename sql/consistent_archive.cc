@@ -135,7 +135,8 @@ static size_t convert_datetime_to_str(char *str, time_t ts);
 static const char *convert_archive_progress_to_str(
     Consistent_snapshot_archive_progress archive_progress);
 static int check_archive_file_version_type(std::string &archive_file_name);
-static uint64_t extract_term_from_index_file(const char *index_file_name);
+static bool extract_term_from_index_file(const char *index_file_name,
+                                         uint64_t *term);
 /**
  * @brief Creates a consistent archive object and starts the consistent snapshot
  * archive thread.
@@ -153,15 +154,6 @@ int start_consistent_archive() {
 
   LogErr(SYSTEM_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
          "start snapshot archive ...");
-
-#ifdef WESQL_CLUSTER
-  // Check Logger mode.
-  if (is_consensus_replication_log_mode()) {
-    LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
-           "snapshot archive cannot be enabled in logger mode");
-    return 1;
-  }
-#endif
 
   if (!opt_consistent_snapshot_archive_dir) {
     opt_consistent_snapshot_archive_dir = mysql_tmpdir;
@@ -853,16 +845,6 @@ void Consistent_archive::run() {
       if (!abort) continue;
       break;
     }
-#ifdef WESQL_CLUSTER
-    // Check whether consensus role is leader
-    if (!is_consensus_replication_state_leader(m_consensus_term)) {
-      std::chrono::seconds wait_timeout = std::chrono::seconds{1};
-      ret = wait_for_consistent_archive(wait_timeout, abort);
-      assert(ret == 0 || is_timeout(ret));
-      if (!abort) continue;
-      break;
-    }
-#endif
     // reload global options.
     m_innodb_tar_compression_mode = opt_consistent_snapshot_innodb_tar_mode;
     m_se_tar_compression_mode = opt_consistent_snapshot_se_tar_mode;
@@ -1236,76 +1218,12 @@ int Consistent_archive::archive_consistent_snapshot_binlog() {
     err_msg.append(":");
     err_msg.append(std::to_string(m_mysql_binlog_pos));
     err_msg.append(" persistent");
-#ifdef WESQL_CLUSTER
-    uint64 consensus_index = 0;
-    if (!NO_HOOK(binlog_manager)) {
-      if (RUN_HOOK(
-              binlog_manager, get_unique_index_from_pos,
-              (m_mysql_binlog_file, m_mysql_binlog_pos, consensus_index))) {
-        err_msg.append(" get consensus index using position failed.");
-        LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
-               err_msg.c_str());
-        ret = 1;
-        goto err;
-      }
-      // If m_mysql_binlog_pos is less than or equal to 251, the consensus_index
-      // is not accurate, so it is necessary to retrieve the log/pos using
-      // consensus index again.
-      DBUG_EXECUTE_IF("check_consistent_snapshot_binlog_position", {
-        if (consensus_index > 0) {
-          char consensus_to_mysql_binlog[FN_REFLEN + 1] = {0};
-          my_off_t consensus_to_log_pos = 0;
-          if (RUN_HOOK(binlog_manager, get_pos_from_unique_index,
-                       (consensus_index, consensus_to_mysql_binlog,
-                        consensus_to_log_pos))) {
-            err_msg.append(" get log position using consensus index failed: ");
-            err_msg.append(std::to_string(consensus_index));
-            LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
-                   err_msg.c_str());
-            ret = 1;
-            goto err;
-          }
-          // diff mysqld binlog index entry name.
-          if (compare_log_name(consensus_to_mysql_binlog,
-                               m_mysql_binlog_file) != 0 ||
-              consensus_to_log_pos != m_mysql_binlog_pos) {
-            err_msg.append(" mysql binlog and position not match: consensus=");
-            err_msg.append(std::to_string(consensus_index));
-            err_msg.append(" using ");
-            err_msg.append(consensus_to_mysql_binlog);
-            err_msg.append(":");
-            err_msg.append(std::to_string(consensus_to_log_pos));
-            LogErr(INFORMATION_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
-                   err_msg.c_str());
-          }
-        }
-      });
-    }
-    m_consensus_index = consensus_index;
-
-    err_msg.append(" consensus_index=");
-    err_msg.append(std::to_string(m_consensus_index));
-    LogErr(INFORMATION_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
-           err_msg.c_str());
-
-    // wait archive binlog complete.
-    // And update mysql binlog filename to the archived binlog filename.
-    if (m_consensus_index > 0) {
-      errval = binlog_archive_wait_for_archive(
-          thd, m_mysql_binlog_file, m_binlog_file, m_mysql_binlog_pos,
-          m_consensus_index);
-    } else {
-      // no binlog.
-      m_binlog_file[0] = '\0';
-    }
-#else
     LogErr(INFORMATION_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
            err_msg.c_str());
     // wait archive binlog complete.
     // And update mysql binlog filename to the archived binlog filename.
     errval = binlog_archive_wait_for_archive(
         thd, m_mysql_binlog_file, m_binlog_file, m_mysql_binlog_pos, 0);
-#endif
     if (errval != 0) {
       err_msg.append(" failed.");
       LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG,
@@ -2618,7 +2536,10 @@ int Consistent_archive::move_crash_safe_index_file_to_index_file(
     if (fd >= 0) mysql_file_close(fd, MYF(0));
     goto err;
   }
-  *index_term = extract_term_from_index_file(index_keyid.c_str());
+  if (!extract_term_from_index_file(index_keyid.c_str(), index_term)) {
+    error = 1;
+    goto err;
+  }
 
 err:
   return error;
@@ -2818,8 +2739,10 @@ bool Consistent_archive::open_index_file(const char *index_file_name_arg,
   // Check if the index file exists in s3, if so, download it to local.
   // And rename it to index_file_name.
   if (!index_obj_keyid.empty()) {
-    // 0 if snapshot.index
-    *index_term = extract_term_from_index_file(index_obj_keyid.c_str());
+    if (!extract_term_from_index_file(index_obj_keyid.c_str(), index_term)) {
+      error = true;
+      goto end;
+    }
 
     std::string index_file_name_str;
     index_file_name_str.assign(crash_safe_index_file_name);
@@ -3694,11 +3617,12 @@ int Consistent_archive::purge_archive_index_garbage(uint64_t end_term,
   // snapshot.{term}.index
   for (const auto &object : objects) {
     // extract term from snapshot.{term}.index
-    uint64_t consensus_term = extract_term_from_index_file(object.key.c_str());
-    if (consensus_term == 0) {
+    uint64_t consensus_term = 0;
+    if (!extract_term_from_index_file(object.key.c_str(), &consensus_term)) {
       err_msg.assign("invalid index key: ");
       err_msg.append(object.key);
       LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG, err_msg.c_str());
+      continue;
     }
 
     // If the term of the index file is smaller than the end_term,
@@ -4076,27 +4000,47 @@ int Consistent_archive::show_se_backup_snapshot(
 
 /**
  * @brief Extract the term value from the index file name.
- * Format like snapshot.000001.index
+ * Format like snapshot.000001.index or snapshot.0000000000.index.
+ * Term 0 is valid for single-node archives. Return false only if the
+ * name cannot be parsed.
  */
-static uint64_t extract_term_from_index_file(const char *index_file_name) {
+static bool extract_term_from_index_file(const char *index_file_name,
+                                         uint64_t *term) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("extract_term_from_index_file"));
-  uint64_t term = 0;
-  size_t first_dot = 0;
-  size_t second_dot = 0;
-  std::string index_file;
-  index_file.assign(index_file_name);
-  first_dot = index_file.find('.');
+  if (index_file_name == nullptr || term == nullptr) {
+    return false;
+  }
+  std::string index_file(index_file_name);
+  size_t slash = index_file.find_last_of('/');
+  if (slash != std::string::npos) {
+    index_file = index_file.substr(slash + 1);
+  }
+  size_t first_dot = index_file.find('.');
   if (first_dot == std::string::npos) {
-    return term;
+    return false;
   }
-  second_dot = index_file.find('.', first_dot + 1);
+  size_t second_dot = index_file.find('.', first_dot + 1);
   if (second_dot == std::string::npos) {
-    return term;
+    // Legacy single-version names such as snapshot.index.
+    if (index_file.size() > 6 &&
+        index_file.compare(index_file.size() - 6, 6, ".index") == 0) {
+      *term = 0;
+      return true;
+    }
+    return false;
   }
-  std::string term_str = index_file.substr(first_dot + 1, second_dot);
-  term = std::stoull(term_str);
-  return term;
+  if (second_dot == first_dot + 1) {
+    return false;
+  }
+  std::string term_str =
+      index_file.substr(first_dot + 1, second_dot - first_dot - 1);
+  if (term_str.empty() ||
+      term_str.find_first_not_of("0123456789") != std::string::npos) {
+    return false;
+  }
+  *term = std::stoull(term_str);
+  return true;
 }
 
 /**

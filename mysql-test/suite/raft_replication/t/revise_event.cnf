@@ -1,5 +1,0 @@
-!include suite/raft_replication/my.cnf
-
-[mysqld]
-raft_replication_max_log_size=1M
-raft_replication_large_event_split_size=300k

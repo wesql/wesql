@@ -1,5 +1,0 @@
-!include suite/raft_replication/my.cnf
-
-[mysqld]
-raft_replication_election_timeout=2000
-raft_replication_auto_leader_transfer_check_seconds=10

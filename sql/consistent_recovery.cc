@@ -1338,8 +1338,6 @@ bool Consistent_recovery::recovery_binlog(const char *binlog_index_name
 
   // All binlogs after m_binlog_file on S3 should be downloaded locally
   // for recovery, as the binlogs persisted to S3 are already committed.
-  // Otherwise, these binlogs still need to be synchronized from the logger node
-  // for recovery.
   do {
     // Convert to mysql binlog full name using persistent binlog name.
     char mysql_binlog_full_name[FN_REFLEN] = {0};
@@ -1584,6 +1582,8 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
   source_se_objecstore_prefix.append(
       CONSISTENT_RECOVERY_SMARTENGINE_OBJECTSTORE_ROOT_PATH);
   source_se_objecstore_prefix.append(FN_DIRSEP);
+  const std::string source_se_objecstore_locks_prefix =
+      source_se_objecstore_prefix + "locks/";
 
   err_msg.assign("recovery smartengine sst from source ");
   err_msg.append(source_se_objecstore_prefix);
@@ -1599,6 +1599,11 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
 
   assert(objects.size() > 0);
   for (const auto &object : objects) {
+    // Locks belong to the source instance and must not be restored.
+    if (object.key.compare(0, source_se_objecstore_locks_prefix.length(),
+                           source_se_objecstore_locks_prefix) == 0)
+      continue;
+
     std::string data{};
     // get object from source object store.
     objstore::Status ss = recovery_objstore->get_object(
@@ -1612,8 +1617,6 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
       LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
       return true;
     }
-    // skip smartengine lease_lock object.
-    if (object.key.find("lease_lock") != std::string::npos) continue;
     // replace smartengine root path
     // suffix of the object key
     std::string object_key_suffix =
@@ -1632,6 +1635,23 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
       err_msg.append(ss.error_message());
       LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
       return true;
+    }
+    // Downloaded WAL/meta still names extents with the source repo prefix.
+    // Also place the original key in the destination bucket so dest start
+    // can open those objects.
+    if (destination_object_key != object.key) {
+      ss = init_destination_objstore->put_object(
+          m_init_destination_objstore_bucket, object.key, data);
+      if (!ss.is_succ()) {
+        err_msg.assign(
+            "put source-key object to destination object store failed: ");
+        err_msg.append("key=");
+        err_msg.append(object.key);
+        err_msg.append(" error=");
+        err_msg.append(ss.error_message());
+        LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
+        return true;
+      }
     }
   }
   m_state = CONSISTENT_RECOVERY_STATE_SST;
@@ -1708,25 +1728,19 @@ int Consistent_recovery::consistent_snapshot_consensus_recovery_finish() {
   std::string file_name;
   if (m_state == CONSISTENT_RECOVERY_STATE_NONE) return 0;
   if (m_state == CONSISTENT_RECOVERY_STATE_END) {
-    // After consensus recovery finish, truncate persistent binlog
     if (opt_recovery_consistent_snapshot_only) {
       LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
              "recovey snapshot only finish.");
-    } else if (!opt_initialize) {
+    } else if (!opt_initialize &&
+               consistent_recovery_consensus_truncated_end_binlog[0] != '\0') {
+      // Only when an old-format archive recorded a consensus end position.
       if (compare_log_name(
               m_mysql_binlog_end_file,
               consistent_recovery_consensus_truncated_end_binlog) != 0 ||
           m_mysql_binlog_end_pos !=
               consistent_recovery_consensus_truncated_end_position) {
         LogErr(WARNING_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
-               "recovey snapshot binlog mismatch consensus recovery "
-               "binlog.");
-      } else {
-        assert(compare_log_name(
-                   m_mysql_binlog_end_file,
-                   consistent_recovery_consensus_truncated_end_binlog) == 0);
-        assert(m_mysql_binlog_end_pos ==
-               consistent_recovery_consensus_truncated_end_position);
+               "recovey snapshot binlog mismatch old archive end binlog.");
       }
     }
     convert_dirname(mysql_real_data_home, mysql_real_data_home, NullS);
@@ -1734,7 +1748,7 @@ int Consistent_recovery::consistent_snapshot_consensus_recovery_finish() {
     file_name.append(CONSISTENT_SNAPSHOT_RECOVERY_FILE);
     remove_file(file_name);
     LogErr(SYSTEM_LEVEL, ER_CONSISTENT_RECOVERY_LOG,
-           "recover persistent snapshot wait raft recovery finish and delete "
+           "recover persistent snapshot finish and delete "
            "#status_snapshot_recovery file");
     return 0;
   }
@@ -1895,17 +1909,8 @@ int Consistent_recovery::fetch_last_persistent_binlog_index_file(
 }
 
 /**
- * @brief Get the last persistent binlog consensus index.
- * Init a Logger Node, use the next index of the last persisted binlog as a
- * starting index. Create a new logger node without recovering from a snapshot.
- * Simply initialize a new database, and set the start index at Logger startup
- * as the binlog synchronization point from the leader. The last consensus index
- * of the persisted binlog can be used as the start index since the already
- * persisted binlogs do not need to be synchronized to the logger node from
- * leader. Each slice entry in the persisted binlog.index file contains the last
- * consensus index. By reading the last slice entry from the index, the last
- * consensus index recorded in this slice is the last consensus index of the
- * persisted binlog.
+ * Read the last consensus index from an old-format archive index.
+ * Not used on single-node startup. Logger start-index sync is gone.
  * @return int
  */
 int Consistent_recovery::get_last_persistent_binlog_consensus_index() {
@@ -1918,12 +1923,6 @@ int Consistent_recovery::get_last_persistent_binlog_consensus_index() {
   LOG_ARCHIVED_INFO log_info{};
 
   if (!opt_serverless || !opt_recovery_from_objstore) return 0;
-    // Only in Logger Node, the last persistent binlog consensus index is
-    // needed.
-#ifdef WESQL_CLUSTER
-  if (!is_consensus_replication_log_mode()) return 0;
-#endif
-
   if (init_objstore_in_recovery()) return 1;
   if (init_consistent_snapshot_recovery_context()) return 1;
 
