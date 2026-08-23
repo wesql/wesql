@@ -1,5 +1,11 @@
 # WeSQL MySQL 9.7.2 Server 补丁与构建适配设计
 
+> 设计首版提交：`1a844220d3bff5aa42085b57858c59ea8e991212`
+>
+> 远端工作分支：`origin/port/mysql-9.7.2-server-build`
+>
+> Oracle 基线：`mysql-9.7.2` / `008e09c2834b98143a8c067d4d225c90953050cf`
+
 ## 1. 基线与边界
 
 - 集成主线：`port/mysql-9.7.2`，固定起点
@@ -26,6 +32,38 @@
 | task #27 日志目录 | `wesql-compat/work/mysql-9.7.2-task27-logs` |
 
 这些目录不得放入 8.0.35 的对象文件、安装文件、datadir、bucket 或证据。
+
+原生基线固定使用隔离 Linux 容器 `wesql-builder-ready:latest`：Ubuntu
+24.04.4、CMake 3.28.3、GCC 13.3.0、Ninja 1.11.1、linux/arm64。
+Boost 1.87.0 下载到独立目录
+`wesql-compat/work/boost_1_87_0-task27`。日志固定保存到
+`wesql-compat/work/mysql-9.7.2-task27-logs`。
+
+原生 configure 命令的容器内主体为：
+
+```bash
+cmake -S /workspace/wesql-compat/source/mysql-9.7.2-task27-clean \
+  -B /workspace/wesql-compat/work/mysql-9.7.2-task27-build \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_INSTALL_PREFIX=/workspace/wesql-compat/work/mysql-9.7.2-task27-install \
+  -DDOWNLOAD_BOOST=1 \
+  -DWITH_BOOST=/workspace/wesql-compat/work/boost_1_87_0-task27 \
+  -DWITH_UNIT_TESTS=OFF \
+  -DWITH_ROUTER=OFF \
+  -DWITH_NDB=OFF
+```
+
+原生 build/install 命令为：
+
+```bash
+cmake --build /workspace/wesql-compat/work/mysql-9.7.2-task27-build \
+  --parallel 8
+cmake --install /workspace/wesql-compat/work/mysql-9.7.2-task27-build
+```
+
+三条命令分别记录到 `native-configure.log`、`native-build.log` 和
+`native-install.log`；同时记录源码 SHA、容器 image ID、工具链版本和目录清单。
 
 ## 2. 初始差异事实
 
