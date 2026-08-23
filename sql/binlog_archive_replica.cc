@@ -28,7 +28,6 @@
 #include <sstream>
 #include <string>
 
-#include "libbinlogevents/include/binlog_event.h"  // binary_log::max_log_event_size
 #include "mf_wcomp.h"                              // wild_one, wild_many
 #include "my_dbug.h"
 #include "my_thread.h"
@@ -40,6 +39,7 @@
 #include "sql/basic_istream.h"
 #include "sql/basic_ostream.h"
 #include "sql/binlog.h"
+#include "sql/binlog_index.h"
 #include "sql/binlog_istream.h"
 #include "sql/binlog_ostream.h"
 #include "sql/binlog_reader.h"
@@ -56,14 +56,21 @@
 #include "sql/rpl_handler.h"
 #include "sql/rpl_io_monitor.h"
 #include "sql/rpl_msr.h"
+#include "sql/rpl_replica.h"
 #include "sql/rpl_source.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_parse.h"
 #include "unsafe_string_append.h"
 
+using mysql::binlog::event::Binary_log_event;
+using mysql::binlog::event::enum_binlog_checksum_alg;
+using mysql::binlog::event::Log_event_type;
+using mysql::binlog::event::Log_event_footer;
+
 // Global binlog archive thread object
 static Binlog_archive_replica mysql_binlog_archive_replica;
 static my_thread_handle mysql_binlog_archive_replica_pthd;
+static bool mysql_binlog_archive_replica_started = false;
 
 static mysql_mutex_t m_binlog_archive_replica_run_lock;
 static mysql_cond_t m_binlog_archive_replica_run_cond;
@@ -133,7 +140,6 @@ static PSI_file_info all_binlog_archive_files[] = {
 
 static void *mysql_binlog_archive_replica_action(void *arg);
 static bool remove_file(const std::string &file);
-static int compare_log_name(const char *log_1, const char *log_2);
 static THD *set_thread_context();
 static int calulate_slice_map_size(
     const std::map<uint32_t, std::map<uint32_t, Slice_pull_status>> &slice_map);
@@ -154,16 +160,32 @@ int Binlog_archive_replica::channel_create() {
   mi = channel_map.get_mi(BINLOG_ARCHIVE_REPLICA_CHANNEL_NAME);
 
   if (mi) {
-    err_msg.assign("create channel failed, channel already exists ");
+    if (mi->host[0] != '\0' || mi->slave_running) {
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA,
+             "existing internal channel cannot configure or run a network "
+             "receiver");
+      error = 1;
+      goto err;
+    }
+    if (mi->get_master_log_name() == nullptr ||
+        mi->get_master_log_name()[0] == '\0' ||
+        mi->get_master_log_pos() < BIN_LOG_HEADER_SIZE) {
+      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA,
+             "existing internal channel has an invalid source position");
+      error = 1;
+      goto err;
+    }
+    err_msg.assign("reuse channel ");
     err_msg.append(BINLOG_ARCHIVE_REPLICA_CHANNEL_NAME);
-    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, err_msg.c_str());
+    err_msg.append(" file=");
+    err_msg.append(mi->get_master_log_name());
+    err_msg.append(" pos=");
+    err_msg.append(std::to_string(mi->get_master_log_pos()));
+    LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, err_msg.c_str());
     goto err;
   }
   /* create a new binlog archive replica channel if doesn't exist */
   // set global relay_log_recovery=true
-  // For the first creation of an mi, the locally restored latest consensus
-  // index is used as the starting synchronization point with the source object
-  // storage.
   err_msg.assign("create channel ");
   err_msg.append(BINLOG_ARCHIVE_REPLICA_CHANNEL_NAME);
   if ((error = add_new_channel(&mi, BINLOG_ARCHIVE_REPLICA_CHANNEL_NAME))) {
@@ -174,8 +196,14 @@ int Binlog_archive_replica::channel_create() {
   err_msg.append(" success");
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, err_msg.c_str());
   if ((error = load_mi_and_rli_from_repositories(
-           mi, false, SLAVE_IO | SLAVE_SQL, false, true)))
+           mi, false, REPLICA_IO | REPLICA_SQL, false, true)))
     goto err;
+  if (mi->host[0] != '\0') {
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA,
+           "internal channel must not configure a network source");
+    error = 1;
+    goto err;
+  }
   // Initialize the channel master info start binlog and position with the
   // source object storage
   assert(opt_binlog_archive_replica_source_log_file);
@@ -211,9 +239,8 @@ int Binlog_archive_replica::channel_start() {
   Master_info *mi = nullptr;
   std::string err_msg;
   int error = 0;
-  LEX_SLAVE_CONNECTION lex_connection;
-  LEX_MASTER_INFO *lex_mi;
-  lex_mi = new LEX_MASTER_INFO();
+  LEX_REPLICA_CONNECTION lex_connection{};
+  LEX_SOURCE_INFO lex_source_info;
 
   channel_map.wrlock();
   /* Get the Master_info of the channel */
@@ -234,7 +261,7 @@ int Binlog_archive_replica::channel_start() {
   err_msg.assign("load master info and rli info ");
   err_msg.append(mi->get_for_channel_str());
   if ((error = load_mi_and_rli_from_repositories(
-           mi, false, SLAVE_IO | SLAVE_SQL, false, false))) {
+           mi, false, REPLICA_IO | REPLICA_SQL, false, false))) {
     err_msg.append(" failed");
     LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, err_msg.c_str());
     goto err;
@@ -246,20 +273,23 @@ int Binlog_archive_replica::channel_start() {
   // print the current replication position
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, err_msg.c_str());
 
-  lex_mi->channel = BINLOG_ARCHIVE_REPLICA_CHANNEL_NAME;
+  if (mi->host[0] != '\0' || mi->slave_running) {
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA,
+           "internal channel cannot run a network receiver");
+    error = 1;
+    goto err;
+  }
+  lex_source_info.channel = BINLOG_ARCHIVE_REPLICA_CHANNEL_NAME;
   lex_connection.reset();
 
   mi->rli->opt_replica_parallel_workers = opt_mts_replica_parallel_workers;
   mi->rli->checkpoint_group = opt_mta_checkpoint_group;
-  if (mts_parallel_option == MTS_PARALLEL_TYPE_DB_NAME)
-    mi->rli->channel_mts_submode = MTS_PARALLEL_TYPE_DB_NAME;
-  else
-    mi->rli->channel_mts_submode = MTS_PARALLEL_TYPE_LOGICAL_CLOCK;
+  mi->rli->channel_mts_submode = MTS_PARALLEL_TYPE_LOGICAL_CLOCK;
   mi->abort_slave = false;
   mi->rli->abort_slave = false;
   // Startup applier threads
-  if ((error =
-           start_slave(m_thd, &lex_connection, lex_mi, SLAVE_SQL, mi, false))) {
+  if ((error = start_slave(m_thd, &lex_connection, &lex_source_info,
+                           REPLICA_SQL, mi, false))) {
     LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA,
            "start sql applied thread failed");
     goto err;
@@ -278,16 +308,15 @@ int Binlog_archive_replica::channel_start() {
   mi->get_mi_description_event()->common_footer->checksum_alg =
       mi->rli->relay_log.relay_log_checksum_alg;
   assert(mi->get_mi_description_event()->common_footer->checksum_alg !=
-         binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
+         mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF);
   assert(mi->rli->relay_log.relay_log_checksum_alg !=
-         binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
+         mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF);
   mysql_mutex_unlock(&mi->data_lock);
   mysql_mutex_unlock(mi->rli->relay_log.get_log_lock());
 
   m_master_info = mi;
 err:
   channel_map.unlock();
-  delete lex_mi;
   return error;
 }
 
@@ -304,8 +333,8 @@ int Binlog_archive_replica::channel_stop() {
   mi->channel_wrlock();
   lock_slave_threads(mi);
   m_thd->set_skip_readonly_check();
-  error =
-      terminate_slave_threads(mi, SLAVE_SQL, rpl_stop_replica_timeout, false);
+  error = terminate_slave_threads(mi, REPLICA_SQL,
+                                  rpl_stop_replica_timeout, false);
   m_thd->reset_skip_readonly_check();
   unlock_slave_threads(mi);
   mi->channel_unlock();
@@ -344,6 +373,7 @@ Binlog_archive_replica_io_worker::Binlog_archive_replica_io_worker(
     : m_archive(archive),
       m_worker_id(worker_id),
       m_thd(nullptr),
+      m_thread_created(false),
       m_thd_state() {
   mysql_mutex_init(PSI_binlog_archive_replica_io_worker_lock_key,
                    &m_worker_run_lock, MY_MUTEX_INIT_FAST);
@@ -375,6 +405,7 @@ bool Binlog_archive_replica_io_worker::start() {
     mysql_mutex_unlock(&m_worker_run_lock);
     return false;
   }
+  m_thread_created = true;
   m_thd_state.set_created();
   while (m_thd_state.is_alive_not_running()) {
     DBUG_PRINT(
@@ -384,10 +415,12 @@ bool Binlog_archive_replica_io_worker::start() {
     set_timespec(&abstime, 1);
     mysql_cond_timedwait(&m_worker_run_cond, &m_worker_run_lock, &abstime);
   }
+  const bool started = m_thd_state.is_running();
   mysql_mutex_unlock(&m_worker_run_lock);
-  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER, m_worker_id,
-         "started");
-  return true;
+  LogErr(started ? SYSTEM_LEVEL : ERROR_LEVEL,
+         ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER, m_worker_id,
+         started ? "started" : "start failed");
+  return started;
 }
 
 void Binlog_archive_replica_io_worker::stop() {
@@ -397,18 +430,24 @@ void Binlog_archive_replica_io_worker::stop() {
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER, m_worker_id,
          "terminate begin");
   mysql_mutex_lock(&m_worker_run_lock);
-  if (m_thd_state.is_thread_dead()) {
+  if (!m_thread_created) {
     LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER, m_worker_id,
            "terminated");
     mysql_mutex_unlock(&m_worker_run_lock);
     return;
   }
-  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER, m_worker_id,
-         "terminating io worker");
+  const bool thread_alive = m_thd_state.is_thread_alive();
   mysql_mutex_unlock(&m_worker_run_lock);
-  terminate_binlog_archive_replica_io_worker_thread();
+  if (thread_alive) {
+    LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER, m_worker_id,
+           "terminating io worker");
+    terminate_binlog_archive_replica_io_worker_thread();
+  }
   /* Wait until the thread is terminated. */
   my_thread_join(&m_thread, nullptr);
+  mysql_mutex_lock(&m_worker_run_lock);
+  m_thread_created = false;
+  mysql_mutex_unlock(&m_worker_run_lock);
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER, m_worker_id,
          "terminate end");
 }
@@ -499,8 +538,9 @@ void *Binlog_archive_replica_io_worker::worker_thread() {
       DBUG_EXECUTE_IF("simulate_get_slice_object_error_on_io_worker", {
         LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER, m_worker_id,
                "simulate_get_slice_object_error_on_io_worker");
-        goto end;
+        error = 1;
       });
+      if (error) break;
       if (unlikely(m_thd->killed)) {
         error = 1;
         break;
@@ -567,13 +607,14 @@ void *Binlog_archive_replica_io_worker::worker_thread() {
     err_msg.append(" success");
     slice_status.persisted = SLICE_PULL_SUCCESS;
     slice_status.archived_info.slice_data_cache = slice_data_cache;
+    slice_status.archived_info.log_slice_end_pos =
+        static_cast<my_off_t>(slice_data_cache.size());
     LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER, m_worker_id,
            err_msg.c_str());
     mysql_mutex_unlock(&archive->m_slice_mutex);
     mysql_cond_signal(&archive->m_map_cond);
   }
 
-end:
   // Signal the binlog archive replica add_slice() and relay worker thread maybe
   // wait, before the io worker thread exit.
   mysql_cond_broadcast(&archive->m_queue_cond);
@@ -594,7 +635,10 @@ end:
 
 Binlog_archive_replica_relay_worker::Binlog_archive_replica_relay_worker(
     Binlog_archive_replica *archive)
-    : m_archive(archive), m_thd(nullptr), m_thd_state() {
+    : m_archive(archive),
+      m_thd(nullptr),
+      m_thread_created(false),
+      m_thd_state() {
   mysql_mutex_init(PSI_binlog_archive_replica_relay_worker_lock_key,
                    &m_worker_run_lock, MY_MUTEX_INIT_FAST);
   mysql_cond_init(PSI_binlog_archive_replica_relay_worker_cond_key,
@@ -625,6 +669,7 @@ bool Binlog_archive_replica_relay_worker::start() {
     mysql_mutex_unlock(&m_worker_run_lock);
     return false;
   }
+  m_thread_created = true;
   m_thd_state.set_created();
   while (m_thd_state.is_alive_not_running()) {
     DBUG_PRINT("sleep",
@@ -633,9 +678,12 @@ bool Binlog_archive_replica_relay_worker::start() {
     set_timespec(&abstime, 1);
     mysql_cond_timedwait(&m_worker_run_cond, &m_worker_run_lock, &abstime);
   }
+  const bool started = m_thd_state.is_running();
   mysql_mutex_unlock(&m_worker_run_lock);
-  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER, "started");
-  return true;
+  LogErr(started ? SYSTEM_LEVEL : ERROR_LEVEL,
+         ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
+         started ? "started" : "start failed");
+  return started;
 }
 
 void Binlog_archive_replica_relay_worker::stop() {
@@ -645,17 +693,23 @@ void Binlog_archive_replica_relay_worker::stop() {
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
          "terminate begin");
   mysql_mutex_lock(&m_worker_run_lock);
-  if (m_thd_state.is_thread_dead()) {
+  if (!m_thread_created) {
     LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER, "terminated");
     mysql_mutex_unlock(&m_worker_run_lock);
     return;
   }
-  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
-         "terminating relay worker");
+  const bool thread_alive = m_thd_state.is_thread_alive();
   mysql_mutex_unlock(&m_worker_run_lock);
-  terminate_binlog_archive_replica_relay_worker();
+  if (thread_alive) {
+    LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
+           "terminating relay worker");
+    terminate_binlog_archive_replica_relay_worker();
+  }
   /* Wait until the thread is terminated. */
   my_thread_join(&m_thread, nullptr);
+  mysql_mutex_lock(&m_worker_run_lock);
+  m_thread_created = false;
+  mysql_mutex_unlock(&m_worker_run_lock);
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER, "terminate end");
 }
 
@@ -689,34 +743,35 @@ int Binlog_archive_replica_relay_worker::
 
 inline void Binlog_archive_replica_relay_worker::calc_event_checksum(
     uchar *event_ptr, size_t event_len) {
-  ha_checksum crc = checksum_crc32(0L, nullptr, 0);
-  crc = checksum_crc32(crc, event_ptr, event_len - BINLOG_CHECKSUM_LEN);
+  ha_checksum crc = mysql::binlog::event::checksum_crc32(0L, nullptr, 0);
+  crc = mysql::binlog::event::checksum_crc32(
+      crc, event_ptr, event_len - BINLOG_CHECKSUM_LEN);
   int4store(event_ptr + event_len - BINLOG_CHECKSUM_LEN, crc);
 }
 
 int Binlog_archive_replica_relay_worker::fake_rotate_event(
     const char *next_log_file, my_off_t log_pos, ulong server_id,
-    binary_log::enum_binlog_checksum_alg event_checksum_alg,
+    enum_binlog_checksum_alg event_checksum_alg,
     std::string &rotate_buf) {
   DBUG_TRACE;
   const char *p = next_log_file + dirname_length(next_log_file);
   size_t ident_len = strlen(p);
   size_t event_len =
       ident_len + LOG_EVENT_HEADER_LEN + Binary_log_event::ROTATE_HEADER_LEN +
-      ((event_checksum_alg > binary_log::BINLOG_CHECKSUM_ALG_OFF &&
-        event_checksum_alg < binary_log::BINLOG_CHECKSUM_ALG_ENUM_END)
+      ((event_checksum_alg > mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF &&
+        event_checksum_alg <
+            mysql::binlog::event::BINLOG_CHECKSUM_ALG_ENUM_END)
            ? BINLOG_CHECKSUM_LEN
            : 0);
   rotate_buf.resize(event_len);
-  uchar *header =
-      reinterpret_cast<uchar *>(const_cast<char *>(rotate_buf.c_str()));
+  uchar *header = reinterpret_cast<uchar *>(rotate_buf.data());
   uchar *rotate_header = header + LOG_EVENT_HEADER_LEN;
   /*
     'when' (the timestamp) is set to 0 so that slave could distinguish between
     real and fake Rotate events (if necessary)
   */
   int4store(header, 0);
-  header[EVENT_TYPE_OFFSET] = binary_log::ROTATE_EVENT;
+  header[EVENT_TYPE_OFFSET] = mysql::binlog::event::ROTATE_EVENT;
   int4store(header + SERVER_ID_OFFSET, server_id);
   int4store(header + EVENT_LEN_OFFSET, static_cast<uint32>(event_len));
   int4store(header + LOG_POS_OFFSET, 0);
@@ -725,8 +780,9 @@ int Binlog_archive_replica_relay_worker::fake_rotate_event(
   int8store(rotate_header, log_pos);
   memcpy(rotate_header + Binary_log_event::ROTATE_HEADER_LEN, p, ident_len);
 
-  if (event_checksum_alg > binary_log::BINLOG_CHECKSUM_ALG_OFF &&
-      event_checksum_alg < binary_log::BINLOG_CHECKSUM_ALG_ENUM_END)
+  if (event_checksum_alg > mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF &&
+      event_checksum_alg <
+          mysql::binlog::event::BINLOG_CHECKSUM_ALG_ENUM_END)
     calc_event_checksum(header, event_len);
 
   return 0;
@@ -745,10 +801,47 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
   Binlog_archive_replica *archive = m_archive;
 
   m_thd = set_thread_context();
+  Master_info *mi = archive->m_master_info;
+  bool info_thd_bound = false;
+  if (mi != nullptr) {
+    mysql_mutex_lock(&mi->run_lock);
+    mysql_mutex_lock(&mi->info_thd_lock);
+    if (mi->info_thd == nullptr) {
+      mi->info_thd = m_thd;
+      info_thd_bound = true;
+    }
+    mysql_mutex_unlock(&mi->info_thd_lock);
+    mysql_mutex_unlock(&mi->run_lock);
+  }
   mysql_mutex_lock(&m_worker_run_lock);
-  m_thd_state.set_running();
+  if (info_thd_bound)
+    m_thd_state.set_running();
+  else
+    m_thd_state.set_terminated();
   mysql_cond_broadcast(&m_worker_run_cond);
   mysql_mutex_unlock(&m_worker_run_lock);
+
+  if (!info_thd_bound) {
+    LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
+           "failed to bind relay worker to channel source metadata");
+    m_thd->clear_error();
+    m_thd->release_resources();
+    delete m_thd;
+    m_thd = nullptr;
+    my_thread_end();
+    my_thread_exit(nullptr);
+  }
+
+  auto queue_archive_event =
+      [this, mi](const char *event_buf, ulong event_len, bool flush_mi) {
+        assert(current_thd == m_thd);
+        mysql_mutex_lock(&mi->info_thd_lock);
+        const bool owns_info_thd = mi->info_thd == m_thd;
+        mysql_mutex_unlock(&mi->info_thd_lock);
+        assert(owns_info_thd);
+        if (!owns_info_thd) return QUEUE_EVENT_ERROR_QUEUING;
+        return queue_event(mi, event_buf, event_len, flush_mi);
+      };
 
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
          "thread running");
@@ -823,10 +916,10 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
         my_off_t reader_size = 0;
         my_off_t cache_size =
             slice.archived_info.slice_data_cache.size();  // current slice size.
-        my_off_t end_pos =
-            slice.archived_info
-                .log_slice_end_pos;  // The end position of the binlog where the
-                                     // current slice is located.
+        my_off_t local_end_pos =
+            slice.archived_info.log_slice_end_pos;  // Downloaded byte length.
+        my_off_t source_end_pos =
+            slice.archived_info.mysql_end_pos;  // MySQL source end position.
         my_off_t start_read_pos =
             slice.archived_info
                 .m_start_read_pos;  // The read start position of the binlog
@@ -846,8 +939,10 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
         err_msg.append(slice.archived_info.log_slice_name);
         err_msg.append(" start_read_pos=");
         err_msg.append(std::to_string(start_read_pos));
-        err_msg.append(" end_pos=");
-        err_msg.append(std::to_string(end_pos));
+        err_msg.append(" source_end_pos=");
+        err_msg.append(std::to_string(source_end_pos));
+        err_msg.append(" local_end_pos=");
+        err_msg.append(std::to_string(local_end_pos));
         err_msg.append(" size=");
         err_msg.append(std::to_string(cache_size));
 
@@ -855,12 +950,6 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
         // during reading; subsequent slices are read directly from position 0.
         if (first_slice) {
           reader_size = BIN_LOG_HEADER_SIZE;
-        } else if ((end_pos > start_read_pos) &&
-                   (cache_size > (end_pos - start_read_pos))) {
-          // Jump to the start_read_pos position of the slice.
-          reader_size = cache_size - (end_pos - start_read_pos);
-          LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
-                 "jump to start_read_pos position of the slice");
         }
         err_msg.append(" cache reader_size=");
         err_msg.append(std::to_string(reader_size));
@@ -869,16 +958,50 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
 
         // Read the slice cache data and send it to the relay log queue.
         while (likely(reader_size < cache_size)) {
+          const my_off_t remaining = cache_size - reader_size;
+          if (remaining < LOG_EVENT_HEADER_LEN) {
+            LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
+                   "truncated event header in downloaded slice");
+            error = 1;
+            break;
+          }
           const char *event_buf;
           event_buf =
               slice.archived_info.slice_data_cache.c_str() + reader_size;
-          Log_event_type type = (Log_event_type)event_buf[EVENT_TYPE_OFFSET];
+          Log_event_type type = static_cast<Log_event_type>(
+              static_cast<unsigned char>(event_buf[EVENT_TYPE_OFFSET]));
           uint32 event_len = uint4korr(event_buf + EVENT_LEN_OFFSET);
-          if (type > binary_log::ENUM_END_EVENT) {
+          if (event_len < LOG_EVENT_HEADER_LEN || event_len > remaining) {
+            LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
+                   "invalid event length in downloaded slice");
+            error = 1;
+            break;
+          }
+          if (type == mysql::binlog::event::UNKNOWN_EVENT ||
+              type >= mysql::binlog::event::ENUM_END_EVENT) {
             LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
                    "event type unknown");
             error = 1;
             break;
+          }
+          if (type == mysql::binlog::event::FORMAT_DESCRIPTION_EVENT) {
+            if (event_len <= LOG_EVENT_MINIMAL_HEADER_LEN +
+                                 ST_COMMON_HEADER_LEN_OFFSET) {
+              LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
+                     "truncated format description event");
+              error = 1;
+              break;
+            }
+            const uint common_header_len = static_cast<unsigned char>(
+                event_buf[LOG_EVENT_MINIMAL_HEADER_LEN +
+                          ST_COMMON_HEADER_LEN_OFFSET]);
+            if (event_len <
+                common_header_len + ST_SERVER_VER_OFFSET + ST_SERVER_VER_LEN) {
+              LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
+                     "truncated format description event");
+              error = 1;
+              break;
+            }
           }
           // uint32 event_pos = uint4korr(event_buf + LOG_POS_OFFSET);
           DBUG_PRINT(
@@ -895,7 +1018,7 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
           // Indicates that the first slice of the first binlog file is read,
           // Need send_format_description_event.
           if (first_slice && start_read_pos > BIN_LOG_HEADER_SIZE) {
-            if (type == binary_log::FORMAT_DESCRIPTION_EVENT) {
+            if (type == mysql::binlog::event::FORMAT_DESCRIPTION_EVENT) {
               assert(first_slice);
               LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
                      "write fake rotate_log_event");
@@ -905,7 +1028,7 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
               // first time. If we are skipping the beginning of the binlog file
               // based on the position asked by binlog archive replica
               // "start_read_pos > BIN_LOG_HEADER_SIZE".
-              binary_log::enum_binlog_checksum_alg event_checksum_alg =
+              enum_binlog_checksum_alg event_checksum_alg =
                   Log_event_footer::get_checksum_alg(event_buf, event_len);
               // We need fake rotate event to set the binlog file name an
               // position, send to the relay log queue before the format
@@ -916,9 +1039,8 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
                                 uint4korr(event_buf + SERVER_ID_OFFSET),
                                 event_checksum_alg, rotate_buf);
               // Send fake rotate evet.
-              QUEUE_EVENT_RESULT queue_res = queue_event_from_objstore(
-                  archive->m_master_info, rotate_buf.c_str(),
-                  rotate_buf.length(), false);
+              QUEUE_EVENT_RESULT queue_res = queue_archive_event(
+                  rotate_buf.data(), rotate_buf.length(), false);
               if (queue_res == QUEUE_EVENT_ERROR_QUEUING) {
                 LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
                        "write fake rotate_log_event relay log error");
@@ -936,9 +1058,10 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
               // We need to fake the format description event to set the
               // checksum algorithm to BINLOG_CHECKSUM_ALG_OFF, send to the
               // relay log queue.
+              std::string fde_buf(event_buf, event_len);
               uchar *event_ptr =
-                  const_cast<uchar *>(pointer_cast<const uchar *>(event_buf));
-              assert(event_ptr[LOG_POS_OFFSET] > 0);
+                  reinterpret_cast<uchar *>(fde_buf.data());
+              assert(uint4korr(event_ptr + LOG_POS_OFFSET) > 0);
               event_ptr[FLAGS_OFFSET] &= ~LOG_EVENT_BINLOG_IN_USE_F;
               /*
                 If we are skipping the beginning of the binlog file based on the
@@ -956,14 +1079,16 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
                   event_ptr + LOG_EVENT_MINIMAL_HEADER_LEN + ST_CREATED_OFFSET,
                   0);
               /* fix the checksum due to latest changes in header */
-              if (event_checksum_alg > binary_log::BINLOG_CHECKSUM_ALG_OFF &&
-                  event_checksum_alg < binary_log::BINLOG_CHECKSUM_ALG_ENUM_END)
+              if (event_checksum_alg >
+                      mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF &&
+                  event_checksum_alg <
+                      mysql::binlog::event::BINLOG_CHECKSUM_ALG_ENUM_END)
                 calc_event_checksum(event_ptr, event_len);
               LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
                      "write Format_description_log_event ");
               // Send Format_description_log_event
-              queue_res = queue_event_from_objstore(archive->m_master_info,
-                                                    event_buf, event_len, true);
+              queue_res =
+                  queue_archive_event(fde_buf.data(), event_len, true);
               if (queue_res == QUEUE_EVENT_ERROR_QUEUING) {
                 LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
                        "write fixed Format_description_log_event error");
@@ -982,19 +1107,17 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
               // of the first binlog, is this slice no longer needed? This
               // indicates that this slice is only used to read the
               // FORMAT_DESCRIPTION_EVENT.
-              if (start_read_pos >= end_pos) {
+              if (start_read_pos >= source_end_pos) {
                 // Skip current slice.
                 LogErr(INFORMATION_LEVEL,
                        ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
                        "skip current slice");
                 break;
               } else {
-                assert(cache_size == end_pos);
-                // Jump to the start_read_pos position of the first slice.
-                reader_size = start_read_pos;
-                LogErr(INFORMATION_LEVEL,
-                       ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
-                       "jump to start_read_pos");
+                // Source positions are not archived byte offsets. Continue
+                // with the next locally downloaded event instead of seeking
+                // the slice by the source position.
+                reader_size += event_len;
                 continue;
               }
             }
@@ -1003,8 +1126,8 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
           DBUG_EXECUTE_IF(
               "binlog_archive_replica_crash_before_queue_event_relaylog",
               DBUG_SUICIDE(););
-          QUEUE_EVENT_RESULT queue_res = queue_event_from_objstore(
-              archive->m_master_info, event_buf, event_len, true);
+          QUEUE_EVENT_RESULT queue_res =
+              queue_archive_event(event_buf, event_len, true);
           if (queue_res == QUEUE_EVENT_ERROR_QUEUING) {
             LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER,
                    "write event error");
@@ -1019,13 +1142,6 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
             break;
           }
           assert(queue_res == QUEUE_EVENT_OK);
-          // If the starting position for reading the binlog file is in the
-          // middle, after reading the format_description_log_event, events
-          // before the starting position need to be skipped, and events
-          // should be read starting from the specified start_read_pos
-          // position. This only occurs when reading the first binlog file;
-          // subsequent binlog files are read starting from position
-          // BIN_LOG_HEADER_SIZE.
           reader_size += event_len;
         }
         if (error) break;
@@ -1078,6 +1194,14 @@ void *Binlog_archive_replica_relay_worker::worker_thread() {
   mysql_cond_broadcast(&archive->m_map_cond);
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER, "thread end");
 
+  mysql_mutex_lock(&mi->run_lock);
+  mysql_mutex_lock(&mi->info_thd_lock);
+  assert(mi->info_thd == m_thd);
+  if (mi->info_thd == m_thd) mi->info_thd = nullptr;
+  mysql_mutex_unlock(&mi->info_thd_lock);
+  mysql_mutex_unlock(&mi->run_lock);
+  m_thd->clear_error();
+  m_thd->release_resources();
   mysql_mutex_lock(&m_worker_run_lock);
   delete m_thd;
   m_thd = nullptr;
@@ -1102,6 +1226,11 @@ int start_binlog_archive_replica() {
   if (!opt_binlog_archive_replica || !opt_serverless) {
     return 0;
   }
+
+  mysql_mutex_lock(&m_binlog_archive_replica_run_lock);
+  const bool already_started = mysql_binlog_archive_replica_started;
+  mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
+  if (already_started) return 0;
 
   // Check if the binlog is enabled.
   if (!opt_bin_log) {
@@ -1227,9 +1356,12 @@ int start_binlog_archive_replica() {
     LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_STARTUP,
            "Failed to create binlog archive replica thread");
     mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
+    objstore::destroy_object_store(objstore);
+    mysql_binlog_archive_replica.set_objstore(nullptr);
     return 1;
   }
 
+  mysql_binlog_archive_replica_started = true;
   mysql_binlog_archive_replica.thread_set_created();
 
   while (mysql_binlog_archive_replica.is_thread_alive_not_running()) {
@@ -1239,8 +1371,19 @@ int start_binlog_archive_replica() {
     mysql_cond_timedwait(&m_binlog_archive_replica_run_cond,
                          &m_binlog_archive_replica_run_lock, &abstime);
   }
+  const bool running = mysql_binlog_archive_replica.is_thread_running();
   mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
-  return 0;
+  if (running) return 0;
+
+  my_thread_join(&mysql_binlog_archive_replica_pthd, nullptr);
+  if (mysql_binlog_archive_replica.get_objstore()) {
+    objstore::destroy_object_store(mysql_binlog_archive_replica.get_objstore());
+    mysql_binlog_archive_replica.set_objstore(nullptr);
+  }
+  mysql_mutex_lock(&m_binlog_archive_replica_run_lock);
+  mysql_binlog_archive_replica_started = false;
+  mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
+  return 1;
 }
 
 /**
@@ -1252,26 +1395,30 @@ int start_binlog_archive_replica() {
 void stop_binlog_archive_replica() {
   DBUG_TRACE;
   DBUG_PRINT("info", ("stop_binlog_archive_replica"));
-  if (!opt_binlog_archive_replica || !opt_serverless) return;
-
-  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, "terminate begin");
 
   mysql_mutex_lock(&m_binlog_archive_replica_run_lock);
-  if (mysql_binlog_archive_replica.is_thread_dead()) {
-    LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, "terminated");
+  if (!mysql_binlog_archive_replica_started) {
     mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
     return;
   }
+  const bool thread_alive = mysql_binlog_archive_replica.is_thread_alive();
   mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
-  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA,
-         "terminating binlog archive replica thread");
-  mysql_binlog_archive_replica.terminate_binlog_archive_replica_thread();
+
+  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, "terminate begin");
+  if (thread_alive) {
+    LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA,
+           "terminating binlog archive replica thread");
+    mysql_binlog_archive_replica.terminate_binlog_archive_replica_thread();
+  }
   /* Wait until the thread is terminated. */
   my_thread_join(&mysql_binlog_archive_replica_pthd, nullptr);
   if (mysql_binlog_archive_replica.get_objstore()) {
     objstore::destroy_object_store(mysql_binlog_archive_replica.get_objstore());
     mysql_binlog_archive_replica.set_objstore(nullptr);
   }
+  mysql_mutex_lock(&m_binlog_archive_replica_run_lock);
+  mysql_binlog_archive_replica_started = false;
+  mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, "terminate end");
 }
 
@@ -1456,13 +1603,6 @@ void Binlog_archive_replica::run() {
   strmake(m_binlog_archive_dir, binlog_objectstore_path.c_str(),
           sizeof(m_binlog_archive_dir) - 1);
 
-  mysql_mutex_lock(&m_binlog_archive_replica_run_lock);
-  m_thd_state.set_running();
-  mysql_cond_broadcast(&m_binlog_archive_replica_run_cond);
-  mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
-  err_msg.assign("Binlog archive replica thread running");
-  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, err_msg.c_str());
-
   // init binlog archive replica slice queue.
   assert(!m_expected_slice_queue.inited_queue);
   m_expected_slice_queue.avail = 0;
@@ -1484,6 +1624,13 @@ void Binlog_archive_replica::run() {
   if (start_worker_threads()) {
     goto end;
   }
+  mysql_mutex_lock(&m_binlog_archive_replica_run_lock);
+  m_thd_state.set_running();
+  mysql_cond_broadcast(&m_binlog_archive_replica_run_cond);
+  mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
+  LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA,
+         "Binlog archive replica thread running");
+
   for (;;) {
     LOG_ARCHIVED_INFO log_info{};
     int error = 0;
@@ -1555,7 +1702,7 @@ void Binlog_archive_replica::run() {
     if (error == 0) {
       bool next_log = false;
       do {
-        last_slice_end_pos = log_info.slice_end_pos;
+        last_slice_end_pos = log_info.mysql_end_pos;
         if (next_log || m_start_binlog_pos < last_slice_end_pos) {
           // Already more binlog slice need replica.
           binlog_updated = true;
@@ -1621,7 +1768,7 @@ void Binlog_archive_replica::run() {
         err_msg.append(" start_pos=");
         err_msg.append(std::to_string(m_start_binlog_pos));
         err_msg.append(" slice_end_pos=");
-        err_msg.append(std::to_string(log_info.slice_end_pos));
+        err_msg.append(std::to_string(log_info.mysql_end_pos));
         LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, err_msg.c_str());
         if (!add_slice(log_info, true, m_start_binlog_pos)) {
           goto fail;
@@ -1635,7 +1782,7 @@ void Binlog_archive_replica::run() {
         // Skip binlog slice if the end position of the current binlog file is
         // less equal than the start position. This indicates that the binlog
         // slice already is applied.
-        if (!next_log && log_info.slice_end_pos <= m_start_binlog_pos) {
+        if (!next_log && log_info.mysql_end_pos <= m_start_binlog_pos) {
           continue;
         }
         // Add next binlog slice or the first slice of next binlog file.
@@ -1653,7 +1800,7 @@ void Binlog_archive_replica::run() {
         // Set start_read_pos of the next binlog slice.
         // The end position of the binlog slice, and also the start position
         // of the next binlog slice.
-        m_start_binlog_pos = log_info.slice_end_pos;
+        m_start_binlog_pos = log_info.mysql_end_pos;
         LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, err_msg.c_str());
       }
     } else {
@@ -1682,6 +1829,14 @@ void Binlog_archive_replica::run() {
 
 end:
   stop_worker_threads();
+  mysql_mutex_lock(&m_slice_mutex);
+  m_expected_slice_queue.m_Q.clear();
+  m_expected_slice_queue.avail = 0;
+  m_expected_slice_queue.entry = 0;
+  m_expected_slice_queue.len = 0;
+  m_expected_slice_queue.inited_queue = false;
+  m_slice_status_map.clear();
+  mysql_mutex_unlock(&m_slice_mutex);
   LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, "thread end");
   m_thd->clear_error();
   m_thd->release_resources();
@@ -1728,7 +1883,7 @@ int Binlog_archive_replica::start_worker_threads() {
       my_malloc(PSI_NOT_INSTRUMENTED,
                 opt_binlog_archive_parallel_workers *
                     sizeof(Binlog_archive_replica_io_worker *),
-                MYF(MY_WME)));
+                MYF(MY_WME | MY_ZEROFILL)));
   if (!m_workers) {
     error = 1;
     goto err;
@@ -1840,11 +1995,10 @@ bool Binlog_archive_replica::add_slice(LOG_ARCHIVED_INFO &log_info,
           sizeof(slice_info.log_file_name) - 1);
   strmake(slice_info.log_slice_name, binlog_slice_key.c_str(),
           sizeof(slice_info.log_slice_name) - 1);
-  slice_info.log_slice_end_consensus_index = log_info.slice_end_consensus_index;
-  slice_info.log_slice_previous_consensus_index =
-      log_info.log_previous_consensus_index;
-  slice_info.log_slice_consensus_term = log_info.slice_consensus_term;
-  slice_info.log_slice_end_pos = log_info.slice_end_pos;
+  slice_info.log_slice_end_archive_position = log_info.mysql_end_pos;
+  slice_info.mysql_end_pos = log_info.mysql_end_pos;
+  // Filled with the downloaded object size by the IO worker before relay.
+  slice_info.log_slice_end_pos = 0;
   slice_info.first_slice = first_slice;
   slice_info.m_start_read_pos = start_read_pos;
 
@@ -1854,7 +2008,7 @@ bool Binlog_archive_replica::add_slice(LOG_ARCHIVED_INFO &log_info,
   err_msg.append(" log_slice_keyid=");
   err_msg.append(slice_info.log_slice_name);
   err_msg.append(" end_pos=");
-  err_msg.append(std::to_string(slice_info.log_slice_end_pos));
+  err_msg.append(std::to_string(slice_info.mysql_end_pos));
   err_msg.append(" start_read_pos=");
   err_msg.append(std::to_string(slice_info.m_start_read_pos));
   err_msg.append(" file_seq=");
@@ -1955,29 +2109,17 @@ bool Binlog_archive_replica::list_persistent_objects(
 
 /**
  * @brief Get the last persistent binlog index file.
- * The persisted `binlog-index.index` is based on multiple versions of the
- * consensus term, so the `binlog-index.index` with the highest consensus term
- * should be obtained as the initial one.
  * @param last_binlog_index
  * @return int
  */
 int Binlog_archive_replica::fetch_last_persistent_index_file(
     std::string &last_binlog_index) {
   std::vector<objstore::ObjectMeta> objects;
-
-  if (!list_persistent_objects(objects, BINLOG_ARCHIVE_INDEX_FILE_BASENAME,
-                               true, false)) {
+  if (!list_persistent_objects(objects, BINLOG_ARCHIVE_INDEX_LOCAL_FILE,
+                               false, true)) {
     return 1;
   }
-  // if no persistent binlog.index, return.
-  if (objects.empty()) {
-    DBUG_PRINT("info", ("no persistent binlog index file %s",
-                        BINLOG_ARCHIVE_INDEX_FILE_BASENAME));
-    return 0;
-  }
-  last_binlog_index.assign((objects.back()).key);
-  DBUG_PRINT("info", ("the last persistent binlog index is %s",
-                      last_binlog_index.c_str()));
+  if (!objects.empty()) last_binlog_index.assign(objects.front().key);
   return 0;
 }
 
@@ -2005,24 +2147,10 @@ bool Binlog_archive_replica::open_index_file() {
   fn_format(m_index_local_file_name, BINLOG_ARCHIVE_REPLICA_INDEX_LOCAL_FILE,
             m_mysql_binlog_archive_dir, ".index", opt);
 
-  // Check if the index file exists in s3, if so, download it to local.
-  // Problem: If a new index file is generated while retrieving the last index
-  // file through list_object(), the slice index obtained from reading the
-  // index may not be the one that actually needs to be read. Instead, it
-  // could be a slice produced by the old leader, which might conflict with
-  // slices generated by the new leader. If events are relayed in this
-  // scenario, it could lead to data inconsistency.
-  // Solution: After obtaining the latest index through get_object(), perform
-  // another list_object() call to fetch the latest index again and check if
-  // it matches the index already retrieved. If they are consistent, the
-  // slices within the index can be used (ensuring the currently read index is
-  // the latest file and its slices are valid). Otherwise, the index needs to
-  // be re-read.
-  while (true) {
-    if (fetch_last_persistent_index_file(last_binlog_index_keyid)) {
-      return true;
-    }
-    assert(!last_binlog_index_keyid.empty());
+  if (fetch_last_persistent_index_file(last_binlog_index_keyid)) {
+    return true;
+  }
+  if (!last_binlog_index_keyid.empty()) {
     auto status = binlog_objstore->get_object_to_file(
         std::string_view(opt_source_objectstore_bucket),
         last_binlog_index_keyid, std::string_view(m_index_local_file_name));
@@ -2033,28 +2161,6 @@ bool Binlog_archive_replica::open_index_file() {
              std::string(status.error_message()).c_str());
       return true;
     }
-    std::string last_binlog_index_keyid_retry{};
-    if (fetch_last_persistent_index_file(last_binlog_index_keyid_retry)) {
-      return true;
-    }
-    if (last_binlog_index_keyid.compare(last_binlog_index_keyid_retry) == 0) {
-      break;
-    }
-    mysql_mutex_lock(&m_binlog_archive_replica_run_lock);
-    if (m_thd == nullptr || unlikely(m_thd->killed)) {
-      std::string err_msg;
-      err_msg.assign("run exit, persist end consensus index=");
-      LogErr(SYSTEM_LEVEL, ER_BINLOG_ARCHIVE_REPLICA, err_msg.c_str());
-      mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
-      return true;
-    }
-    mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
-    struct timespec abstime;
-    set_timespec(&abstime, 1);
-    mysql_mutex_lock(&m_binlog_archive_replica_run_lock);
-    error = mysql_cond_timedwait(&m_binlog_archive_replica_run_cond,
-                                 &m_binlog_archive_replica_run_lock, &abstime);
-    mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
   }
   if (my_chmod(m_index_local_file_name,
                USER_READ | USER_WRITE | GROUP_READ | GROUP_WRITE | OTHERS_READ,
@@ -2109,9 +2215,37 @@ void Binlog_archive_replica::close_index_file() {
 /**
   Find the position in the log-index-file for the given log name.
 */
+static bool parse_replica_archive_slice_name(const char *slice_name,
+                                              LOG_ARCHIVED_INFO *linfo) {
+  if (slice_name == nullptr || linfo == nullptr) return false;
+  std::string name(slice_name);
+  const size_t first_dot = name.find('.');
+  const size_t second_dot =
+      first_dot == std::string::npos ? std::string::npos
+                                     : name.find('.', first_dot + 1);
+  if (first_dot == std::string::npos || second_dot == std::string::npos ||
+      second_dot + 1 >= name.size())
+    return false;
+  const std::string position = name.substr(second_dot + 1);
+  if (position.find_first_not_of("0123456789") != std::string::npos) {
+    return false;
+  }
+  try {
+    linfo->mysql_end_pos = std::stoull(position);
+  } catch (...) {
+    return false;
+  }
+  linfo->slice_end_pos = linfo->mysql_end_pos;
+  linfo->slice_end_archive_position = linfo->mysql_end_pos;
+  strmake(linfo->log_slice_name, name.c_str(), sizeof(linfo->log_slice_name) - 1);
+  strmake(linfo->log_file_name, name.substr(0, second_dot).c_str(),
+          sizeof(linfo->log_file_name) - 1);
+  return true;
+}
+
 int Binlog_archive_replica::find_log_pos_common(
     IO_CACHE *index_file, LOG_ARCHIVED_INFO *linfo, const char *log_name,
-    uint64_t consensus_index, bool last_slice [[maybe_unused]]) {
+    bool last_slice [[maybe_unused]]) {
   DBUG_TRACE;
   int error = 0;
 
@@ -2136,63 +2270,20 @@ int Binlog_archive_replica::find_log_pos_common(
     }
     /* Get rid of the trailing '\n' */
     linfo->log_line[length - 1] = 0;
-    std::string in_str;
-    in_str.assign(linfo->log_line);
-    size_t idx = in_str.find("|");
-    std::string found_log_slice_name = in_str.substr(0, idx);
-    std::string left_string = in_str.substr(idx + 1);
-    idx = left_string.find("|");
-    std::string found_end_consensus_index = left_string.substr(0, idx);
-    linfo->slice_end_consensus_index = std::stoull(found_end_consensus_index);
-    std::string found_previous_consensus_index = left_string.substr(idx + 1);
-    linfo->log_previous_consensus_index =
-        std::stoull(found_previous_consensus_index);
-
-    strmake(linfo->log_slice_name, found_log_slice_name.c_str(),
-            sizeof(linfo->log_slice_name) - 1);
-
-    size_t first_dot = found_log_slice_name.find('.');
-    if (first_dot == std::string::npos) {
+    if (!parse_replica_archive_slice_name(linfo->log_line, linfo)) {
       LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
-             "Invalid log slice index entry", found_log_slice_name);
+             "Invalid log slice index entry", linfo->log_line);
       error = LOG_INFO_IO;
       break;
     }
-    size_t second_dot = found_log_slice_name.find('.', first_dot + 1);
-    if (second_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
-             "Invalid log slice index entry", found_log_slice_name);
-      error = LOG_INFO_IO;
-      break;
-    }
-    std::string file_name = found_log_slice_name.substr(0, second_dot);
-
-    strmake(linfo->log_file_name, file_name.c_str(),
-            sizeof(linfo->log_file_name) - 1);
-
-    left_string = found_log_slice_name.substr(second_dot + 1);
-    size_t third_dot = left_string.find('.');
-    if (third_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
-             "Invalid log slice index entry", found_log_slice_name);
-      error = LOG_INFO_IO;
-      break;
-    }
-    std::string term = left_string.substr(0, third_dot);
-    linfo->slice_consensus_term = std::stoull(term);
-    std::string end_pos = left_string.substr(third_dot + 1);
-    linfo->slice_end_pos = std::stoull(end_pos);
 
     // if the log entry matches, null string matching anything
     if (!log_name || log_name[0] == '\0' ||
-        !compare_log_name(file_name.c_str(), log_name)) {
-      if (consensus_index == 0 ||
-          consensus_index == linfo->log_previous_consensus_index) {
-        DBUG_PRINT("info", ("Found log file entry"));
-        linfo->index_file_start_offset = offset;
-        linfo->index_file_offset = my_b_tell(index_file);
-        break;
-      }
+        !compare_log_name(linfo->log_file_name, log_name)) {
+      DBUG_PRINT("info", ("Found log file entry"));
+      linfo->index_file_start_offset = offset;
+      linfo->index_file_offset = my_b_tell(index_file);
+      break;
     }
     linfo->entry_index++;
   }
@@ -2208,7 +2299,7 @@ int Binlog_archive_replica::find_log_pos_by_name(LOG_ARCHIVED_INFO *linfo,
            "binlog index not inited");
     return LOG_INFO_IO;
   }
-  return find_log_pos_common(&m_index_file, linfo, log_name, 0);
+  return find_log_pos_common(&m_index_file, linfo, log_name);
 }
 
 /**
@@ -2280,57 +2371,17 @@ int Binlog_archive_replica::find_next_log_common(IO_CACHE *index_file,
     /* Get rid of the trailing '\n' */
     linfo->log_line[length - 1] = 0;
 
-    // {$binlog_file_name}.{$consensus_term}.{$slice_end_pos}|{$previouse_index}
-    // binlog.000010.00000000000000001120.0000000512|454
-    std::string in_str;
-    in_str.assign(linfo->log_line);
-    size_t idx = in_str.find("|");
-    std::string found_log_slice_name = in_str.substr(0, idx);
-    std::string left_string = in_str.substr(idx + 1);
-    idx = left_string.find("|");
-    std::string found_end_consensus_index = left_string.substr(0, idx);
-    linfo->slice_end_consensus_index = std::stoull(found_end_consensus_index);
-    std::string found_previous_consensus_index = left_string.substr(idx + 1);
-    linfo->log_previous_consensus_index =
-        std::stoull(found_previous_consensus_index);
-
-    strmake(linfo->log_slice_name, found_log_slice_name.c_str(),
-            sizeof(linfo->log_slice_name) - 1);
-
-    size_t first_dot = found_log_slice_name.find('.');
-    if (first_dot == std::string::npos) {
+    if (!parse_replica_archive_slice_name(linfo->log_line, linfo)) {
       LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
-             "Invalid log slice index entry", found_log_slice_name);
+             "Invalid log slice index entry", linfo->log_line);
       error = LOG_INFO_IO;
       break;
     }
-    size_t second_dot = found_log_slice_name.find('.', first_dot + 1);
-    if (second_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
-             "Invalid log slice index entry", found_log_slice_name);
-      error = LOG_INFO_IO;
-      break;
-    }
-    std::string log_name = found_log_slice_name.substr(0, second_dot);
-    strmake(linfo->log_file_name, log_name.c_str(),
-            sizeof(linfo->log_file_name) - 1);
-    left_string = found_log_slice_name.substr(second_dot + 1);
-    size_t third_dot = left_string.find('.');
-    if (third_dot == std::string::npos) {
-      LogErr(ERROR_LEVEL, ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX,
-             "Invalid log slice index entry", found_log_slice_name);
-      error = LOG_INFO_IO;
-      break;
-    }
-    std::string term = left_string.substr(0, third_dot);
-    std::string end_pos = left_string.substr(third_dot + 1);
-    linfo->slice_consensus_term = std::stoull(term);
-    linfo->slice_end_pos = std::stoull(end_pos);
 
     linfo->entry_index++;
     linfo->index_file_offset = my_b_tell(index_file);
     // Found the next log file.
-    if (compare_log_name(log_name.c_str(), previous_log_name.c_str()) != 0) {
+    if (compare_log_name(linfo->log_file_name, previous_log_name.c_str()) != 0) {
       next_log = true;
     }
     // Find next binlog or next slice
@@ -2366,13 +2417,6 @@ static int calulate_slice_map_size(
     log_map++;
   }
   return total_map_elements;
-}
-
-static int compare_log_name(const char *log_1, const char *log_2) {
-  const char *log_1_basename = log_1 + dirname_length(log_1);
-  const char *log_2_basename = log_2 + dirname_length(log_2);
-
-  return strcmp(log_1_basename, log_2_basename);
 }
 
 /**

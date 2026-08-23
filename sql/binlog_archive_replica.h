@@ -43,22 +43,20 @@ struct SLICE_PULL_INFO {
   char log_file_name[FN_REFLEN] = {0};
   char log_slice_name[FN_REFLEN] = {0};
   char mysql_log_name[FN_REFLEN] = {0};
-  uint64_t log_slice_end_consensus_index;
-  uint64_t log_slice_consensus_term;
-  uint64_t log_slice_previous_consensus_index;
-  my_off_t log_slice_end_pos;
+  uint64_t log_slice_end_archive_position;
+  // End position in the source MySQL binlog, parsed from the stable key.
   my_off_t mysql_end_pos;
+  // Downloaded slice byte length, used only for local relay parsing.
+  my_off_t log_slice_end_pos;
   int entry_index;  // used in purge_logs(), calculated in find_log_pos().
   my_off_t m_slice_bytes_written;
   std::string slice_data_cache;
   bool first_slice;
   my_off_t m_start_read_pos;
   SLICE_PULL_INFO()
-      : log_slice_end_consensus_index(0),
-        log_slice_consensus_term(0),
-        log_slice_previous_consensus_index(0),
-        log_slice_end_pos(0),
+      : log_slice_end_archive_position(0),
         mysql_end_pos(0),
+        log_slice_end_pos(0),
         entry_index(0),
         m_slice_bytes_written(0),
         slice_data_cache(),
@@ -71,12 +69,9 @@ struct SLICE_PULL_INFO {
 
   // Copy constructor
   SLICE_PULL_INFO(const SLICE_PULL_INFO &other)
-      : log_slice_end_consensus_index(other.log_slice_end_consensus_index),
-        log_slice_consensus_term(other.log_slice_consensus_term),
-        log_slice_previous_consensus_index(
-            other.log_slice_previous_consensus_index),
-        log_slice_end_pos(other.log_slice_end_pos),
+      : log_slice_end_archive_position(other.log_slice_end_archive_position),
         mysql_end_pos(other.mysql_end_pos),
+        log_slice_end_pos(other.log_slice_end_pos),
         entry_index(other.entry_index),
         m_slice_bytes_written(other.m_slice_bytes_written),
         slice_data_cache(other.slice_data_cache),
@@ -92,12 +87,9 @@ struct SLICE_PULL_INFO {
       strmake(log_file_name, other.log_file_name, FN_REFLEN);
       strmake(log_slice_name, other.log_slice_name, FN_REFLEN);
       strmake(mysql_log_name, other.mysql_log_name, FN_REFLEN);
-      log_slice_end_consensus_index = other.log_slice_end_consensus_index;
-      log_slice_consensus_term = other.log_slice_consensus_term;
-      log_slice_previous_consensus_index =
-          other.log_slice_previous_consensus_index;
-      log_slice_end_pos = other.log_slice_end_pos;
+      log_slice_end_archive_position = other.log_slice_end_archive_position;
       mysql_end_pos = other.mysql_end_pos;
+      log_slice_end_pos = other.log_slice_end_pos;
       entry_index = other.entry_index;
       slice_data_cache = other.slice_data_cache;
       m_slice_bytes_written = other.m_slice_bytes_written;
@@ -207,6 +199,7 @@ class Binlog_archive_replica_io_worker {
   my_thread_handle m_thread;
   int m_worker_id;
   THD *m_thd;
+  bool m_thread_created;
   /* thread state */
   thread_state m_thd_state;
   mysql_mutex_t m_worker_run_lock;
@@ -255,6 +248,7 @@ class Binlog_archive_replica_relay_worker {
   Binlog_archive_replica *m_archive;
   my_thread_handle m_thread;
   THD *m_thd;
+  bool m_thread_created;
   /* thread state */
   thread_state m_thd_state;
   mysql_mutex_t m_worker_run_lock;
@@ -262,7 +256,8 @@ class Binlog_archive_replica_relay_worker {
   void calc_event_checksum(uchar *event_ptr, size_t event_len);
   int fake_rotate_event(const char *next_log_file, my_off_t log_pos,
                         ulong server_id,
-                        binary_log::enum_binlog_checksum_alg event_checksum_alg,
+                        mysql::binlog::event::enum_binlog_checksum_alg
+                            event_checksum_alg,
                         std::string &rotate_buf);
 };
 
@@ -278,10 +273,10 @@ class Binlog_archive_replica_relay_worker {
  * Refer to Replication_thread_api::initialize_channel().
  *
  * if (threads_to_start & CHANNEL_APPLIER_THREAD) {
-    thread_mask |= SLAVE_SQL;
+    thread_mask |= REPLICA_SQL;
   }
   if (threads_to_start & CHANNEL_RECEIVER_THREAD) {
-    thread_mask |= SLAVE_IO;
+    thread_mask |= REPLICA_IO;
   }
  * Refer to start_slave_thread().
  * Binlog_archive_replica call read_event() to read event from binlog slice file
@@ -376,9 +371,6 @@ class Binlog_archive_replica {
   objstore::ObjectStore *binlog_objstore;
   int archive_init();
   int archive_cleanup();
-  /* The mysql binlog file it is reading */
-  LOG_INFO m_mysql_linfo;
-
   IO_CACHE m_index_file;
   mysql_mutex_t m_index_lock;
   char m_index_local_file_name[FN_REFLEN];
@@ -395,7 +387,7 @@ class Binlog_archive_replica {
   int find_next_log_common(IO_CACHE *index_file, LOG_ARCHIVED_INFO *linfo,
                            bool &next_log, bool found_slice = false);
   int find_log_pos_common(IO_CACHE *index_file, LOG_ARCHIVED_INFO *linfo,
-                          const char *log_name, uint64_t consensus_index,
+                          const char *log_name,
                           bool last_slice = false);
 };
 

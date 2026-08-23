@@ -24,6 +24,8 @@
 
 #ifndef CONSISTENT_RECOVERY_INCLUDED
 #define CONSISTENT_RECOVERY_INCLUDED
+#include <string>
+
 #include "my_dbug.h"
 #include "my_sys.h"
 #include "my_thread.h"
@@ -50,7 +52,6 @@
 typedef struct Consistent_snapshot_recovery_status {
   int m_recovery_status;
   uint64_t m_end_binlog_pos;
-  uint64_t m_end_consensus_index;
   char m_apply_stop_timestamp[MAX_DATETIME_FULL_WIDTH + 4];
 } Consistent_snapshot_recovery_status;
 
@@ -74,12 +75,13 @@ class Consistent_recovery {
   // recovery binlog
   bool recovery_binlog(const char *binlog_index_name, const char *bin_log_name);
   bool recovery_smartengine_objectstore_data();
-  int get_last_persistent_binlog_consensus_index();
   int read_consistent_snapshot_recovery_status(
       Consistent_snapshot_recovery_status &recovery_status);
   int write_consistent_snapshot_recovery_status(
       Consistent_snapshot_recovery_status &recovery_status);
-  int consistent_snapshot_consensus_recovery_finish();
+  int consistent_snapshot_archive_recovery_finish();
+  // Call only after all replay clients that borrow the source provider stop.
+  void cleanup_objstore();
 
  private:
   int init_objstore_in_initialize();
@@ -118,6 +120,10 @@ class Consistent_recovery {
   };
   Consistent_recovery_type m_recovery_type;
   Consistent_recovery_state m_state;
+  bool m_source_provider_initialized;
+  bool m_destination_provider_initialized;
+  std::string m_source_provider;
+  std::string m_destination_provider;
   objstore::ObjectStore *recovery_objstore;
   objstore::ObjectStore *init_destination_objstore;
   char m_smartengine_objstore_dir[FN_REFLEN + 1];
@@ -127,12 +133,8 @@ class Consistent_recovery {
   // Binlog file required for recovering consistent snapshot to a consistent
   // state
   char m_binlog_file[FN_REFLEN + 1];
-  // End binlog position for recovering the consistent snapshot to a consistent
-  // state Only used when consensus replication is disabled.
+  // End binlog position for recovering the consistent snapshot.
   uint64_t m_mysql_binlog_pos;
-  // End consensus index for recovering the consistent snapshot to a consistent
-  // state
-  uint64_t m_consensus_index;
   uint64_t m_se_snapshot_id;
   char m_binlog_end_file[FN_REFLEN + 1];
   char m_mysql_binlog_end_file[FN_REFLEN + 1];
