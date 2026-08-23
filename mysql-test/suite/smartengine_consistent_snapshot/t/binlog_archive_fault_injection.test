@@ -41,7 +41,7 @@ SHOW CREATE TABLE t1;
 # --source include/show_binary_logs.inc
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
+let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
 let $wait_timeout= 600;
 --source include/wait_condition_or_abort.inc
 
@@ -94,7 +94,7 @@ let $wait_timeout= 600;
 # --source include/show_binary_logs.inc
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
+let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
 let $wait_timeout= 600;
 --source include/wait_condition_or_abort.inc
 
@@ -124,7 +124,7 @@ INSERT INTO t1 values(4,'abcd');
 set global debug= '-d, fault_injection_add_slice_queue';
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
+let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
 let $wait_timeout= 600;
 --source include/wait_condition_or_abort.inc
 
@@ -138,7 +138,7 @@ INSERT INTO t1 values(3,'abcd');
 INSERT INTO t1 values(4,'abcd');
 
 --echo # Wait for all binlog add expected persistent queue.
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTING_RAFT_INDEX = COMMIT_INDEX;
+let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS > LAST_PERSISTING_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
 let $wait_timeout= 600;
 --source include/wait_condition_or_abort.inc
 
@@ -162,7 +162,7 @@ let $wait_timeout= 600;
 set global debug= '-d, fault_injection_put_slice_to_objstore';
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
+let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
 let $wait_timeout= 600;
 --source include/wait_condition_or_abort.inc
 
@@ -190,7 +190,7 @@ INSERT INTO t1 values(4,'abcd');
 set global debug= '-d, fault_injection_binlog_archive_update_index_file';
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
+let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
 let $wait_timeout= 600;
 --source include/wait_condition_or_abort.inc
 
