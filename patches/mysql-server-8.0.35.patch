@@ -275,35 +275,6 @@ index 00000000000..11111111111 100644
  
    # Add internal 'disabled.def' file only if it exists
    my $internal_disabled_def_file =
-@@ -512,7 +513,7 @@
-       foreach my $test (@$cases) {
-         last unless $opt_reorder;
-         # 'test->{name}' value is always in suite.name format
--        if ($test->{name} =~ /^$sname.*\.$tname$/) {
-+        if ($test->{name} =~ /^$sname.*\.$tname$/ or $test->{name} =~ /^$sname.*\.$tname-wesql$/) {
-           $found = 1;
-           last;
-         }
-@@ -862,6 +863,9 @@
-         next if (!-f $full_name);
-       }
- 
-+      my $wesql_case = mtr_match_suffix($tname, "-wesql");
-+      # skip cluster-only *-wesql.test
-+      next if (defined $wesql_case);
-       push(@cases,
-            collect_one_test_case($suitedir, $testdir,
-                                  $resdir,   $suite,
-@@ -879,6 +884,9 @@
-       # Skip tests that does not match the --do-test= filter
-       next if ($do_test_reg and not $tname =~ /$do_test_reg/o);
- 
-+      my $wesql_case = mtr_match_suffix($tname, "-wesql");
-+      # skip cluster-only *-wesql.test
-+      next if (defined $wesql_case);
-       push(@cases,
-            collect_one_test_case($suitedir, $testdir, $resdir,
-                                  $suite,    $tname,   $elem,
 @@ -1179,11 +1188,8 @@
    } else {
      # Result file doesn't exist
@@ -324,31 +295,6 @@ index 00000000000..11111111111 100644
    # Check for disabled tests
    if ($disabled->{"$suitename.$tname"}) {
      # Test was marked as disabled in disabled.def file
-@@ -1428,11 +1435,20 @@
-   }
- 
-   if (!$::start_only or @::opt_cases) {
--    # Add master opts, extra options only for master
--    process_opts_file($tinfo, "$testdir/$tname-master.opt", 'master_opt');
-+    if (-f "$testdir/$tname-master-wesql.opt" || -f "$testdir/$tname-slave-wesql.opt") {
-+      if (-f "$testdir/$tname-master-wesql.opt") {
-+          process_opts_file($tinfo, "$testdir/$tname-master-wesql.opt", 'master_opt');
-+      }
- 
--    # Add slave opts, list of extra option only for slave
--    process_opts_file($tinfo, "$testdir/$tname-slave.opt", 'slave_opt');
-+      if (-f "$testdir/$tname-slave-wesql.opt") {
-+          process_opts_file($tinfo, "$testdir/$tname-slave-wesql.opt", 'slave_opt');
-+      }
-+    } else {
-+        # Add master opts, extra options only for master
-+        process_opts_file($tinfo, "$testdir/$tname-master.opt", 'master_opt');
-+        # Add slave opts, list of extra option only for slave
-+        process_opts_file($tinfo, "$testdir/$tname-slave.opt", 'slave_opt');
-+    }
-   }
- 
-   if (!$::start_only) {
 @@ -1514,6 +1530,7 @@
    [ "have_group_replication_plugin_base.inc", "grp_rpl_test", 1 ],
    [ "have_group_replication_plugin.inc",      "grp_rpl_test", 1 ],
@@ -357,36 +303,6 @@ index 00000000000..11111111111 100644
    # Tests with below .inc file needs either big-test or only-big-test
    # option along with valgrind option.
    [ "include/no_valgrind_without_big.inc", "no_valgrind_without_big", 1 ]);
-diff --git a/mysql-test/lib/mtr_match.pm b/mysql-test/lib/mtr_match.pm
-index d03842d66ad..d47fa4de7df 100644
---- a/mysql-test/lib/mtr_match.pm
-+++ b/mysql-test/lib/mtr_match.pm
-@@ -30,7 +30,7 @@ package mtr_match;
- use strict;
- 
- use base qw(Exporter);
--our @EXPORT = qw(mtr_match_prefix mtr_match_extension mtr_match_substring);
-+our @EXPORT = qw(mtr_match_prefix mtr_match_suffix mtr_match_extension mtr_match_substring);
- 
- # Match a prefix and return what is after the prefix
- sub mtr_match_prefix ($$) {
-@@ -45,6 +45,16 @@ sub mtr_match_prefix ($$) {
-   }
- }
- 
-+# Match a suffix and return what is before the suffix
-+sub mtr_match_suffix ($$) {
-+  my $string = shift;
-+  my $suffix = shift;
-+  if ($string =~ /^(.*)\Q$suffix\E$/) {
-+    return $1;
-+  } else {
-+    return undef;                        # NULL
-+  }
-+}
- # Match extension and return the name without extension
- sub mtr_match_extension ($$) {
-   my $file = shift;
 diff --git a/mysql-test/mysql-test-run.pl b/mysql-test/mysql-test-run.pl
 index 00000000000..11111111111 100644
 --- a/mysql-test/mysql-test-run.pl
@@ -1786,14 +1702,6 @@ diff --git a/sql/binlog.cc b/sql/binlog.cc
 index de76909ed3b..33b0c60b229 100644
 --- a/sql/binlog.cc
 +++ b/sql/binlog.cc
-@@ -40,6 +40,7 @@
- #include "my_thread.h"
- #include "sql/check_stack.h"
- #include "sql/clone_handler.h"
-+#include "sql/consistent_recovery.h"
- #include "sql/raii/thread_stage_guard.h"
- #include "sql_string.h"
- #include "template_utils.h"
 @@ -85,6 +86,7 @@
  #include "partition_info.h"
  #include "prealloced_array.h"
@@ -1802,40 +1710,6 @@ index de76909ed3b..33b0c60b229 100644
  #include "sql/binlog/decompressing_event_object_istream.h"
  #include "sql/binlog/global.h"
  #include "sql/binlog/group_commit/bgc_ticket_manager.h"  // Bgc_ticket_manager
-@@ -1777,8 +1797,8 @@ int MYSQL_BIN_LOG::gtid_end_transaction(THD *thd) {
- 
-   if (thd->owned_gtid.sidno > 0) {
-     assert(thd->variables.gtid_next.type == ASSIGNED_GTID);
--
--    if (!opt_bin_log || (thd->slave_thread && !opt_log_replica_updates)) {
-+    if (!opt_bin_log ||
-+        (thd->slave_thread && !opt_log_replica_updates)) {
-       /*
-         If the binary log is disabled for this thread (either by
-         log_bin=0 or sql_log_bin=0 or by log_replica_updates=0 for a
-@@ -3202,13 +3226,12 @@ bool purge_source_logs_to_file(THD *thd, const char *to_log) {
-     case Shared_backup_lock_guard::Lock_result::oom:
-       return purge_error_message(thd, LOG_INFO_MEM);
-   }
--
-   char search_file_name[FN_REFLEN];
-   constexpr auto auto_purge{false};
-   constexpr auto include_to_log{false};
-   constexpr auto need_index_lock{true};
-   constexpr auto need_update_threads{true};
-   mysql_bin_log.make_log_name(search_file_name, to_log);
-   auto purge_error = mysql_bin_log.purge_logs(
-       search_file_name, include_to_log, need_index_lock, need_update_threads,
-       nullptr, auto_purge);
-@@ -4555,7 +4609,7 @@ bool MYSQL_BIN_LOG::init_gtid_sets(Gtid_set *all_gtids, Gtid_set *lost_gtids,
- 
-   Checkable_rwlock *sid_lock =
-       is_relay_log ? all_gtids->get_sid_map()->get_sid_lock() : global_sid_lock;
--  /*
-+/*
-     If this is a relay log, we must have the IO thread Master_info trx_parser
-     in order to correctly feed it with relay log events.
-   */
 @@ -5935,6 +6004,7 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
    bool exit_loop = false;
    LOG_INFO log_info;
@@ -1896,16 +1770,6 @@ index de76909ed3b..33b0c60b229 100644
      if (is_active(log_info.log_file_name)) {
        if (!auto_purge)
          push_warning_printf(
-@@ -6540,7 +6656,8 @@ int MYSQL_BIN_LOG::new_file_impl(
-     goto end;
-   }
- 
--  if (!is_relay_log) {
-+  if (!is_relay_log
-+  ) {
-     /* Save set of GTIDs of the last binlog into table on binlog rotation */
-     if ((error = gtid_state->save_gtids_of_last_binlog_into_table())) {
-       if (error == ER_RPL_GTID_TABLE_CANNOT_OPEN) {
 @@ -6864,6 +6989,20 @@ bool MYSQL_BIN_LOG::truncate_update_log_file(const char *log_name,
    return true;
  }
@@ -1927,21 +1791,6 @@ index de76909ed3b..33b0c60b229 100644
  bool MYSQL_BIN_LOG::write_event(Log_event *ev, Master_info *mi) {
    DBUG_TRACE;
  
-@@ -7534,13 +7693,11 @@ bool MYSQL_BIN_LOG::write_incident(Incident_log_event *ev, THD *thd,
-       cache_mngr->stmt_cache.reset();
-       return error;
-     }
--
-     if (need_lock_log)
-       mysql_mutex_lock(&LOCK_log);
-     else
-       mysql_mutex_assert_owner(&LOCK_log);
--  }
--
-+    }
-   if (do_flush_and_sync) {
-     if (!error && !(error = flush_and_sync())) {
-       bool check_purge = false;
 diff --git a/sql/binlog.h b/sql/binlog.h
 index 54ef17e6561..ff284f772ed 100644
 --- a/sql/binlog.h
@@ -1951,6 +1800,7 @@ index 54ef17e6561..ff284f772ed 100644
  
  bool normalize_binlog_name(char *to, const char *from, bool is_relay_log);
 -
++
 +bool update_log_file_set_flag_in_use(const char *log_name, bool in_use);
  #endif /* BINLOG_H_INCLUDED */
 diff --git a/sql/binlog_reader.cc b/sql/binlog_reader.cc
@@ -2317,28 +2167,6 @@ index a5bb557276c..ab39a669417 100644
  
  /**
    Prints a printf style message to the error log.
-diff --git a/sql/log_event.cc b/sql/log_event.cc
-index b8e1541b2a9..81fcfe57ad2 100644
---- a/sql/log_event.cc
-+++ b/sql/log_event.cc
-@@ -930,6 +930,14 @@ const char *Log_event::get_type_str(Log_event_type type) {
-       return "XA_prepare";
-     case binary_log::PARTIAL_UPDATE_ROWS_EVENT:
-       return "Update_rows_partial";
-     case binary_log::TRANSACTION_PAYLOAD_EVENT:
-       return "Transaction_payload";
-     default:
-@@ -1202,6 +1210,7 @@ bool Log_event::need_checksum() {
-               which IO thread instantiates via queue_binlog_ver_3_event.
-            */
-            get_type_code() == binary_log::ROTATE_EVENT ||
-            /*
-               The previous event has its checksum option defined
-               according to the format description event.
-@@ -14340,3 +14349,4 @@ std::pair<bool, binary_log::Log_event_basic_info> extract_log_event_basic_info(
-       uint2korr(buf + FLAGS_OFFSET) & LOG_EVENT_IGNORABLE_F;
-   return std::make_pair(false, event_info);
- }
 diff --git a/sql/log_event.h b/sql/log_event.h
 index c288026b810..22d6c7b9d24 100644
 --- a/sql/log_event.h

@@ -1,8 +1,0 @@
-# reset master only support by debug version
---source include/have_wesql_test.inc
-
-# This is a wrapper for binlog.test so that the same test case can be used 
-# For both statement and row based bin logs 11/07/2005 [jbm]
-
--- source include/have_binlog_format_row.inc
--- source extra/binlog_tests/ctype_cp932_binlog.test
