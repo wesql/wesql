@@ -16,6 +16,13 @@
 - task #27 只负责 MySQL Server 接点、公共接口和构建安装适配。
 - task #26 负责 ObjectStore、binlog 归档、快照、恢复实现及其运行验收；
   task #27 不修改这些模块的状态机和数据格式。
+- 共享构建文件只归 task #27：顶层 `CMakeLists.txt`、`cmake/*.cmake`、
+  `mysys/CMakeLists.txt`、`sql/CMakeLists.txt`、`plugin/clone/CMakeLists.txt`、
+  `scripts/CMakeLists.txt` 和 `mysql-test/CMakeLists.txt`。task #27 负责 SDK
+  探测、`myobjstore` target、task #26 提供的 archive/recovery/replay 源列表、
+  Clone `MODULE_ONLY` 和最终链接图；task #26 只提交模块自有 `.cc/.h` 与完整
+  “源文件 -> target -> link dependency”清单，不修改这些共享文件。若需新增
+  模块私有 `CMakeLists.txt`，必须先由两条任务线程联合 review 文件归属。
 - `storage/smartengine/**` 引擎本体不在 task #27 内；Server 侧 handlerton、
   编译和生命周期接线属于 task #27。
 - task #20 的后续 8.0.35 最终提交不会直接混入本分支。task #20 完成后，
@@ -66,6 +73,36 @@ cmake --install /workspace/wesql-compat/work/mysql-9.7.2-task27-build
 
 三条命令分别记录到 `native-configure.log`、`native-build.log` 和
 `native-install.log`；同时记录源码 SHA、容器 image ID、工具链版本和目录清单。
+
+原生基线已在 Oracle clean tree
+`008e09c2834b98143a8c067d4d225c90953050cf` 上完成：configure、
+`3983/3983` build 和 install 均 exit 0。容器 image ID 为
+`sha256:23dcfa059c3fedd50daff72e60d1a4390cacf56ce8f6eec707599fe5968a09cc`；
+Docker VM 原始资源是 4 vCPU、`4109398016` bytes，build 并发为 2。
+
+| 原始日志 | 行数 | SHA256 |
+| --- | ---: | --- |
+| `native-configure.log` | 847 | `e388387f95ec404f2f1036fbac2a634720425ec0234ef8aad698de584f08002c` |
+| `native-build.log` | 5009 | `32636900091f496e782f3c6cd1503220b8d6e5c2972ad65aebe91b2355279ffa` |
+| `native-install.log` | 25833 | `acd4274c7b204ddb19cecda701db0f4994031e5db5a19694fea170b1f671119e` |
+| `native-version.log` | 1 | `37e93a1e176e9ac2eefacae066b16cdb7bafa8ed0f4fb0b29378b1bce12677a9` |
+| `native-help.log` | 3252 | `db120d370a2f382d180bdcbed165f05b978a2d5cedb5026a8aec3165a38bb0df` |
+
+安装后二进制在同一 Linux 容器内执行：
+
+```text
+mysqld  Ver 9.7.2 for Linux on aarch64 (Source distribution)
+```
+
+`mysqld --no-defaults --verbose --help` 同样 exit 0。安装树有 25,234 个文件、
+1.3 GiB，包含 `lib/plugin/mysql_clone.so`。
+
+本次命令中的 `-DWITH_NDB=OFF` 没有关闭 NDB storage target：最终
+`CMakeCache.txt` 原始值仍是 `WITH_NDBCLUSTER_STORAGE_ENGINE=ON` 和
+`WITH_NDBMTD=ON`，因此原生日志确实包含 NDB 构建。这个事实不影响 Oracle
+原生基线通过，但后续 task #27 port build 必须另加
+`-DWITH_NDBCLUSTER_STORAGE_ENGINE=OFF -DWITH_NDBMTD=OFF`，不得把本次行为
+误写成 NDB 已禁用。
 
 ## 2. 初始差异事实
 
@@ -135,8 +172,11 @@ patch 面。
   parser/service API；后续评估迁到 component/service。
 - `sql/sys_vars.cc` 与 `sql/sql_show.cc`：短期保留注册入口，表实现和校验逻辑
   尽量移到 WeSQL 自有文件。
-- Clone：保持静态可用以支撑 InnoDB 物理快照，但按 9.7.2 plugin target
-  重新接线，不照搬旧 CMake hunk。
+- Clone：保留 9.7.2 原生 `MODULE_ONLY`，不移植 8.0.35 的静态接线 hunk。
+  动态 plugin 在 `mysqld.cc:8598` 初始化，早于 snapshot 启动；更早的空目录
+  恢复只复制已生成的 Clone 文件，不调用 Clone plugin。部署固定
+  `--plugin-load-add=clone=mysql_clone.so`；snapshot 开启但 Clone 缺失必须
+  明确启动失败，snapshot 关闭时普通启动不强制 Clone。
 - MTR、help result 和 CI：只更新 9.7.2 构建或行为确实改变的内容；不得恢复
   已删除的三节点测试变体。
 - `binlog_archive_replica`：若 task #26 决定保留，task #27 只保证 Server
