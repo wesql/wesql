@@ -1,0 +1,323 @@
+--- a/share/messages_to_clients.txt
++++ b/share/messages_to_clients.txt
+@@ -10032,7 +10032,16 @@
+ 
+ ER_WARN_PURGE_LOG_NOT_PERSISTED
+   eng "file %s was not purged because it is not persisted log file."
++
++ER_WESQL_ORM_COLLATION_REWRITTEN
++  eng "%s: remapped collation of indexed column '%s' from %s to %s. Comparison rules changed."
+ 
++ER_WESQL_ORM_FK_STRIPPED
++  eng "%s: removed foreign key '%s'. Parent/child checks and ON DELETE CASCADE are not enforced."
++
++ER_WESQL_ORM_ALTER_NOT_REWRITABLE
++  eng "%s: this ALTER mixes foreign-key rewrite with other clauses that cannot be logged losslessly. Split the statement."
++
+ ################################################################################
+ # DO NOT add messages for the error-log to this file;
+ # they go in messages_to_error_log.txt in the same
+--- a/share/messages_to_error_log.txt
++++ b/share/messages_to_error_log.txt
+@@ -12753,6 +12753,12 @@
+ 
+ ER_FORCE_DEFAULT_STORAGE_ENGINE_TO_SMARTENGINE
+   eng "Force to use smartengine as default storage engine in serverless mode, not %s."
++
++ER_WESQL_ORM_COLLATION_REWRITTEN_IN_LOG
++  eng "wesql_orm_ddl_rewrite: remapped collation of indexed column '%s' from %s to %s. Comparison rules changed."
++
++ER_WESQL_ORM_FK_STRIPPED_IN_LOG
++  eng "wesql_orm_ddl_rewrite: removed foreign key '%s'. Parent/child checks and ON DELETE CASCADE are not enforced."
+ 
+ #
+ # End of WeSQL error messages intended to be logged to the server error log.
+--- a/sql/system_variables.h
++++ b/sql/system_variables.h
+@@ -337,6 +337,7 @@
+     instead of NOT NULL by default.
+   */
+   bool explicit_defaults_for_timestamp;
++  bool wesql_orm_ddl_rewrite;
+ 
+   bool sysdate_is_now;
+   bool binlog_rows_query_log_events;
+--- a/sql/sys_vars.cc
++++ b/sql/sys_vars.cc
+@@ -7577,6 +7577,12 @@
+     "wesql_version", "Version of the WeSQL",
+     READ_ONLY GLOBAL_VAR(wesql_version_ptr), NO_CMD_LINE, IN_SYSTEM_CHARSET,
+     DEFAULT(WESQL_VERSION));
++
++static Sys_var_bool Sys_wesql_orm_ddl_rewrite(
++    "wesql_orm_ddl_rewrite",
++    "Rewrite SmartEngine ORM-incompatible CREATE/ALTER (collation and FK). "
++    "Default OFF.",
++    SESSION_VAR(wesql_orm_ddl_rewrite), CMD_LINE(OPT_ARG), DEFAULT(false));
+ #endif
+ 
+ static bool check_set_require_row_format(sys_var *, THD *thd, set_var *var) {
+--- a/sql/sql_class.h
++++ b/sql/sql_class.h
+@@ -46,6 +46,7 @@
+ #include <memory>
+ #include <new>
+ #include <string>
++#include <vector>
+ 
+ #include "dur_prop.h"  // durability_properties
+ #include "lex_string.h"
+@@ -4697,6 +4698,26 @@
+   bool add_external(unsigned int slot, void *data);
+   void *fetch_external(unsigned int slot);
+ 
++ public:
++  std::string m_wesql_orm_binlog_sql;
++  bool m_wesql_orm_use_binlog_sql{false};
++  std::vector<std::string> m_wesql_orm_remapped_columns;
++  /* This-statement keys/flags, snapshotted before prepare_fields_and_keys. */
++  struct Wesql_orm_key_part_snap {
++    std::string name;
++    uint prefix_length{0};
++  };
++  struct Wesql_orm_key_snap {
++    int type{0};
++    std::string name;
++    bool generated{false};
++    bool is_visible{true};
++    bool unprintable{false};
++    std::vector<Wesql_orm_key_part_snap> columns;
++  };
++  std::vector<Wesql_orm_key_snap> m_wesql_orm_alter_new_keys;
++  ulonglong m_wesql_orm_alter_orig_flags{0};
++
+  private:
+   std::unordered_map<unsigned int, void *> external_store_;
+ };  // End of class THD
+--- a/sql/CMakeLists.txt
++++ b/sql/CMakeLists.txt
+@@ -1022,6 +1022,7 @@
+   binlog/decompressing_event_object_istream.cc
+   binlog.cc
+   binlog_archive.cc
++  wesql_orm_ddl_rewrite.cc
+   binlog_archive_replica.cc
+   binlog_archive_command.cc
+   binlog_istream.cc
+--- a/sql/sql_class.cc
++++ b/sql/sql_class.cc
+@@ -1745,6 +1745,13 @@
+ */
+ 
+ void THD::cleanup_after_query() {
++#ifdef WESQL
++  m_wesql_orm_binlog_sql.clear();
++  m_wesql_orm_use_binlog_sql = false;
++  m_wesql_orm_remapped_columns.clear();
++  m_wesql_orm_alter_new_keys.clear();
++  m_wesql_orm_alter_orig_flags = 0;
++#endif
+   /*
+     Reset rand_used so that detection of calls to rand() will save random
+     seeds if needed by the slave.
+--- a/sql/sql_table.cc
++++ b/sql/sql_table.cc
+@@ -25,6 +25,9 @@
+ /* drop and alter of tables */
+ 
+ #include "sql/sql_table.h"
++#ifdef WESQL
++#include "sql/wesql_orm_ddl_rewrite.h"
++#endif
+ 
+ #include <assert.h>
+ #include <errno.h>
+@@ -8751,6 +8754,15 @@
+   }
+ 
+   if (set_table_default_charset(thd, create_info, schema)) return true;
++#ifdef WESQL
++  {
++    Wesql_orm_rewrite_result r =
++        wesql_orm_rewrite_create(thd, create_info, alter_info);
++    if (r.action == Wesql_orm_rewrite_action::kReject) return true;
++    if (r.action == Wesql_orm_rewrite_action::kRewritten)
++      thd->m_wesql_orm_use_binlog_sql = true;
++  }
++#endif
+ 
+   const char *alias = table_case_name(create_info, table_name);
+ 
+@@ -9127,6 +9139,9 @@
+                                 Alter_info *alter_info, uint select_field_count,
+                                 bool find_parent_keys, bool *is_trans,
+                                 handlerton **post_ddl_ht) {
++#ifdef WESQL
++  wesql_orm_reset_statement_state(thd);
++#endif
+   KEY *not_used_1;
+   uint not_used_2;
+   FOREIGN_KEY *not_used_3 = nullptr;
+@@ -10192,7 +10207,11 @@
+         variable, but rely on logging what really has been done instead.
+       */
+       if ((create_table->table == nullptr && !create_table->is_view()) &&
+-          is_pk_generated) {
++          (is_pk_generated
++#ifdef WESQL
++           || thd->m_wesql_orm_use_binlog_sql
++#endif
++           )) {
+         /*
+           Open table to generate CREATE TABLE statement. For non-temporary
+           table we already have exclusive lock here.
+@@ -13741,17 +13760,43 @@
+   DBUG_EXECUTE_IF("sleep_alter_before_main_binlog", my_sleep(6000000););
+   DEBUG_SYNC(thd, "alter_table_before_main_binlog");
+ 
++#ifdef WESQL
++  {
++    const char *q = thd->m_wesql_orm_use_binlog_sql
++                        ? thd->m_wesql_orm_binlog_sql.c_str()
++                        : thd->query().str;
++    size_t qlen = thd->m_wesql_orm_use_binlog_sql
++                      ? thd->m_wesql_orm_binlog_sql.size()
++                      : thd->query().length;
++    ha_binlog_log_query(thd, ha_alter_info->create_info->db_type,
++                        LOGCOM_ALTER_TABLE, q, qlen, alter_ctx->db,
++                        alter_ctx->table_name);
++  }
++#else
+   ha_binlog_log_query(thd, ha_alter_info->create_info->db_type,
+                       LOGCOM_ALTER_TABLE, thd->query().str, thd->query().length,
+                       alter_ctx->db, alter_ctx->table_name);
++#endif
+ 
+   assert(!(mysql_bin_log.is_open() &&
+            thd->is_current_stmt_binlog_format_row() &&
+            (ha_alter_info->create_info->options & HA_LEX_CREATE_TMP_TABLE)));
+ 
++#ifdef WESQL
++  if (write_bin_log(thd, true,
++                    thd->m_wesql_orm_use_binlog_sql
++                        ? thd->m_wesql_orm_binlog_sql.c_str()
++                        : thd->query().str,
++                    thd->m_wesql_orm_use_binlog_sql
++                        ? thd->m_wesql_orm_binlog_sql.size()
++                        : thd->query().length,
++                    (db_type->flags & HTON_SUPPORTS_ATOMIC_DDL)))
++    goto cleanup2;
++#else
+   if (write_bin_log(thd, true, thd->query().str, thd->query().length,
+                     (db_type->flags & HTON_SUPPORTS_ATOMIC_DDL)))
+     goto cleanup2;
++#endif
+ 
+   {
+     Uncommitted_tables_guard uncommitted_tables(thd);
+@@ -16282,6 +16327,9 @@
+                        HA_CREATE_INFO *create_info, Table_ref *table_list,
+                        Alter_info *alter_info) {
+   DBUG_TRACE;
++#ifdef WESQL
++  wesql_orm_reset_statement_state(thd);
++#endif
+ 
+   /*
+     Check if we attempt to alter mysql.slow_log or
+@@ -16682,6 +16730,23 @@
+    create_info->db_type is set here, check to parent table access is delayed
+    till this point for the alter operation.
+   */
++#ifdef WESQL
++  {
++    Wesql_orm_rewrite_result r =
++        wesql_orm_rewrite_alter_fk(thd, create_info, alter_info);
++    if (r.action == Wesql_orm_rewrite_action::kReject) return true;
++    if (r.action == Wesql_orm_rewrite_action::kNoopBinlog) {
++      const char *q = wesql_orm_fk_noop_sql();
++      thd->m_wesql_orm_binlog_sql.assign(q);
++      thd->m_wesql_orm_use_binlog_sql = true;
++      if (write_bin_log(thd, true, thd->m_wesql_orm_binlog_sql.c_str(),
++                        thd->m_wesql_orm_binlog_sql.size(), false))
++        return true;
++      my_ok(thd);
++      return false;
++    }
++  }
++#endif
+   if ((alter_info->flags & Alter_info::ADD_FOREIGN_KEY) &&
+       check_fk_parent_table_access(thd, create_info, alter_info))
+     return true;
+@@ -16944,6 +17009,26 @@
+                                 alter_info, &alter_ctx)) {
+     return true;
+   }
++#ifdef WESQL
++  {
++    Wesql_orm_rewrite_result r =
++        wesql_orm_rewrite_alter_collation(thd, create_info, alter_info);
++    if (r.action == Wesql_orm_rewrite_action::kReject) return true;
++    if (r.action == Wesql_orm_rewrite_action::kRewritten) {
++      std::string sql;
++      if (wesql_orm_build_alter_binlog_sql(thd, create_info, alter_info,
++                                           &sql))
++        return true;
++      if (sql.empty()) {
++        my_error(ER_WESQL_ORM_ALTER_NOT_REWRITABLE, MYF(0),
++                 "wesql_orm_ddl_rewrite=ON");
++        return true;
++      }
++      thd->m_wesql_orm_binlog_sql = std::move(sql);
++      thd->m_wesql_orm_use_binlog_sql = true;
++    }
++  }
++#endif
+ 
+   // Check restrictions on ALTER TABLE operations that affects GIPK and PK.
+   if (check_primary_key_alter_restrictions(thd, create_info->db_type,
+@@ -18143,9 +18228,22 @@
+   DBUG_EXECUTE_IF("sleep_alter_before_main_binlog", my_sleep(6000000););
+   DEBUG_SYNC(thd, "alter_table_before_main_binlog");
+ 
++#ifdef WESQL
++  {
++    const char *q = thd->m_wesql_orm_use_binlog_sql
++                        ? thd->m_wesql_orm_binlog_sql.c_str()
++                        : thd->query().str;
++    size_t qlen = thd->m_wesql_orm_use_binlog_sql
++                      ? thd->m_wesql_orm_binlog_sql.size()
++                      : thd->query().length;
++    ha_binlog_log_query(thd, create_info->db_type, LOGCOM_ALTER_TABLE, q, qlen,
++                        alter_ctx.db, alter_ctx.table_name);
++  }
++#else
+   ha_binlog_log_query(thd, create_info->db_type, LOGCOM_ALTER_TABLE,
+                       thd->query().str, thd->query().length, alter_ctx.db,
+                       alter_ctx.table_name);
++#endif
+ 
+   assert(!(mysql_bin_log.is_open() &&
+            thd->is_current_stmt_binlog_format_row() &&
+@@ -18156,9 +18254,21 @@
+     We can't use binlog's trx cache in this case as it requires active
+     transaction with valid XID.
+   */
++#ifdef WESQL
++  if (write_bin_log(thd, true,
++                    thd->m_wesql_orm_use_binlog_sql
++                        ? thd->m_wesql_orm_binlog_sql.c_str()
++                        : thd->query().str,
++                    thd->m_wesql_orm_use_binlog_sql
++                        ? thd->m_wesql_orm_binlog_sql.size()
++                        : thd->query().length,
++                    atomic_replace && !is_noop))
++    goto err_with_mdl;
++#else
+   if (write_bin_log(thd, true, thd->query().str, thd->query().length,
+                     atomic_replace && !is_noop))
+     goto err_with_mdl;
++#endif
+ 
+   if (!is_noop) {
+     Uncommitted_tables_guard uncommitted_tables(thd);

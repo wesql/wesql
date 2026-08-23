@@ -1,0 +1,147 @@
+--source include/have_binlog_format_row.inc
+
+SET default_storage_engine=SMARTENGINE;
+
+--echo # OFF: FK still rejected
+SET SESSION wesql_orm_ddl_rewrite=OFF;
+CREATE TABLE p (id INT PRIMARY KEY);
+--error ER_NOT_SUPPORTED_YET
+CREATE TABLE c (id INT PRIMARY KEY, p_id INT, CONSTRAINT c_fk FOREIGN KEY (p_id) REFERENCES p(id));
+
+--echo # OFF: unicode_ci unique still rejected
+--error ER_UNKNOWN_ERROR
+CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(191), UNIQUE KEY (email)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+--echo # ON: CREATE TABLE with inline FK
+SET SESSION wesql_orm_ddl_rewrite=ON;
+CREATE TABLE cr_p (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE cr_c (
+  id INT PRIMARY KEY,
+  p_id INT NOT NULL,
+  CONSTRAINT cr_fk FOREIGN KEY (p_id) REFERENCES cr_p(id)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+SHOW WARNINGS;
+SHOW CREATE TABLE cr_c;
+
+--echo # ON: FK stripped, no leftover generated index
+SET SESSION wesql_orm_ddl_rewrite=ON;
+CREATE TABLE a_parent (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE a_child (id INT PRIMARY KEY, parent_id INT NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+ALTER TABLE a_child ADD CONSTRAINT a_child_fk FOREIGN KEY (parent_id) REFERENCES a_parent(id);
+SHOW WARNINGS;
+SHOW CREATE TABLE a_child;
+
+--echo # ON: Prisma-style unique index remaps column
+CREATE TABLE User (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE UNIQUE INDEX User_email_key ON User(email);
+SHOW WARNINGS;
+SHOW CREATE TABLE User;
+
+--echo # ON: table-default unicode_ci inherited by indexed column
+CREATE TABLE tdef (id INT PRIMARY KEY, email VARCHAR(191), UNIQUE KEY (email)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SHOW CREATE TABLE tdef;
+
+--echo # ON: mixed FK + extra clause rejected
+CREATE TABLE mix_p (id INT PRIMARY KEY);
+CREATE TABLE mix_c (id INT PRIMARY KEY, p_id INT, extra INT);
+--error ER_WESQL_ORM_ALTER_NOT_REWRITABLE
+ALTER TABLE mix_c ADD extra2 INT, ADD CONSTRAINT mix_fk FOREIGN KEY (p_id) REFERENCES mix_p(id);
+SHOW WARNINGS;
+
+--echo # ON: same connection, FK no-op then ordinary ALTER
+CREATE TABLE seq_p (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE seq_c (id INT PRIMARY KEY, p_id INT) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+ALTER TABLE seq_c ADD CONSTRAINT seq_fk FOREIGN KEY (p_id) REFERENCES seq_p(id);
+ALTER TABLE seq_c ADD extra INT;
+SHOW CREATE TABLE seq_c;
+
+--echo # ON: rewritten CREATE then ordinary ALTER
+CREATE TABLE seq_u (id INT PRIMARY KEY, email VARCHAR(191), UNIQUE KEY (email)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ALTER TABLE seq_u ADD extra INT;
+SHOW CREATE TABLE seq_u;
+
+--echo # ON: ADD UNIQUE + ADD COLUMN rejected so replay cannot drop extra
+CREATE TABLE mix_idx (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+--error ER_WESQL_ORM_ALTER_NOT_REWRITABLE
+ALTER TABLE mix_idx ADD UNIQUE INDEX (email), ADD extra INT;
+SHOW WARNINGS;
+SHOW CREATE TABLE mix_idx;
+
+--echo # ON: COMMENT quotes/backslash, DEFAULT, prefix+composite index
+CREATE TABLE cmt (
+  id INT PRIMARY KEY,
+  email VARCHAR(191) NOT NULL DEFAULT 'none' COMMENT 'owner''s email\\path'
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE UNIQUE INDEX cmt_email_key ON cmt(email);
+SHOW WARNINGS;
+SHOW CREATE TABLE cmt;
+CREATE TABLE pref (
+  id INT PRIMARY KEY,
+  a VARCHAR(191) NOT NULL,
+  b VARCHAR(191) NOT NULL
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE INDEX pref_ab ON pref(a(10), b);
+SHOW CREATE TABLE pref;
+
+--echo # ON: index direction / invisible / algorithm / index comment -> 7518
+CREATE TABLE inv (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+--error ER_WESQL_ORM_ALTER_NOT_REWRITABLE
+CREATE UNIQUE INDEX inv_email ON inv(email) INVISIBLE;
+--error ER_WESQL_ORM_ALTER_NOT_REWRITABLE
+ALTER TABLE inv ADD INDEX inv_desc (email DESC);
+--error ER_WESQL_ORM_ALTER_NOT_REWRITABLE
+ALTER TABLE inv ADD INDEX inv_algo (email) USING BTREE;
+--error ER_WESQL_ORM_ALTER_NOT_REWRITABLE
+ALTER TABLE inv ADD INDEX inv_cmt (email) COMMENT 'idx';
+SHOW CREATE TABLE inv;
+
+--echo # ON: stored procedure, FK no-op then ordinary ALTER in one CALL
+CREATE TABLE proc_p (id INT PRIMARY KEY) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE proc_c (id INT PRIMARY KEY, p_id INT) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+delimiter |;
+CREATE PROCEDURE orm_seq_ddl()
+BEGIN
+  ALTER TABLE proc_c ADD CONSTRAINT proc_fk FOREIGN KEY (p_id) REFERENCES proc_p(id);
+  ALTER TABLE proc_c ADD extra INT;
+END|
+delimiter ;|
+CALL orm_seq_ddl();
+SHOW CREATE TABLE proc_c;
+DROP PROCEDURE orm_seq_ddl;
+
+--echo # ON: unnamed / multiple / composite FK stripped
+CREATE TABLE m_p (id INT PRIMARY KEY, k INT, UNIQUE (k)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE TABLE m_c (
+  id INT PRIMARY KEY,
+  a INT,
+  b INT,
+  FOREIGN KEY (a) REFERENCES m_p(id),
+  CONSTRAINT m_comp FOREIGN KEY (a, b) REFERENCES m_p(id, k)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+SHOW CREATE TABLE m_c;
+
+--echo # ON: InnoDB FK kept
+SET default_storage_engine=InnoDB;
+CREATE TABLE i_p (id INT PRIMARY KEY);
+CREATE TABLE i_c (id INT PRIMARY KEY, p_id INT, CONSTRAINT i_fk FOREIGN KEY (p_id) REFERENCES i_p(id));
+SHOW CREATE TABLE i_c;
+DROP TABLE i_c, i_p;
+SET default_storage_engine=SMARTENGINE;
+
+--echo # ON: ENGINE_ATTRIBUTE cannot be printed losslessly
+CREATE TABLE ea (id INT PRIMARY KEY, email VARCHAR(191) NOT NULL ENGINE_ATTRIBUTE='{"k":1}') DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+--error ER_WESQL_ORM_ALTER_NOT_REWRITABLE
+CREATE UNIQUE INDEX ea_email ON ea(email);
+SHOW WARNINGS;
+
+--echo # server log records successful rewrite only
+--let SEARCH_FILE=$MYSQLTEST_VARDIR/log/mysqld.1.err
+--let SEARCH_PATTERN=removed foreign key 'cr_fk'
+--source include/search_pattern.inc
+--let SEARCH_PATTERN=remapped collation of indexed column 'email'
+--source include/search_pattern.inc
+--error 1
+--exec grep "removed foreign key 'mix_fk'" $MYSQLTEST_VARDIR/log/mysqld.1.err
+
+DROP TABLE a_child, a_parent, User, p, tdef, mix_c, mix_p, cr_c, cr_p, seq_c, seq_p, seq_u, mix_idx, cmt, pref, inv, proc_c, proc_p, m_c, m_p, ea;
+SET SESSION wesql_orm_ddl_rewrite=OFF;
