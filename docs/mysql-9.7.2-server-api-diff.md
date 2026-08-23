@@ -77,7 +77,7 @@ tools/mysql_9_7_2_patch_path_probe.sh \
 | 38 | `sql/log.cc` | `1` / 冲突 | WeSQL 日志接点周边实现已变 | **可适配** 最小日志桥接 |
 | 39 | `sql/log.h` | `0` / 可套用 | 声明文本可命中，需与第 38 行实现一致 | **必须联动适配** |
 | 40 | `sql/log_event.h` | `128` / 非法 section | 历史 section 无有效行为且 hunk 损坏 | **不移植** |
-| 41 | `sql/mysqld.cc` | `1` / 冲突 | 旧：binlog restore 放 `init_server_components()` 首次开 index 前，engine restore 在 core plugin load 后，线程停止在 `close_connections()`；新：core SE load=`plugin_register_builtin_and_init_core_se()` 8499，首次 TC/binlog open=`tc_log->open()` 8849，现有 `ha_post_recover()` 8857，晚期 `after_engine_recovery` 9992，shutdown `ha_pre_dd_shutdown()` 2788 | **必须按这五个 9.7.2 锚点重写**，禁止放到 8892 的第二次 `open_binlog()` 之后 |
+| 41 | `sql/mysqld.cc` | `1` / 冲突 | 旧：binlog restore 放 `init_server_components()` 首次开 index 前，engine restore 在 core plugin load 后，线程停止在 `close_connections()`；新启动锚点：core SE load=`plugin_register_builtin_and_init_core_se()` 8499，首次 TC/binlog open=`tc_log->open()` 8849，现有 `ha_post_recover()` 8857，晚期 `after_engine_recovery` 9992；新关闭锚点：`before_server_shutdown` 2432 早于 `end_slave()` 2464，`after_server_shutdown` 2498 只可断言，`ha_pre_dd_shutdown()` 2788 已太晚；`unireg_abort()` 直接走 `clean_up()`，不走 `close_connections()` | **必须按这些 9.7.2 锚点重写**：正常路径在 2432 stop/join、2498 断言；异常启动路径用 started-state + 同一个幂等 stop facade 收口；禁止把正常首次 stop 放在 2788，也禁止把 restore 放到 8892 的第二次 `open_binlog()` 之后 |
 | 42 | `sql/mysqld.h` | `1` / 冲突 | 旧：在 `opt_initialize` 等全局声明区加入 50 余配置变量；新：对应声明区已移动且部分类型/选项新增，无统一注册替代 | **必须只声明新模块实际引用的配置 ABI**，与第 59 行一一对应 |
 | 43 | `sql/parse_tree_nodes.cc` | `1` / 冲突 | 旧：`PT_create_table_engine_option::contextualize()` 在 1996，调 `resolve_engine(..., false, &db_type)` 前强改 engine；新：接口改名为 `PT_create_table_engine_option::do_contextualize()`（2476），`resolve_engine()` 还新增 `strict` 参数 | **必须在新的 `do_contextualize` hook 重写**，不复制旧签名/告警文本 |
 | 44 | `sql/range_optimizer/range_optimizer.cc` | `0` / 可套用 | SmartEngine optimizer 文本可命中，但成本/范围语义未验证 | **可适配**，需引擎专项测试 |
@@ -95,7 +95,7 @@ tools/mysql_9_7_2_patch_path_probe.sh \
 | 56 | `sql/sql_show.cc` | `1` / 冲突 | 旧：把 10 张表直接塞进 `schema_tables[]` 和 core fill 函数；新：core 数组在 5694，但已有 `MYSQL_INFORMATION_SCHEMA_PLUGIN` 查找路径 `find_schema_table_in_plugin()` 5108 与 `initialize_schema_table()` 5722 | **优先改为 I_S plugin**；无必要继续移植 568 行 core 侵入 |
 | 57 | `sql/sql_table.cc` | `0` / 可套用 | 默认引擎/charset 文本可命中，9.7.2 DDL 语义未验证 | **可适配**，需 DDL 门禁 |
 | 58 | `sql/sql_yacc.yy` | `1` / 冲突 | 旧：在 `call_stmt` 用 `PT_call($2,$3)` 前拦截 native proc；新同规则在 3967，构造器已是 `PT_call(@$, $2, $3)` | **必须按新构造器签名重写** 最小 grammar 入口 |
-| 59 | `sql/sys_vars.cc` | `1` / 冲突 | 旧：在当时文件尾 `Sys_explain_format` 后追加约 268 行；新：该变量在 7601，后续还有多组变量，主 namespace 到 7728 才结束；内建命令行 global var 没有直接外部 registrar | **必须移到自有 translation unit 或在 7728 前重写**，不能再依赖 EOF |
+| 59 | `sql/sys_vars.cc` | `1` / 冲突 | 旧：在当时文件尾 `Sys_explain_format` 后追加约 268 行；新：该变量在 7601，后续还有多组变量；7660–7728 只是外键变量的匿名 namespace，7731 又开始另一个匿名 namespace，内建命令行 global var 没有直接外部 registrar | **优先移到自有 translation unit**；若必须保留在本文件，只放稳定的顶层区，不进入无关 namespace，也不依赖 EOF |
 | 60 | `sql/sys_vars.h` | `0` / 可套用 | 旧：扩展 `Sys_var_plugin`；新文本可命中但 class 周边接口已扩展，且必须与第 59 行注册方式一致 | **必须联动适配**，优先不改公共 class |
 | 61 | `sql/udf_service_impl.cc` | `0` / 可套用 | 三个 UDF 注册文本可命中，service 生命周期仍需核对 | **可适配**，保持集中注册 |
 | 62 | `strings/ctype-simple.cc` | `1` / 冲突 | strxfrm 参数/实现上下文已变 | **必须重写** SmartEngine 所需字符集适配 |

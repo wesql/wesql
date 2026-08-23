@@ -147,8 +147,14 @@ mysqld  Ver 9.7.2 for Linux on aarch64 (Source distribution)
 4. **启动、恢复和关闭顺序**
    - 首次打开 binlog index 前保留 binlog 恢复 hook。
    - 内置插件加载后、普通恢复完成前保留 InnoDB/SmartEngine 恢复 hook。
-   - `ha_pre_dd_shutdown()` 卸载引擎和 Clone 前停止后台线程；退出阶段再释放
-     pthread 对象。
+   - 正常关闭必须在 `close_connections()` 的
+     `before_server_shutdown`（`mysqld.cc:2432`）停止并 join task #26 的
+     replay/relay 后台线程；这个动作必须早于 `end_slave()`（2464）。
+     `after_server_shutdown`（2498）只断言线程已停止，不承担补救停止。
+   - 启动异常通过 `unireg_abort()` 直接进入 `clean_up()`，不经过
+     `close_connections()`；后台模块必须记录 started-state，并由正常和异常
+     路径调用同一个幂等 stop facade。`ha_pre_dd_shutdown()`（2788）只作为
+     引擎/DD 卸载前的最终幂等收口，不能作为正常路径首次 stop 锚点。
    - task #27 只提供稳定 hook 和编译接口，具体归档/恢复状态机由 task #26
      实现。
 5. **SQL、管理面与初始化**
@@ -170,8 +176,10 @@ patch 面。
 
 - `sql/package/**`、native procedure、三个管理 UDF：短期对齐 9.7.2
   parser/service API；后续评估迁到 component/service。
-- `sql/sys_vars.cc` 与 `sql/sql_show.cc`：短期保留注册入口，表实现和校验逻辑
-  尽量移到 WeSQL 自有文件。
+- `sql/sys_vars.cc` 与 `sql/sql_show.cc`：短期保留必要注册入口，表实现和校验
+  逻辑尽量移到 WeSQL 自有文件。WeSQL sysvar 优先放自有 translation unit；
+  若必须留在 `sql/sys_vars.cc`，只放稳定的顶层区，不进入无关匿名 namespace，
+  也不依赖 EOF 位置。
 - Clone：保留 9.7.2 原生 `MODULE_ONLY`，不移植 8.0.35 的静态接线 hunk。
   动态 plugin 在 `mysqld.cc:8598` 初始化，早于 snapshot 启动；更早的空目录
   恢复只复制已生成的 Clone 文件，不调用 Clone plugin。部署固定
