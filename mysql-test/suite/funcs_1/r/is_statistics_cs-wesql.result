@@ -83,9 +83,6 @@ def	mysql	columns_priv	mysql	PRIMARY
 def	mysql	columns_priv	mysql	PRIMARY
 def	mysql	columns_priv	mysql	PRIMARY
 def	mysql	component	mysql	PRIMARY
-def	mysql	consensus_applier_info	mysql	PRIMARY
-def	mysql	consensus_applier_worker	mysql	PRIMARY
-def	mysql	consensus_info	mysql	PRIMARY
 def	mysql	db	mysql	PRIMARY
 def	mysql	db	mysql	PRIMARY
 def	mysql	db	mysql	PRIMARY

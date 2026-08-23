@@ -59,10 +59,6 @@ while ($rpl_connection_number <= $rpl_connection_count)
 
   --let $rpl_connection_name= server_$rpl_slave
   --source include/rpl_connection.inc
-  # wait leader enable read/write
-  let $wait_timeout= 60;
-  let $wait_condition= select SERVER_READY_FOR_RW='Yes' from information_schema.wesql_cluster_local;
-  --source include/wait_condition.inc
   --source $rpl_source_file
 
   --inc $rpl_connection_number

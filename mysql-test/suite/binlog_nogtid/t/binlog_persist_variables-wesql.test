@@ -54,7 +54,6 @@ INSERT INTO rplvars (varname, varvalue)
         VARIABLE_NAME LIKE '%slave%' OR
         VARIABLE_NAME LIKE '%source%') AND
         VARIABLE_NAME NOT LIKE 'binlog_archive%' AND
-        VARIABLE_NAME NOT LIKE 'raft_replication%' AND
         VARIABLE_NAME NOT LIKE '%objectstore%' AND
         VARIABLE_NAME NOT LIKE 'consistent-snapshot%' AND
        (VARIABLE_NAME NOT IN ('innodb_api_enable_binlog',

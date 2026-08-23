@@ -35,24 +35,22 @@ INSERT INTO t1 SELECT * FROM t1;
 INSERT INTO t1 SELECT * FROM t1;
 INSERT INTO t1 SELECT * FROM t1;
 
+--source include/capture_binlog_position.inc
+
 SELECT count(*) FROM t1;
 SHOW CREATE TABLE t1;
 
 # --source include/show_binary_logs.inc
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 # SELECT distinct Log_name from INFORMATION_SCHEMA.BINLOG_PERSISTENT_SLICE_INDEX;
 # --disable_warnings
 # SELECT SUBSTRING_INDEX(Log_slice_key, '/', -1) from INFORMATION_SCHEMA.BINLOG_PERSISTENT_SLICES order by Log_slice_key;
 # --enable_warnings
 
-let $wait_condition= SELECT LAST_PERSISTED_BINLOG_POS = LAST_PERSISTING_BINLOG_WRITE_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 --echo #Rotate forbidden in transaction
 set global debug= '+d, force_rotate_forbidded';
@@ -67,16 +65,13 @@ BEGIN;
 INSERT INTO t1 SELECT * FROM t1 limit 100;
 COMMIT;
 
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS > LAST_PERSISTING_BINLOG_POS  FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/capture_binlog_position.inc
+--source include/wait_for_binlog_queue.inc
 
 --echo #Rotate allowed
 set global debug= '-d, force_rotate_forbidded';
 
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 # --disable_warnings
 # SELECT SUBSTRING_INDEX(Log_slice_key, '/', -1) from INFORMATION_SCHEMA.BINLOG_PERSISTENT_SLICES order by Log_slice_key;
@@ -94,9 +89,7 @@ let $wait_timeout= 600;
 # --source include/show_binary_logs.inc
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 --let $error_log=$MYSQLTEST_VARDIR/log/mysqld.1.err
 
@@ -108,6 +101,8 @@ INSERT INTO t1 values(1,'abcd');
 INSERT INTO t1 values(2,'abcd');
 INSERT INTO t1 values(3,'abcd');
 INSERT INTO t1 values(4,'abcd');
+
+--source include/capture_binlog_position.inc
 
 --sleep 3
 
@@ -124,9 +119,7 @@ INSERT INTO t1 values(4,'abcd');
 set global debug= '-d, fault_injection_add_slice_queue';
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 # fault_injection_put_slice_to_objstore
 --echo # fault_injection_put_slice_to_objstore 
@@ -138,9 +131,8 @@ INSERT INTO t1 values(3,'abcd');
 INSERT INTO t1 values(4,'abcd');
 
 --echo # Wait for all binlog add expected persistent queue.
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS > LAST_PERSISTING_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/capture_binlog_position.inc
+--source include/wait_for_binlog_queue.inc
 
 --sleep 3
 
@@ -162,9 +154,7 @@ let $wait_timeout= 600;
 set global debug= '-d, fault_injection_put_slice_to_objstore';
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 # fault_injection_binlog_archive_update_index_file
 --echo # fault_injection_binlog_archive_update_index_file 
@@ -174,6 +164,8 @@ INSERT INTO t1 values(1,'abcd');
 INSERT INTO t1 values(2,'abcd');
 INSERT INTO t1 values(3,'abcd');
 INSERT INTO t1 values(4,'abcd');
+
+--source include/capture_binlog_position.inc
 
 --sleep 3
 
@@ -190,9 +182,7 @@ INSERT INTO t1 values(4,'abcd');
 set global debug= '-d, fault_injection_binlog_archive_update_index_file';
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 DROP TABLE t1;
 DROP DATABASE db1;

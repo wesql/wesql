@@ -159,13 +159,6 @@ Database: information_schema
 | VIEW_ROUTINE_USAGE                        |
 | VIEW_TABLE_USAGE                          |
 | VIEWS                                     |
-| WESQL_CLUSTER_CONSENSUS_MEMBERSHIP_CHANGE |
-| WESQL_CLUSTER_CONSENSUS_STATUS            |
-| WESQL_CLUSTER_GLOBAL                      |
-| WESQL_CLUSTER_HEALTH                      |
-| WESQL_CLUSTER_LEARNER_SOURCE              |
-| WESQL_CLUSTER_LOCAL                       |
-| WESQL_CLUSTER_PREFETCH_CHANNEL            |
 +-------------------------------------------+
 Database: INFORMATION_SCHEMA
 +-------------------------------------------+
@@ -251,13 +244,6 @@ Database: INFORMATION_SCHEMA
 | VIEW_ROUTINE_USAGE                        |
 | VIEW_TABLE_USAGE                          |
 | VIEWS                                     |
-| WESQL_CLUSTER_CONSENSUS_MEMBERSHIP_CHANGE |
-| WESQL_CLUSTER_CONSENSUS_STATUS            |
-| WESQL_CLUSTER_GLOBAL                      |
-| WESQL_CLUSTER_HEALTH                      |
-| WESQL_CLUSTER_LEARNER_SOURCE              |
-| WESQL_CLUSTER_LOCAL                       |
-| WESQL_CLUSTER_PREFETCH_CHANNEL            |
 +-------------------------------------------+
 Wildcard: inf_rmation_schema
 +--------------------+

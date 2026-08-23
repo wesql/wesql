@@ -205,8 +205,6 @@ binlog_gtid.binlog_gtid_purge_binlog_at_startup     : BUG#02 purge_binlog_at_sta
 binlog_gtid.binlog_gtid_log_status_errors           : BUG#02 consensus_replication_applier
 binlog_nogtid.binlog_gtid_simple_recovery           : BUG#02 File './binlog.000002' not found
 
-innodb.innodb_read_only                          : BUG#02 flush consensus_info failed
-innodb.innodb_read_only-2                        : BUG#02 flush consensus_info failed
 innodb.optimizer_temporary_table                 : BUG#02 --innodb-read-only
 innodb_undo.undo_settings                        : BUG#02 --innodb-read-only
 innodb.innodb_corrupt_readonly                   : BUG#02 --innodb-read-only

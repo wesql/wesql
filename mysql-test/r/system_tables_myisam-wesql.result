@@ -56,18 +56,6 @@ mysql.component
 ERROR
 Storage engine 'MyISAM' does not support system tables. [mysql.component]
 @table_name
-mysql.consensus_applier_info
-ERROR
-Storage engine 'MyISAM' does not support system tables. [mysql.consensus_applier_info]
-@table_name
-mysql.consensus_applier_worker
-ERROR
-Storage engine 'MyISAM' does not support system tables. [mysql.consensus_applier_worker]
-@table_name
-mysql.consensus_info
-ERROR
-Storage engine 'MyISAM' does not support system tables. [mysql.consensus_info]
-@table_name
 mysql.db
 ERROR
 Storage engine 'MyISAM' does not support system tables. [mysql.db]
@@ -255,12 +243,6 @@ SEVERITY	ERRNO	MESSAGE
 Warning	1726	Storage engine 'MyISAM' does not support system tables. [mysql.columns_priv]
 SEVERITY	ERRNO	MESSAGE
 Warning	1726	Storage engine 'MyISAM' does not support system tables. [mysql.component]
-SEVERITY	ERRNO	MESSAGE
-Warning	1726	Storage engine 'MyISAM' does not support system tables. [mysql.consensus_applier_info]
-SEVERITY	ERRNO	MESSAGE
-Warning	1726	Storage engine 'MyISAM' does not support system tables. [mysql.consensus_applier_worker]
-SEVERITY	ERRNO	MESSAGE
-Warning	1726	Storage engine 'MyISAM' does not support system tables. [mysql.consensus_info]
 SEVERITY	ERRNO	MESSAGE
 Warning	1726	Storage engine 'MyISAM' does not support system tables. [mysql.db]
 SEVERITY	ERRNO	MESSAGE

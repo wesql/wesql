@@ -75,9 +75,6 @@ def	mysql	PRIMARY	def	mysql	columns_priv	Host
 def	mysql	PRIMARY	def	mysql	columns_priv	Table_name
 def	mysql	PRIMARY	def	mysql	columns_priv	User
 def	mysql	PRIMARY	def	mysql	component	component_id
-def	mysql	PRIMARY	def	mysql	consensus_applier_info	Number_of_lines
-def	mysql	PRIMARY	def	mysql	consensus_applier_worker	Id
-def	mysql	PRIMARY	def	mysql	consensus_info	number_of_lines
 def	mysql	PRIMARY	def	mysql	db	Db
 def	mysql	PRIMARY	def	mysql	db	Host
 def	mysql	PRIMARY	def	mysql	db	User

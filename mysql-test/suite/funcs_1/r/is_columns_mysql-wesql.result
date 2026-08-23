@@ -15,22 +15,6 @@ def	mysql	columns_priv	Column_priv	7		NO	set	31	93	NULL	NULL	NULL	utf8mb3	utf8mb
 def	mysql	component	component_id	1	NULL	NO	int	NULL	NULL	10	0	NULL	NULL	NULL	int unsigned	PRI	auto_increment	select,insert,update,references			NULL
 def	mysql	component	component_group_id	2	NULL	NO	int	NULL	NULL	10	0	NULL	NULL	NULL	int unsigned			select,insert,update,references			NULL
 def	mysql	component	component_urn	3	NULL	NO	text	65535	65535	NULL	NULL	NULL	utf8mb3	utf8mb3_general_ci	text			select,insert,update,references			NULL
-def	mysql	consensus_applier_info	Number_of_lines	1	NULL	NO	int	NULL	NULL	10	0	NULL	NULL	NULL	int unsigned	PRI		select,insert,update,references	Number of lines in the file.		NULL
-def	mysql	consensus_applier_info	Number_of_workers	2	NULL	YES	int	NULL	NULL	10	0	NULL	NULL	NULL	int unsigned			select,insert,update,references			NULL
-def	mysql	consensus_applier_info	Consensus_apply_index	3	NULL	NO	bigint	NULL	NULL	20	0	NULL	NULL	NULL	bigint unsigned			select,insert,update,references	The consensus log applyed index in the consensus log		NULL
-def	mysql	consensus_applier_worker	Number_of_lines	1	NULL	NO	int	NULL	NULL	10	0	NULL	NULL	NULL	int unsigned			select,insert,update,references	Number of lines in the file.		NULL
-def	mysql	consensus_applier_worker	Id	2	NULL	NO	int	NULL	NULL	10	0	NULL	NULL	NULL	int unsigned	PRI		select,insert,update,references			NULL
-def	mysql	consensus_applier_worker	Consensus_apply_index	3	NULL	NO	bigint	NULL	NULL	20	0	NULL	NULL	NULL	bigint unsigned			select,insert,update,references	The consensus log applyed index in the consensus log		NULL
-def	mysql	consensus_info	number_of_lines	1	NULL	NO	int	NULL	NULL	10	0	NULL	NULL	NULL	int unsigned	PRI		select,insert,update,references	Number of lines in the file or rows in the table. Used to version table definitions.		NULL
-def	mysql	consensus_info	vote_for	2	NULL	YES	bigint	NULL	NULL	20	0	NULL	NULL	NULL	bigint unsigned			select,insert,update,references	current vote for		NULL
-def	mysql	consensus_info	current_term	3	NULL	YES	bigint	NULL	NULL	20	0	NULL	NULL	NULL	bigint unsigned			select,insert,update,references	current term		NULL
-def	mysql	consensus_info	recover_status	4	NULL	YES	bigint	NULL	NULL	20	0	NULL	NULL	NULL	bigint unsigned			select,insert,update,references	recover status		NULL
-def	mysql	consensus_info	last_leader_term	5	NULL	YES	bigint	NULL	NULL	20	0	NULL	NULL	NULL	bigint unsigned			select,insert,update,references	last leader term		NULL
-def	mysql	consensus_info	start_apply_index	6	NULL	YES	bigint	NULL	NULL	20	0	NULL	NULL	NULL	bigint unsigned			select,insert,update,references	start apply index		NULL
-def	mysql	consensus_info	cluster_id	7	NULL	YES	bigint	NULL	NULL	20	0	NULL	NULL	NULL	bigint unsigned			select,insert,update,references	cluster identifier		NULL
-def	mysql	consensus_info	cluster_info	8	NULL	YES	varchar	6000	18000	NULL	NULL	NULL	utf8mb3	utf8mb3_general_ci	varchar(6000)			select,insert,update,references	cluster config information		NULL
-def	mysql	consensus_info	cluster_learner_info	9	NULL	YES	varchar	6000	18000	NULL	NULL	NULL	utf8mb3	utf8mb3_general_ci	varchar(6000)			select,insert,update,references	cluster learner config information		NULL
-def	mysql	consensus_info	cluster_config_recover_index	10	NULL	YES	bigint	NULL	NULL	20	0	NULL	NULL	NULL	bigint unsigned			select,insert,update,references	cluster config recover index		NULL
 def	mysql	db	Host	1		NO	char	255	255	NULL	NULL	NULL	ascii	ascii_general_ci	char(255)	PRI		select,insert,update,references			NULL
 def	mysql	db	Db	2		NO	char	64	192	NULL	NULL	NULL	utf8mb3	utf8mb3_bin	char(64)	PRI		select,insert,update,references			NULL
 def	mysql	db	User	3		NO	char	32	96	NULL	NULL	NULL	utf8mb3	utf8mb3_bin	char(32)	PRI		select,insert,update,references			NULL
@@ -395,22 +379,6 @@ NULL	mysql	columns_priv	Timestamp	timestamp	NULL	NULL	NULL	NULL	timestamp
 NULL	mysql	component	component_id	int	NULL	NULL	NULL	NULL	int unsigned
 NULL	mysql	component	component_group_id	int	NULL	NULL	NULL	NULL	int unsigned
 1.0000	mysql	component	component_urn	text	65535	65535	utf8mb3	utf8mb3_general_ci	text
-NULL	mysql	consensus_applier_info	Number_of_lines	int	NULL	NULL	NULL	NULL	int unsigned
-NULL	mysql	consensus_applier_info	Number_of_workers	int	NULL	NULL	NULL	NULL	int unsigned
-NULL	mysql	consensus_applier_info	Consensus_apply_index	bigint	NULL	NULL	NULL	NULL	bigint unsigned
-NULL	mysql	consensus_applier_worker	Number_of_lines	int	NULL	NULL	NULL	NULL	int unsigned
-NULL	mysql	consensus_applier_worker	Id	int	NULL	NULL	NULL	NULL	int unsigned
-NULL	mysql	consensus_applier_worker	Consensus_apply_index	bigint	NULL	NULL	NULL	NULL	bigint unsigned
-NULL	mysql	consensus_info	number_of_lines	int	NULL	NULL	NULL	NULL	int unsigned
-NULL	mysql	consensus_info	vote_for	bigint	NULL	NULL	NULL	NULL	bigint unsigned
-NULL	mysql	consensus_info	current_term	bigint	NULL	NULL	NULL	NULL	bigint unsigned
-NULL	mysql	consensus_info	recover_status	bigint	NULL	NULL	NULL	NULL	bigint unsigned
-NULL	mysql	consensus_info	last_leader_term	bigint	NULL	NULL	NULL	NULL	bigint unsigned
-NULL	mysql	consensus_info	start_apply_index	bigint	NULL	NULL	NULL	NULL	bigint unsigned
-NULL	mysql	consensus_info	cluster_id	bigint	NULL	NULL	NULL	NULL	bigint unsigned
-3.0000	mysql	consensus_info	cluster_info	varchar	6000	18000	utf8mb3	utf8mb3_general_ci	varchar(6000)
-3.0000	mysql	consensus_info	cluster_learner_info	varchar	6000	18000	utf8mb3	utf8mb3_general_ci	varchar(6000)
-NULL	mysql	consensus_info	cluster_config_recover_index	bigint	NULL	NULL	NULL	NULL	bigint unsigned
 1.0000	mysql	db	Host	char	255	255	ascii	ascii_general_ci	char(255)
 3.0000	mysql	db	Db	char	64	192	utf8mb3	utf8mb3_bin	char(64)
 3.0000	mysql	db	User	char	32	96	utf8mb3	utf8mb3_bin	char(32)

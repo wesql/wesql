@@ -5,10 +5,6 @@ where name like 'Wait/Synch/Mutex/sql/%'
 order by name limit 10;
 NAME	ENABLED	TIMED	PROPERTIES	VOLATILITY	DOCUMENTATION
 wait/synch/mutex/sql/Commit_order_manager::m_mutex	YES	YES		0	NULL
-wait/synch/mutex/sql/consensus_info::data_lock	YES	YES		0	NULL
-wait/synch/mutex/sql/consensus_info::info_thd_lock	YES	YES		0	NULL
-wait/synch/mutex/sql/consensus_info::run_lock	YES	YES		0	NULL
-wait/synch/mutex/sql/consensus_info::sleep_lock	YES	YES		0	NULL
 wait/synch/mutex/sql/ConsensusLogIndex::LOCK_consensuslog_index	YES	YES		0	NULL
 wait/synch/mutex/sql/ConsensusLogManager::LOCK_consensus_commit_pos	YES	YES		0	NULL
 wait/synch/mutex/sql/ConsensusLogManager::LOCK_consensuslog_apply	YES	YES		0	NULL

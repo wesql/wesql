@@ -28,9 +28,6 @@ include/assert_grep.inc [Should contain mysql.password_history]
 Test: dump of mysql database should not contain unexpected tables
 Matching lines are:
 CREATE TABLE `mysql`.`component` (
-CREATE TABLE `mysql`.`consensus_applier_info` (
-CREATE TABLE `mysql`.`consensus_applier_worker` (
-CREATE TABLE `mysql`.`consensus_info` (
 CREATE TABLE `mysql`.`engine_cost` (
 CREATE TABLE `mysql`.`func` (
 CREATE TABLE `mysql`.`help_category` (

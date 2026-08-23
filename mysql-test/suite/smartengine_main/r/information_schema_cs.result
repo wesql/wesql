@@ -138,9 +138,6 @@ VIEW_ROUTINE_USAGE
 VIEW_TABLE_USAGE
 columns_priv
 component
-consensus_applier_info
-consensus_applier_worker
-consensus_info
 db
 default_roles
 engine_cost

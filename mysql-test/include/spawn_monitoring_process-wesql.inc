@@ -87,10 +87,6 @@ if (!$have_windows) {
 
   --let $mysqld_extra_settings= $mysqld_extra_settings $suite_mysqld_settings
 
-  if(`select count(*)=0 from information_schema.wesql_cluster_local`)
-  {
-    --let $mysqld_extra_settings= $mysqld_extra_settings --loose-consensus-replication=0
-  }
   --source include/restart_with_mysqld_safe.inc
 }
 

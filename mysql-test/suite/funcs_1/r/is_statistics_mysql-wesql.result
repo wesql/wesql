@@ -13,9 +13,6 @@ def	mysql	columns_priv	0	mysql	PRIMARY	3	Db	A	#CARD#	NULL	NULL		BTREE			YES	NULL
 def	mysql	columns_priv	0	mysql	PRIMARY	4	Table_name	A	#CARD#	NULL	NULL		BTREE			YES	NULL
 def	mysql	columns_priv	0	mysql	PRIMARY	5	Column_name	A	#CARD#	NULL	NULL		BTREE			YES	NULL
 def	mysql	component	0	mysql	PRIMARY	1	component_id	A	#CARD#	NULL	NULL		BTREE			YES	NULL
-def	mysql	consensus_applier_info	0	mysql	PRIMARY	1	Number_of_lines	A	#CARD#	NULL	NULL		BTREE			YES	NULL
-def	mysql	consensus_applier_worker	0	mysql	PRIMARY	1	Id	A	#CARD#	NULL	NULL		BTREE			YES	NULL
-def	mysql	consensus_info	0	mysql	PRIMARY	1	number_of_lines	A	#CARD#	NULL	NULL		BTREE			YES	NULL
 def	mysql	db	0	mysql	PRIMARY	1	Host	A	#CARD#	NULL	NULL		BTREE			YES	NULL
 def	mysql	db	0	mysql	PRIMARY	2	User	A	#CARD#	NULL	NULL		BTREE			YES	NULL
 def	mysql	db	0	mysql	PRIMARY	3	Db	A	#CARD#	NULL	NULL		BTREE			YES	NULL

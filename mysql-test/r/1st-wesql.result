@@ -10,9 +10,6 @@ show tables in mysql where Tables_in_mysql != 'ndb_binlog_index';
 Tables_in_mysql
 columns_priv
 component
-consensus_applier_info
-consensus_applier_worker
-consensus_info
 db
 default_roles
 engine_cost
