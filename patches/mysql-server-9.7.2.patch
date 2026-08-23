@@ -1,0 +1,49 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 86a1e2b8..474e158c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -523 +523,12 @@ SET(CMAKE_CXX_STANDARD 23)
++OPTION(WITH_WESQL "Build WeSQL extensions" ON)
++OPTION(WITH_WESQL_TEST "Enable WeSQL-only test hooks" OFF)
++IF(WITH_WESQL)
++  ADD_COMPILE_DEFINITIONS(WESQL)
++  IF(WITH_WESQL_TEST)
++    ADD_COMPILE_DEFINITIONS(WESQL_TEST)
++  ENDIF()
++ELSEIF(WITH_WESQL_TEST)
++  MESSAGE(FATAL_ERROR "WITH_WESQL_TEST requires WITH_WESQL")
++ENDIF()
++
+ # Various 3rd party libraries have this option.
+diff --git a/MYSQL_VERSION b/MYSQL_VERSION
+index 5be9001c..9768cd69 100644
+--- a/MYSQL_VERSION
++++ b/MYSQL_VERSION
+@@ -5 +5,2 @@ MYSQL_VERSION_EXTRA=
+ MYSQL_VERSION_MATURITY="LTS"
++WESQL_VERSION=0.1.0
+diff --git a/cmake/mysql_version.cmake b/cmake/mysql_version.cmake
+index 2fab7898..53a6986e 100644
+--- a/cmake/mysql_version.cmake
++++ b/cmake/mysql_version.cmake
+@@ -66 +66,2 @@ MACRO(GET_MYSQL_VERSION)
++  MYSQL_GET_CONFIG_VALUE("WESQL_VERSION" WESQL_VERSION)
+   MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_MATURITY" MYSQL_VERSION_MATURITY)
+@@ -72 +73,5 @@ MACRO(GET_MYSQL_VERSION)
++  IF(NOT DEFINED WESQL_VERSION OR WESQL_VERSION STREQUAL "")
++    MESSAGE(FATAL_ERROR "MYSQL_VERSION file cannot be parsed, missing WESQL_VERSION.")
++  ENDIF()
++
+   IF(NOT MYSQL_VERSION_MATURITY STREQUAL "\"LTS\"" AND
+@@ -96,2 +101,3 @@ MACRO(GET_MYSQL_VERSION)
+   MESSAGE(STATUS "MySQL ${VERSION}")
++  MESSAGE(STATUS "WeSQL ${WESQL_VERSION}")
+   SET(MYSQL_BASE_VERSION
+diff --git a/include/mysql_version.h.in b/include/mysql_version.h.in
+index 1170d840..ac66fcd0 100644
+--- a/include/mysql_version.h.in
++++ b/include/mysql_version.h.in
+@@ -28 +28,3 @@
++#define WESQL_VERSION              "@WESQL_VERSION@"
++
+ #ifndef LICENSE
