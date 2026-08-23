@@ -1,4 +1,0 @@
-!include suite/raft_replication/my.cnf
-
-[mysqld.3]
-raft-replication-log-type-node=ON

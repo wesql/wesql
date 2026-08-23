@@ -15,12 +15,12 @@ use test;
 CREATE TABLE t1(c1 int, c2 char(200)) ENGINE=SMARTENGINE ;
 INSERT INTO t1 values(1,'abcd');
 
+--source include/capture_binlog_position.inc
+
 SELECT COUNT(*) FROM t1;
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 --echo # Crash
 set debug = 'd, crash_commit_before_log';
@@ -40,9 +40,6 @@ INSERT INTO t1 values(1,'abcd');
 --let $restart_parameters = "restart: "
 --source include/start_mysqld.inc
 
-let $wait_condition= select role='Leader' from information_schema.wesql_cluster_local;
-let $wait_timeout= 600;
---source include/wait_condition.inc
 
 --echo # Wait for at least 2 snapshots to be generated after startup recovery.
 let $wait_condition= SELECT count(*) >= 2 FROM INFORMATION_SCHEMA.SNAPSHOT_PERSISTENT_SNAPSHOT_INDEX;
@@ -68,12 +65,12 @@ INSERT INTO t1 SELECT * FROM t1;
 INSERT INTO t1 SELECT * FROM t1;
 INSERT INTO t1 SELECT * FROM t1;
 
+--source include/capture_binlog_position.inc
+
 SELECT count(*) FROM t1;
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 --echo # Crash
 set debug = 'd, crash_commit_before_log';
@@ -93,9 +90,6 @@ INSERT INTO t1 values(100,'abcd');
 --let $restart_parameters = "restart: "
 --source include/start_mysqld.inc
 
-let $wait_condition= select role='Leader' from information_schema.wesql_cluster_local;
-let $wait_timeout= 600;
---source include/wait_condition.inc
 
 --echo # Wait for at least 3 snapshots to be generated after startup recovery
 let $wait_condition= SELECT count(*) >= 3 FROM INFORMATION_SCHEMA.SNAPSHOT_PERSISTENT_SNAPSHOT_INDEX;
@@ -110,12 +104,12 @@ INSERT INTO t1 values(9,'abcd');
 INSERT INTO t1 values(10,'abcd');
 INSERT INTO t1 SELECT * FROM t1;
 
+--source include/capture_binlog_position.inc
+
 SELECT count(*) FROM t1;
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 --echo # Crash
 set debug = 'd, crash_commit_before_log';
@@ -135,9 +129,6 @@ INSERT INTO t1 values(100,'abcd');
 --let $restart_parameters=restart
 --source include/start_mysqld.inc
 
-let $wait_condition= select role='Leader' from information_schema.wesql_cluster_local;
-let $wait_timeout= 600;
---source include/wait_condition.inc
 
 --echo # Wait for at least 4 snapshots to be generated after startup recovery 
 let $wait_condition= SELECT count(*) >= 4 FROM INFORMATION_SCHEMA.SNAPSHOT_PERSISTENT_SNAPSHOT_INDEX;

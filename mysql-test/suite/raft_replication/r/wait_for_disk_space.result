@@ -1,7 +1,0 @@
-CALL mtr.add_suppression('Disk is full writing');
-CALL mtr.add_suppression('Retry in 60 secs');
-create  table t(id int);
-# Adding debug point 'force_wait_for_disk_space' to @@GLOBAL.debug
-insert into t values(2);
-drop table t;
-# Removing debug point 'force_wait_for_disk_space' from @@GLOBAL.debug

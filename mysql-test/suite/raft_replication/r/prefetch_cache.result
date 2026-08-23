@@ -1,6 +1,0 @@
-use test;
-create table t1 (data longblob);
-select count(distinct(match_index)), count(distinct(applied_index)) from information_schema.wesql_cluster_global;
-count(distinct(match_index))	count(distinct(applied_index))
-1	1
-drop table t1;

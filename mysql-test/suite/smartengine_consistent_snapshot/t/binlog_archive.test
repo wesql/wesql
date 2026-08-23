@@ -35,24 +35,22 @@ INSERT INTO t1 SELECT * FROM t1;
 INSERT INTO t1 SELECT * FROM t1;
 INSERT INTO t1 SELECT * FROM t1;
 
+--source include/capture_binlog_position.inc
+
 SELECT count(*) FROM t1;
 SHOW CREATE TABLE t1;
 
 # --source include/show_binary_logs.inc
 
 --echo # Wait for all binlog persistent
-let $wait_condition= SELECT count(*) = 1 FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO, INFORMATION_SCHEMA.WESQL_CLUSTER_LOCAL where LAST_PERSISTED_RAFT_INDEX = COMMIT_INDEX;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 # SELECT distinct Log_name from INFORMATION_SCHEMA.BINLOG_PERSISTENT_SLICE_INDEX;
 # --disable_warnings
 # SELECT SUBSTRING_INDEX(Log_slice_key, '/', -1) from INFORMATION_SCHEMA.BINLOG_PERSISTENT_SLICES order by Log_slice_key;
 # --enable_warnings
 
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 --echo #Rotate forbidden in transaction
 set global debug= '+d, force_rotate_forbidded';
@@ -67,16 +65,13 @@ BEGIN;
 INSERT INTO t1 SELECT * FROM t1 limit 100;
 COMMIT;
 
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS > LAST_PERSISTING_BINLOG_POS  FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/capture_binlog_position.inc
+--source include/wait_for_binlog_queue.inc
 
 --echo #Rotate allowed
 set global debug= '-d, force_rotate_forbidded';
 
-let $wait_condition= SELECT LAST_PERSISTING_BINLOG_WRITE_POS = LAST_PERSISTED_BINLOG_POS FROM INFORMATION_SCHEMA.BINLOG_PERSISTENT_TASK_INFO;
-let $wait_timeout= 600;
---source include/wait_condition_or_abort.inc
+--source include/wait_for_binlog_persist.inc
 
 # --disable_warnings
 # SELECT SUBSTRING_INDEX(Log_slice_key, '/', -1) from INFORMATION_SCHEMA.BINLOG_PERSISTENT_SLICES order by Log_slice_key;

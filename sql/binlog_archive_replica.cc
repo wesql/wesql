@@ -44,7 +44,6 @@
 #include "sql/binlog_ostream.h"
 #include "sql/binlog_reader.h"
 #include "sql/changestreams/apply/replication_thread_status.h"
-#include "sql/consensus_log_event.h"
 #include "sql/consistent_archive.h"
 #include "sql/debug_sync.h"
 #include "sql/derror.h"
@@ -1497,26 +1496,6 @@ void Binlog_archive_replica::run() {
       break;
     }
     mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
-
-#ifdef WESQL_CLUSTER
-    // Check whether consensus role is leader
-    uint64_t consensus_term = 0;
-    // Check whether consensus role is leader.
-    // Only the leader can apply binlog. The nunleader will report failure,
-    // when sql apply binlog.
-    if (DBUG_EVALUATE_IF("fault_injection_binlog_archive_replica_running", true,
-                         false) ||
-        !is_consensus_replication_state_leader(consensus_term)) {
-      struct timespec abstime;
-      set_timespec(&abstime, 1);
-      mysql_mutex_lock(&m_binlog_archive_replica_run_lock);
-      error =
-          mysql_cond_timedwait(&m_binlog_archive_replica_run_cond,
-                               &m_binlog_archive_replica_run_lock, &abstime);
-      mysql_mutex_unlock(&m_binlog_archive_replica_run_lock);
-      continue;
-    }
-#endif
 
     // If any worker thread is not running, stop all worker threads and
     // reinitialize the binlog archive replica, then restart the worker

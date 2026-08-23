@@ -1,5 +1,0 @@
-!include suite/raft_replication/my.cnf
-
-[mysqld]
-log-bin=aaaa
-log-bin-index=bbbb

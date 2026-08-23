@@ -265,7 +265,6 @@ else
       -DWITH_CLONE=1 \
       -DWITH_JEMALLOC=1 \
       -DWITH_WESQL=1 \
-      -DWITH_CONSENSUS_REPLICATION=1
 
 fi
 

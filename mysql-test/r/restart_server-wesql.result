@@ -1,7 +1,0 @@
-RESTART;
-ERROR HY000: Restart server failed (mysqld is not managed by supervisor process).
-# Verifying RESTART using mysqld_safe as supervisor process.
-# Executing a sql command after RESTART.
-SELECT 1;
-1
-1
