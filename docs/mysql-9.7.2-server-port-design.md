@@ -35,6 +35,8 @@
 
 原生基线固定使用隔离 Linux 容器 `wesql-builder-ready:latest`：Ubuntu
 24.04.4、CMake 3.28.3、GCC 13.3.0、Ninja 1.11.1、linux/arm64。
+Docker 运行时上限为 4 vCPU、4 GiB，编译并发固定为 2，避免资源 OOM
+污染源码结论。
 Boost 1.87.0 下载到独立目录
 `wesql-compat/work/boost_1_87_0-task27`。日志固定保存到
 `wesql-compat/work/mysql-9.7.2-task27-logs`。
@@ -58,7 +60,7 @@ cmake -S /workspace/wesql-compat/source/mysql-9.7.2-task27-clean \
 
 ```bash
 cmake --build /workspace/wesql-compat/work/mysql-9.7.2-task27-build \
-  --parallel 8
+  --parallel 2
 cmake --install /workspace/wesql-compat/work/mysql-9.7.2-task27-build
 ```
 
