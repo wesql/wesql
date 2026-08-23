@@ -1,5 +1,5 @@
 # Copyright (c) 2024, ApeCloud Inc Holding Limited.
-# 
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
@@ -20,45 +20,64 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-# download from https://github.com/aliyun/aliyun-oss-cpp-sdk/archive/refs/tags/1.10.0.tar.gz
-set(OSS_SDK_VERSION "1.10.0")
-set(LOCAL_ALIYUN_OSS_SDK_ZIP "${PROJECT_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}.tar.gz")
-set(LOCAL_ALIYUN_OSS_SDK_DIR "${PROJECT_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}")
-set(ALIYUN_OSS_SDK_LIB_DIR "${CMAKE_BINARY_DIR}/lib")
-set(ALIYUN_OSS_SDK_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}/sdk/include")
-SET(OBJSTORE_OSS_LIBRARIES "alibabacloud-oss-cpp-sdk")
-set(OBJSTORE_OSS_TARGET "cpp-sdk")
+SET(OSS_SDK_VERSION "1.10.0")
+SET(LOCAL_ALIYUN_OSS_SDK_ZIP
+  "${PROJECT_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}.tar.gz")
+SET(LOCAL_ALIYUN_OSS_SDK_DIR
+  "${PROJECT_SOURCE_DIR}/extra/aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}")
+SET(ALIYUN_OSS_SDK_INCLUDE_DIR
+  "${LOCAL_ALIYUN_OSS_SDK_DIR}/sdk/include")
+SET(OBJSTORE_OSS_LIBRARIES cpp-sdk)
+SET(OBJSTORE_OSS_TARGET cpp-sdk)
 
-IF(NOT EXISTS ${LOCAL_ALIYUN_OSS_SDK_ZIP})
-  MESSAGE(FATAL_ERROR "${LOCAL_ALIYUN_OSS_SDK_ZIP} not found")
-ELSE()
-    MESSAGE(STATUS "${LOCAL_ALIYUN_OSS_SDK_ZIP} found")
-    MESSAGE(STATUS "cd ${PROJECT_SOURCE_DIR}/extra && test ! -d aliyun-oss-cpp-sdk-${OSS_SDK_VERSION} && tar -xvzf aliyun-oss-cpp-sdk-${OSS_SDK_VERSION}.tar.gz")
-    execute_process(COMMAND sh -c "test ! -d aliyun-oss-cpp-sdk-${OSS_SDK_VERSION} && tar -xvzf ${LOCAL_ALIYUN_OSS_SDK_ZIP}" WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/extra RESULT_VARIABLE tar_result)
-ENDIF()
+MACRO(PREPARE_OBJSTORE_ALIYUN_OSS)
+  IF(NOT EXISTS "${LOCAL_ALIYUN_OSS_SDK_ZIP}")
+    MESSAGE(FATAL_ERROR "${LOCAL_ALIYUN_OSS_SDK_ZIP} not found")
+  ENDIF()
 
-MACRO(PREPARE_OJBSTORE_ALIYUN_OSS)
-  set(BUILD_SHARED_LIBS  OFF CACHE BOOL "Enable shared library")
-  set(BUILD_SAMPLE OFF CACHE BOOL "Build sample")
-  set(BUILD_TESTS  OFF CACHE BOOL "Build unit and perfermence tests")
-  set(ENABLE_COVERAGE OFF CACHE BOOL "Flag to enable/disable building code with -fprofile-arcs and -ftest-coverage. Gcc only")
-  set(ENABLE_RTTI ON CACHE BOOL   "Flag to enable/disable building code with RTTI information")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
-  
-  add_subdirectory(${LOCAL_ALIYUN_OSS_SDK_DIR})
+  IF(NOT EXISTS "${LOCAL_ALIYUN_OSS_SDK_DIR}/CMakeLists.txt")
+    EXECUTE_PROCESS(
+      COMMAND ${CMAKE_COMMAND} -E tar xzf ${LOCAL_ALIYUN_OSS_SDK_ZIP}
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/extra
+      RESULT_VARIABLE OSS_UNPACK_RESULT
+      OUTPUT_QUIET
+      ERROR_VARIABLE OSS_UNPACK_ERROR)
+    IF(NOT OSS_UNPACK_RESULT EQUAL 0)
+      MESSAGE(FATAL_ERROR
+        "Unable to unpack Aliyun OSS SDK: ${OSS_UNPACK_ERROR}")
+    ENDIF()
+  ENDIF()
+
+  SET(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static provider SDKs" FORCE)
+  SET(BUILD_SAMPLE OFF CACHE BOOL "Build Aliyun OSS samples" FORCE)
+  SET(BUILD_TESTS OFF CACHE BOOL "Build Aliyun OSS tests" FORCE)
+  SET(ENABLE_COVERAGE OFF CACHE BOOL "Build Aliyun OSS with coverage" FORCE)
+  SET(ENABLE_RTTI ON CACHE BOOL "Build Aliyun OSS with RTTI" FORCE)
+
+  # The SDK owns its warning policy. SYSTEM prevents those headers from
+  # inheriting MySQL/WeSQL warning policy in myobjstore.
+  ADD_SUBDIRECTORY(
+    ${LOCAL_ALIYUN_OSS_SDK_DIR}
+    ${CMAKE_BINARY_DIR}/extra/aliyun-oss-cpp-sdk
+    SYSTEM)
+
+  # Aliyun OSS 1.10.0 intentionally supports older curl releases. Keep its
+  # own -Werror policy, but do not fail on curl APIs deprecated by newer curl.
+  IF(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    TARGET_COMPILE_OPTIONS(cpp-sdk PRIVATE
+      -Wno-error=deprecated-declarations)
+  ENDIF()
 ENDMACRO()
 
 MACRO(MYSQL_CHECK_OBJSTORE_ALIYUN_OSS)
-  IF(NOT WITH_OBJSTOR_ALIYUN_OSS)
-    SET(WITH_OBJSTOR_ALIYUN_OSS "bundled" CACHE STRING "By default use bundled ObjStore library")
+  IF(NOT DEFINED WITH_OBJSTOR_ALIYUN_OSS)
+    SET(WITH_OBJSTOR_ALIYUN_OSS "bundled" CACHE STRING
+      "Use the bundled Aliyun OSS SDK")
   ENDIF()
+  SET_PROPERTY(CACHE WITH_OBJSTOR_ALIYUN_OSS PROPERTY STRINGS bundled)
 
   IF(WITH_OBJSTOR_ALIYUN_OSS STREQUAL "bundled")
-    MESSAGE(STATUS "WITH_OBJSTOR_ALIYUN_OSS is bundled, download aliyun_oss_sdk and compile it")
-    PREPARE_OJBSTORE_ALIYUN_OSS()
-
-    INCLUDE_DIRECTORIES(${ALIYUN_OSS_SDK_INCLUDE_DIR})
-    LINK_DIRECTORIES(${ALIYUN_OSS_SDK_LIB_DIR})
+    PREPARE_OBJSTORE_ALIYUN_OSS()
   ELSE()
     MESSAGE(FATAL_ERROR "WITH_OBJSTOR_ALIYUN_OSS must be bundled")
   ENDIF()

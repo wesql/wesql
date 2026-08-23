@@ -1,5 +1,5 @@
 # Copyright (c) 2024, ApeCloud Inc Holding Limited.
-# 
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
@@ -20,65 +20,68 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-# cmake -DWITH_OBJSTORE=system|bundled
-# bundled is the default
+# cmake -DWITH_OBJSTOR=system|bundled
+# bundled is the default.
 
-SET(OBJSTORE_INCLUDE_DIR "system default header")
-SET(OBJSTORE_LIBRARY_PATH "system default lib path")
-SET(OBJSTORE_LIBRARIES "aws-cpp-sdk-s3;aws-cpp-sdk-core")
-SET(OBJSTORE_PLATFORM_DEPS "pthread;curl")
+SET(OBJSTORE_S3_LIBRARIES aws-cpp-sdk-s3 aws-cpp-sdk-core)
 
-MACRO(SHOW_OBJSTORE_INFO)
-  MESSAGE(STATUS "OBJSTORE_INCLUDE_DIR: ${OBJSTORE_INCLUDE_DIR}")
-  MESSAGE(STATUS "OBJSTORE_LIBRARY_PATH: ${OBJSTORE_LIBRARY_PATH}")
-  MESSAGE(STATUS "OBJSTORE_LIBRARIES: ${OBJSTORE_LIBRARIES}")
+MACRO(SHOW_OBJSTORE_S3_INFO)
+  MESSAGE(STATUS "WITH_OBJSTOR: ${WITH_OBJSTOR}")
+  MESSAGE(STATUS "OBJSTORE_S3_LIBRARIES: ${OBJSTORE_S3_LIBRARIES}")
   MESSAGE(STATUS "OBJSTORE_PLATFORM_DEPS: ${OBJSTORE_PLATFORM_DEPS}")
 ENDMACRO()
 
-MACRO(PREPARE_BUNDLED_OJBSTORE)
-  SET(OBJSTORE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/extra/aws-sdk-cpp")
+MACRO(PREPARE_BUNDLED_OBJSTORE_S3)
+  SET(OBJSTORE_AWS_BINARY_DIR "${CMAKE_BINARY_DIR}/extra/aws-sdk-cpp")
 
-  set(BUILD_ONLY "s3;core" CACHE STRING "AWS sdk components to build")
-  set(ENABLE_TESTING OFF  CACHE BOOL "AWS sdk building unit and integration tests")
-  set(AUTORUN_UNIT_TESTS OFF CACHE BOOL "AWS sdk auto run unittests")
-  set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build aws sdk static library")
-  set(CMAKE_BUILD_TYPE Release CACHE STRING "AWS sdk build type")
+  SET(BUILD_ONLY "s3" CACHE STRING "AWS SDK components to build" FORCE)
+  SET(ENABLE_TESTING OFF CACHE BOOL "Build AWS SDK tests" FORCE)
+  SET(AUTORUN_UNIT_TESTS OFF CACHE BOOL "Run AWS SDK tests" FORCE)
+  SET(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static provider SDKs" FORCE)
+  SET(ENABLE_ZLIB_REQUEST_COMPRESSION OFF CACHE BOOL
+    "Keep the AWS SDK out of MySQL's private zlib target" FORCE)
+  SET(AWS_SDK_WARNINGS_ARE_ERRORS OFF CACHE BOOL
+    "Do not promote AWS SDK warnings to errors" FORCE)
+  SET(AWS_WARNINGS_ARE_ERRORS OFF CACHE BOOL
+    "Do not promote AWS CRT warnings to errors" FORCE)
 
-  add_subdirectory(${PROJECT_SOURCE_DIR}/extra/aws-sdk-cpp)
-  # compilation result installation is later phase, mkdir include path in advance avoid compile error.
-  FILE(MAKE_DIRECTORY "${OBJSTORE_INSTALL_PREFIX}/include")
+  # SYSTEM marks every AWS/CRT target created below, so their public headers
+  # remain third-party headers when consumed by WeSQL targets.
+  ADD_SUBDIRECTORY(
+    ${PROJECT_SOURCE_DIR}/extra/aws-sdk-cpp
+    ${OBJSTORE_AWS_BINARY_DIR}
+    SYSTEM)
 ENDMACRO()
 
-MACRO(FIND_SYSTEM_OBJSTORE)
-  FIND_PACKAGE(AWSSDK REQUIRED COMPONENTS "s3")
+MACRO(FIND_SYSTEM_OBJSTORE_S3)
+  FIND_PACKAGE(AWSSDK REQUIRED COMPONENTS s3)
+  SET(OBJSTORE_S3_LIBRARIES ${AWSSDK_LINK_LIBRARIES})
 ENDMACRO()
 
-MACRO (MYSQL_CHECK_OBJSTORE_S3)
-  IF(NOT WITH_OBJSTOR)
-    SET(WITH_OBJSTOR "bundled" CACHE STRING "By default use bundled ObjStore library")
+MACRO(MYSQL_CHECK_OBJSTORE_S3)
+  IF(NOT DEFINED WITH_OBJSTOR)
+    SET(WITH_OBJSTOR "bundled" CACHE STRING
+      "Use bundled or system AWS ObjectStore SDK")
   ENDIF()
+  SET_PROPERTY(CACHE WITH_OBJSTOR PROPERTY STRINGS bundled system)
+
+  FIND_PACKAGE(Threads REQUIRED)
+  IF(NOT TARGET ext::curl)
+    MESSAGE(FATAL_ERROR "ObjectStore requires MySQL's curl target")
+  ENDIF()
+  SET(OBJSTORE_PLATFORM_DEPS
+    Threads::Threads
+    ext::curl
+    OpenSSL::SSL
+    OpenSSL::Crypto)
 
   IF(WITH_OBJSTOR STREQUAL "bundled")
-    MESSAGE(STATUS "WITH_OBJSTOR is bundled, download aws-sdk-cpp and compile it")
-    PREPARE_BUNDLED_OJBSTORE()
-    MESSAGE(STATUS "aws-sdk-cpp will be installed to ${OBJSTORE_INSTALL_PREFIX} in the compile phase")
-
-    # Set the variables for the project
-    SET(OBJSTORE_INCLUDE_DIR "${OBJSTORE_INSTALL_PREFIX}/include")
-    SET(OBJSTORE_LIBRARY_PATH "${OBJSTORE_INSTALL_PREFIX}/lib64")
-    SET(OBJSTORE_LIBRARY ${OBJSTORE_LIBRARIES})
-    SET(OBJSTORE_PLATFORM_DEPS ${OBJSTORE_PLATFORM_DEPS})
-    # Prepare include and ld path
-    INCLUDE_DIRECTORIES(${OBJSTORE_INCLUDE_DIR})
-    LINK_DIRECTORIES(${OBJSTORE_LIBRARY_PATH})
+    PREPARE_BUNDLED_OBJSTORE_S3()
   ELSEIF(WITH_OBJSTOR STREQUAL "system")
-    MESSAGE(STATUS "WITH_OBJSTOR is system, use system aws s3 lib")
-    FIND_SYSTEM_OBJSTORE()
-    SET(OBJSTORE_LIBRARY ${AWSSDK_LINK_LIBRARIES})
-    SET(OBJSTORE_PLATFORM_DEPS ${OBJSTORE_PLATFORM_DEPS})
+    FIND_SYSTEM_OBJSTORE_S3()
   ELSE()
     MESSAGE(FATAL_ERROR "WITH_OBJSTOR must be bundled or system")
   ENDIF()
 
-  SHOW_OBJSTORE_INFO()
+  SHOW_OBJSTORE_S3_INFO()
 ENDMACRO()

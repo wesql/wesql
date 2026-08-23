@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 86a1e2b8..474e158c 100644
+index 86a1e2b8..ee0c6c4d 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -523 +523,12 @@ SET(CMAKE_CXX_STANDARD 23)
@@ -15,6 +15,22 @@ index 86a1e2b8..474e158c 100644
 +ENDIF()
 +
  # Various 3rd party libraries have this option.
+@@ -790,2 +801,6 @@ INCLUDE(add_custom_target)
+ INCLUDE(add_custom_target)
++IF(WITH_WESQL)
++  INCLUDE(aws_sdk_cpp)
++  INCLUDE(aliyun_oss_sdk)
++ENDIF()
+ INCLUDE(pkg-config)
+@@ -2078,4 +2093,8 @@ IF(CURL_WARN_GIVEN)
+     "You can disable CURL with -DWITH_CURL=0"
+     )
+ ENDIF()
++IF(WITH_WESQL)
++  MYSQL_CHECK_OBJSTORE_S3()
++  MYSQL_CHECK_OBJSTORE_ALIYUN_OSS()
++ENDIF()
+ # Add RapidJSON library.
 diff --git a/MYSQL_VERSION b/MYSQL_VERSION
 index 5be9001c..9768cd69 100644
 --- a/MYSQL_VERSION
@@ -47,6 +63,57 @@ index 1170d840..ac66fcd0 100644
 +#define WESQL_VERSION              "@WESQL_VERSION@"
 +
  #ifndef LICENSE
+diff --git a/mysys/CMakeLists.txt b/mysys/CMakeLists.txt
+index 37d70b47..70def3ff 100644
+--- a/mysys/CMakeLists.txt
++++ b/mysys/CMakeLists.txt
+@@ -28,3 +28,41 @@ ADD_CONVENIENCE_LIBRARY(mytime ${MY_TIME_SOURCES})
+ ADD_CONVENIENCE_LIBRARY(mytime ${MY_TIME_SOURCES})
+-
++
++SET(MYSYS_WESQL_LIBRARIES)
++IF(WITH_WESQL)
++  SET(MY_OBJSTORE_SOURCES
++    objstore/local.cc
++    objstore/objstore.cc
++    objstore/objstore_lock.cc
++    objstore/s3.cc
++    objstore/aliyun_oss.cc
++    )
++  SET(MY_OBJSTORE_PROVIDER_LIBRARIES
++    ${OBJSTORE_S3_LIBRARIES}
++    ${OBJSTORE_OSS_LIBRARIES}
++    ${OBJSTORE_PLATFORM_DEPS}
++    )
++
++  ADD_CONVENIENCE_LIBRARY(myobjstore ${MY_OBJSTORE_SOURCES}
++    SYSTEM_INCLUDE_DIRECTORIES
++    ${ALIYUN_OSS_SDK_INCLUDE_DIR}
++    )
++  TARGET_LINK_LIBRARIES(myobjstore PRIVATE
++    ${MY_OBJSTORE_PROVIDER_LIBRARIES})
++  ADD_DEPENDENCIES(myobjstore ${OBJSTORE_OSS_TARGET})
++  IF(TARGET myobjstore_objlib)
++    TARGET_LINK_LIBRARIES(myobjstore_objlib PRIVATE
++      ${MY_OBJSTORE_PROVIDER_LIBRARIES})
++    ADD_DEPENDENCIES(myobjstore_objlib ${OBJSTORE_OSS_TARGET})
++  ENDIF()
++
++  MYSQL_ADD_EXECUTABLE(myobjstore_local_test
++    objstore/local_test.cc
++    EXCLUDE_FROM_ALL
++    SKIP_INSTALL
++    LINK_LIBRARIES myobjstore
++    DEPENDENCIES ${OBJSTORE_OSS_TARGET}
++    )
++  LIST(APPEND MYSYS_WESQL_LIBRARIES myobjstore)
++ENDIF()
++
+ SET(MYSYS_SOURCES
+@@ -198,2 +236,3 @@ ADD_CONVENIENCE_LIBRARY(mysys ${MYSYS_SOURCES}
+   mytime
++  ${MYSYS_WESQL_LIBRARIES}
+   strings
 diff --git a/mysys/print_version.cc b/mysys/print_version.cc
 index 6108ab48..0482781d 100644
 --- a/mysys/print_version.cc
