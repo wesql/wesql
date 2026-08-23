@@ -66,7 +66,6 @@ init_mtr_cmd()
   CMD="perl mysql-test-run.pl --parallel=8 --report-unstable-tests --sanitize"
   CMD="$CMD --timer --force --skip-ndb --nounit-tests --max-connections=1000 --max-test-fail=1000"
   CMD="$CMD $extra_mtr_option"
-  #CMD="$CMD --skip-test-list=collections/disabled-wesql.def $extra_mtr_option"
 }
 
 

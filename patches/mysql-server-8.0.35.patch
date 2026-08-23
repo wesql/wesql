@@ -262,47 +262,6 @@ index 4d505e9fdd4..e5ed7959926 100644
  if ($wait_timeout)
  {
    let $wait_counter= `SELECT $wait_timeout * 10`;
-diff --git a/mysql-test/lib/mtr_cases.pm b/mysql-test/lib/mtr_cases.pm
-index 00000000000..11111111111 100644
---- a/mysql-test/lib/mtr_cases.pm
-+++ b/mysql-test/lib/mtr_cases.pm
-@@ -329,7 +329,7 @@
- 
-   # Add 'disabled.def' files.
-   unshift(@disabled_collection,
--          "$::glob_mysql_test_dir/collections/disabled.def");
-+    "$::glob_mysql_test_dir/collections/disabled.def");
- 
-   # Add internal 'disabled.def' file only if it exists
-   my $internal_disabled_def_file =
-@@ -1179,11 +1188,8 @@
-   } else {
-     # Result file doesn't exist
-     if ($::opt_check_testcases and !$::opt_record) {
--      # Set 'no_result_file' flag if check-testcases is enabled.
-       $tinfo->{'no_result_file'} = $result_file;
-     } else {
--      # No .result file exist, remember the path where it should
--      # be saved in case of --record.
-       $tinfo->{record_file} = $result_file;
-     }
-   }
-@@ -1214,6 +1220,7 @@
-   # Check for group replication tests
-   $tinfo->{'grp_rpl_test'} = 1 if ($suitename =~ 'group_replication');
- 
-+  # Check for group replication tests
-   # Check for disabled tests
-   if ($disabled->{"$suitename.$tname"}) {
-     # Test was marked as disabled in disabled.def file
-@@ -1514,6 +1530,7 @@
-   [ "have_group_replication_plugin_base.inc", "grp_rpl_test", 1 ],
-   [ "have_group_replication_plugin.inc",      "grp_rpl_test", 1 ],
- 
-+  [ "include/not_log_bin.inc", "not_log_bin", 1 ],
-   # Tests with below .inc file needs either big-test or only-big-test
-   # option along with valgrind option.
-   [ "include/no_valgrind_without_big.inc", "no_valgrind_without_big", 1 ]);
 diff --git a/mysql-test/mysql-test-run.pl b/mysql-test/mysql-test-run.pl
 index 00000000000..11111111111 100644
 --- a/mysql-test/mysql-test-run.pl
