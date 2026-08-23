@@ -44,8 +44,12 @@
 24.04.4、CMake 3.28.3、GCC 13.3.0、Ninja 1.11.1、linux/arm64。
 Docker 运行时上限为 4 vCPU、4 GiB，编译并发固定为 2，避免资源 OOM
 污染源码结论。
-Boost 1.87.0 下载到独立目录
-`wesql-compat/work/boost_1_87_0-task27`。日志固定保存到
+本轮原生命令保留了 `-DDOWNLOAD_BOOST=1` 和指向
+`wesql-compat/work/boost_1_87_0-task27` 的 `-DWITH_BOOST`，但 CMake 在
+`native-configure.log:841-844` 明确报告两者均未被项目使用。实际编译使用
+Oracle 源码树自带的
+`extra/boost/boost_1_87_0`；后续 task #27 port configure 必须删除这两个
+无效参数，不得把独立 work 目录写成依赖来源。日志固定保存到
 `wesql-compat/work/mysql-9.7.2-task27-logs`。
 
 原生 configure 命令的容器内主体为：
@@ -73,6 +77,8 @@ cmake --install /workspace/wesql-compat/work/mysql-9.7.2-task27-build
 
 三条命令分别记录到 `native-configure.log`、`native-build.log` 和
 `native-install.log`；同时记录源码 SHA、容器 image ID、工具链版本和目录清单。
+上面的 configure 命令按实际执行历史保留两个无效 Boost 参数；它们不进入
+后续 port configure。
 
 原生基线已在 Oracle clean tree
 `008e09c2834b98143a8c067d4d225c90953050cf` 上完成：configure、
