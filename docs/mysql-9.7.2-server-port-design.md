@@ -73,7 +73,9 @@ cmake --install /workspace/wesql-compat/work/mysql-9.7.2-task27-build
 对其 65 个声明路径逐文件在 9.7.2 干净源码上执行只读 `git apply
 --check`，结果如下：
 
-- 65 个路径中仅 10 个文件的整段历史 diff 可直接定位；55 个文件冲突。
+- 65 个路径中有 33 个文件的整段历史 diff 可直接定位；32 个文件冲突。
+  计数脚本必须完整消费 patch 流；若在目标 diff 后提前退出，`pipefail` 会把
+  `git show` 的 SIGPIPE 错判成该文件冲突。
 - 65 个上游文件相对 8.0.35 均已变化，没有字节相同文件。
 - `include/m_ctype.h` 已删除，公共字符集接口移动到
   `include/mysql/strings/m_ctype.h`。
