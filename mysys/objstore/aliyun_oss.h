@@ -18,6 +18,7 @@
 #define MY_OBJSTORE_ALIYUN_OSS_H_INCLUDED
 
 #include <string>
+#include <utility>
 
 #include <alibabacloud/oss/OssClient.h>
 #include <alibabacloud/oss/ServiceRequest.h>
@@ -44,7 +45,7 @@ class AliyunOssObjectStore : public ObjectStore {
  public:
   explicit AliyunOssObjectStore(const std::string_view region,
                                 AlibabaCloud::OSS::OssClient &&oss_client)
-      : region_(region), oss_client_(oss_client) {}
+      : region_(region), oss_client_(std::move(oss_client)) {}
   virtual ~AliyunOssObjectStore() = default;
 
   Status create_bucket(const std::string_view &bucket) override;

@@ -125,8 +125,8 @@ class Status {
 
 struct ObjectMeta {
   std::string key;
-  int64_t last_modified; // timestamp in milliseconds since epoch.
-  long long size;        // body size
+  int64_t last_modified{0};  // timestamp in milliseconds since epoch.
+  long long size{0};          // body size
 };
 
 class ObjectStore {
@@ -241,7 +241,7 @@ void destroy_object_store(ObjectStore *obj_store);
 
 void init_objstore_provider(const std::string_view &provider);
 
-void cleanup_objstore_provider(ObjectStore *objstore);
+void cleanup_objstore_provider(const std::string_view &provider);
 
 char *get_src_access_key_id();
 

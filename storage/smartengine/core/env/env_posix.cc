@@ -582,6 +582,7 @@ class PosixEnv : public Env
     std::string obj_err_msg;
     obj_store_ = objstore::create_object_store(provider, region, endpoint, use_https, obj_err_msg);
     if (obj_store_ == nullptr) {
+      objstore::cleanup_objstore_provider(provider);
       result = common::Status::InvalidArgument(obj_err_msg);
     } else {
       obj_store_bucket_ = bucket;
@@ -592,13 +593,7 @@ class PosixEnv : public Env
   }
 
   virtual common::Status DestroyObjectStore() override {
-
-    if (obj_store_ != nullptr) {
-      objstore::cleanup_objstore_provider(obj_store_);
-
-      objstore::destroy_object_store(obj_store_);
-      obj_store_ = nullptr;
-    }
+    objstore::cleanup_object_store(obj_store_);
     return common::Status::OK();
   }
 

@@ -42,7 +42,7 @@ class LocalObjectStore : public ObjectStore {
 
   Status put_object(const std::string_view &bucket, const std::string_view &key,
                     const std::string_view &data,
-                    bool forbid_overwrite) override;
+                    bool forbid_overwrite = false) override;
   Status get_object(const std::string_view &bucket, const std::string_view &key,
                     std::string &input) override;
   Status get_object(const std::string_view &bucket, const std::string_view &key,
@@ -68,6 +68,10 @@ class LocalObjectStore : public ObjectStore {
   std::string_view get_provider() const override { return provider_; }
 
  private:
+  bool is_valid_local_bucket(std::string_view bucket);
+  bool is_valid_local_key(std::string_view key);
+  bool is_path_in_bucket(std::string_view bucket, std::string_view key);
+
   std::string generate_path(const std::string_view &bucket);
   std::string generate_path(const std::string_view &bucket,
                             const std::string_view &key);

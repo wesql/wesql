@@ -38,16 +38,17 @@ int ensure_object_store_lock(const std::string_view &provider,
   ObjectStore *objstore =
       create_object_store(provider, region, endpoint, false, err_msg);
   if (objstore == nullptr) {
+    cleanup_objstore_provider(provider);
     return 1;
   }
 
-  std::string branch_path(store_id.data());
+  std::string branch_path(store_id);
   branch_path.append("/");
-  branch_path.append(branch_id.data());
+  branch_path.append(branch_id);
   branch_path.append("/");
 
   std::string data_lock_path(branch_path);
-  data_lock_path.append(data_lock_file.data());
+  data_lock_path.append(data_lock_file);
 
   status = objstore->get_object(bucket_dir, data_lock_path, data_lock);
   if (!status.is_succ() &&
@@ -74,7 +75,10 @@ int ensure_object_store_lock(const std::string_view &provider,
     }
   }
 
+  const std::string provider_name{objstore->get_provider()};
   delete objstore;
+  objstore = nullptr;
+  cleanup_objstore_provider(provider_name);
 
   return error;
 }

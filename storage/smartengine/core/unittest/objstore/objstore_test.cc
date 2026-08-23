@@ -115,8 +115,7 @@ public:
 
   void release_objstore_client(objstore::ObjectStore *client)
   {
-    ::objstore::destroy_object_store(client);
-    ::objstore::cleanup_objstore_provider(obj_store_);
+    ::objstore::cleanup_object_store(client);
   }
 
   void TearDown() override
@@ -303,14 +302,14 @@ TEST_P(ObjstoreTest, reinitObjStoreApi)
   ::objstore::init_objstore_provider(provider_);
   ::objstore::init_objstore_provider(provider_);
   ::objstore::init_objstore_provider(provider_);
-  ::objstore::cleanup_objstore_provider(obj_store_);
-  ::objstore::cleanup_objstore_provider(obj_store_);
-  ::objstore::cleanup_objstore_provider(obj_store_);
+  ::objstore::cleanup_objstore_provider(provider_);
+  ::objstore::cleanup_objstore_provider(provider_);
+  ::objstore::cleanup_objstore_provider(provider_);
 
   env_->GetObjectStore(obs);
   ASSERT_TRUE(obs != nullptr);
 
-  ::objstore::cleanup_objstore_provider(obj_store_);
+  ::objstore::cleanup_objstore_provider(provider_);
   ::objstore::init_objstore_provider(provider_);
 
   env_->DestroyObjectStore();

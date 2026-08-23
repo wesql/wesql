@@ -20,15 +20,45 @@
 #include "mysys/objstore/local.h"
 #include "mysys/objstore/s3.h"
 
+#include <cerrno>
 #include <filesystem>
 
 namespace objstore {
 
 namespace fs = std::filesystem;
 
+namespace {
+
+bool has_embedded_nul(std::string_view value) {
+  return value.find('\0') != std::string_view::npos;
+}
+
+bool is_safe_relative_path(std::string_view value) {
+  if (has_embedded_nul(value)) return false;
+
+  const fs::path path{std::string(value)};
+  if (path.is_absolute() || path.has_root_path()) return false;
+  for (const fs::path &component : path) {
+    if (component == "." || component == "..") return false;
+  }
+  return true;
+}
+
+bool path_is_within(const fs::path &root, const fs::path &path) {
+  auto root_component = root.begin();
+  auto path_component = path.begin();
+  for (; root_component != root.end(); ++root_component, ++path_component) {
+    if (path_component == path.end() || *path_component != *root_component) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 std::string remove_prefix(const std::string &str, const std::string &prefix) {
-  int pos = str.find(prefix);
-  if (pos == 0) {
+  if (str.starts_with(prefix)) {
     return str.substr(prefix.size());
   }
   return str;
@@ -97,16 +127,13 @@ void init_objstore_provider(const std::string_view &provider) {
   }
 }
 
-void cleanup_objstore_provider(ObjectStore *objstore) {
-  if (objstore != nullptr) {
-    std::string_view provider = objstore->get_provider();
-    if (ObjectStore::use_s3_sdk(provider)) {
-      shutdown_aws_api();
-    } else if (provider == "aliyun") {
-      shutdown_aliyun_api();
-    } else if (provider == "local") {
-      // do nothing
-    }
+void cleanup_objstore_provider(const std::string_view &provider) {
+  if (ObjectStore::use_s3_sdk(provider)) {
+    shutdown_aws_api();
+  } else if (provider == "aliyun") {
+    shutdown_aliyun_api();
+  } else if (provider == "local") {
+    // do nothing
   }
 }
 
@@ -183,18 +210,36 @@ Status ObjectStore::delete_directory(const std::string_view &bucket,
 Status ObjectStore::put_objects_from_dir(const std::string_view &src_dir,
                                          const std::string_view &dst_objstore_bucket,
                                          const std::string_view &dst_objstore_dir) {
+  if (has_embedded_nul(src_dir) || has_embedded_nul(dst_objstore_dir)) {
+    return Status(Errors::SE_INVALID, EINVAL,
+                  "directory paths must not contain NUL");
+  }
   fs::path src_dir_path = fs::path(src_dir).lexically_normal();
   std::string dst_objstore_dir_path(dst_objstore_dir);
   if (!dst_objstore_dir_path.empty() && dst_objstore_dir_path.back() != '/') {
     dst_objstore_dir_path.append("/");
   }
   // check if local dir path exists
-  if (!fs::exists(src_dir_path)) {
+  std::error_code errcode;
+  if (fs::is_symlink(src_dir_path, errcode)) {
+    return Status(Errors::SE_INVALID, ELOOP,
+                  "source directory must not be a symbolic link");
+  }
+  if (errcode) {
+    return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+  }
+  if (!fs::exists(src_dir_path, errcode)) {
+    if (errcode) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+    }
     std::string err_msg = src_dir_path.native() + " does not exist";
     return Status(Errors::SE_INVALID, EINVAL, err_msg.c_str());
   }
   // check if local dir path is a directory
-  if (!fs::is_directory(src_dir_path)) {
+  if (!fs::is_directory(src_dir_path, errcode)) {
+    if (errcode) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+    }
     std::string err_msg = src_dir_path.native() + " is not a directory";
     return Status(Errors::SE_INVALID, ENOTDIR, err_msg.c_str());
   }
@@ -205,14 +250,31 @@ Status ObjectStore::put_objects_from_dir(const std::string_view &src_dir,
       return s;
     }
   }
-  for (const fs::directory_entry &entry :
-       fs::recursive_directory_iterator(src_dir_path)) {
-    std::string key = fs::relative(entry.path(), src_dir_path);
+  fs::recursive_directory_iterator entry(src_dir_path, errcode);
+  const fs::recursive_directory_iterator end;
+  if (errcode) {
+    return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+  }
+  for (; entry != end; entry.increment(errcode)) {
+    if (errcode) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+    }
+    if (entry->is_symlink(errcode)) {
+      return Status(Errors::SE_INVALID, ELOOP,
+                    "symbolic links are not supported in source directory");
+    }
+    if (errcode) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+    }
+    std::string key = fs::relative(entry->path(), src_dir_path, errcode);
+    if (errcode) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+    }
     if (!dst_objstore_dir_path.empty()) {
       key = dst_objstore_dir_path + key;
     }
 
-    if (entry.is_directory()) {
+    if (entry->is_directory(errcode)) {
       if (key.back() != '/') {
         key.append("/");
       }
@@ -220,14 +282,22 @@ Status ObjectStore::put_objects_from_dir(const std::string_view &src_dir,
       if (!s.is_succ()) {
         return s;
       }
-    } else if (entry.is_regular_file()) {
-      std::string abs_src_file_path = fs::absolute(entry.path());
+    } else if (!errcode && entry->is_regular_file(errcode)) {
+      std::string abs_src_file_path = fs::absolute(entry->path(), errcode);
+      if (errcode) {
+        return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+      }
       Status s =
           put_object_from_file(dst_objstore_bucket, key, abs_src_file_path);
       if (!s.is_succ()) {
         return s;
       }
+    } else if (errcode) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
     }
+  }
+  if (errcode) {
+    return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
   }
   return Status();
 }
@@ -235,19 +305,41 @@ Status ObjectStore::put_objects_from_dir(const std::string_view &src_dir,
 Status ObjectStore::get_objects_to_dir(const std::string_view &src_objstore_bucket,
                                        const std::string_view &src_objstore_dir,
                                        const std::string_view &dst_dir) {
+  if (has_embedded_nul(src_objstore_dir) || has_embedded_nul(dst_dir)) {
+    return Status(Errors::SE_INVALID, EINVAL,
+                  "directory paths must not contain NUL");
+  }
   fs::path dst_dir_path = fs::path(dst_dir).lexically_normal();
   std::string src_objstore_dir_path(src_objstore_dir);
   if (!src_objstore_dir_path.empty() && src_objstore_dir_path.back() != '/') {
     src_objstore_dir_path.append("/");
   }
   // check if the dst directory exists, if not, create it.
-  if (!fs::exists(dst_dir_path)) {
+  std::error_code path_error;
+  if (fs::is_symlink(dst_dir_path, path_error)) {
+    return Status(Errors::SE_INVALID, ELOOP,
+                  "destination directory must not be a symbolic link");
+  }
+  if (path_error && path_error.value() != ENOENT) {
+    return Status(Errors::SE_IO_ERROR, path_error.value(),
+                  path_error.message());
+  }
+  path_error.clear();
+  if (!fs::exists(dst_dir_path, path_error)) {
+    if (path_error) {
+      return Status(Errors::SE_IO_ERROR, path_error.value(),
+                    path_error.message());
+    }
     int ret = mkdir_p(dst_dir_path.native());
     if (ret != 0) {
       return Status(Errors::SE_IO_ERROR, ret, std::generic_category().message(ret));
     }
   }
-  if (!fs::is_directory(dst_dir_path)) {
+  if (!fs::is_directory(dst_dir_path, path_error)) {
+    if (path_error) {
+      return Status(Errors::SE_IO_ERROR, path_error.value(),
+                    path_error.message());
+    }
     std::string err_msg = dst_dir_path.native() + " is not a directory";
     return Status(Errors::SE_INVALID, ENOTDIR, err_msg.c_str());
   }
@@ -263,17 +355,50 @@ Status ObjectStore::get_objects_to_dir(const std::string_view &src_objstore_buck
     if (!s.is_succ()) {
       return s;
     }
-    fs::path abs_dst_dir_path = fs::absolute(dst_dir_path);
+    std::error_code errcode;
+    fs::path abs_dst_dir_path = fs::absolute(dst_dir_path, errcode);
+    if (errcode) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+    }
+    abs_dst_dir_path = abs_dst_dir_path.lexically_normal();
+    const fs::path resolved_dst_dir =
+        fs::weakly_canonical(abs_dst_dir_path, errcode);
+    if (errcode) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+    }
     for (const ObjectMeta &obj : object_metas) {
+      if (obj.key.empty() ||
+          (!src_objstore_dir_path.empty() &&
+           !std::string_view(obj.key).starts_with(src_objstore_dir_path))) {
+        return Status(Errors::SE_INVALID, EINVAL,
+                      "object key is outside requested prefix");
+      }
       std::string key = obj.key;
       if (!src_objstore_dir_path.empty()) {
         key = remove_prefix(key, src_objstore_dir_path);
       }
-      fs::path dst_file_path = abs_dst_dir_path / key;
+      if (!is_safe_relative_path(key)) {
+        return Status(Errors::SE_INVALID, EINVAL,
+                      "object key is not a safe relative path");
+      }
+      const fs::path relative_path{key};
+      fs::path dst_file_path =
+          (abs_dst_dir_path / relative_path).lexically_normal();
+      const fs::path resolved_dst_file =
+          fs::weakly_canonical(dst_file_path, errcode);
+      if (errcode || !path_is_within(resolved_dst_dir, resolved_dst_file)) {
+        const int error = errcode ? errcode.value() : ELOOP;
+        return Status(Errors::SE_INVALID, error,
+                      "object destination resolves outside target directory");
+      }
 
       if (obj.key.back() == '/') {
         // this is a sub directory of object store bucket
-        if (!fs::exists(dst_file_path)) {
+        if (!fs::exists(dst_file_path, errcode)) {
+          if (errcode) {
+            return Status(Errors::SE_IO_ERROR, errcode.value(),
+                          errcode.message());
+          }
           int ret = mkdir_p(dst_file_path.native());
           if (ret != 0) {
             return Status(Errors::SE_IO_ERROR, ret,
@@ -282,7 +407,11 @@ Status ObjectStore::get_objects_to_dir(const std::string_view &src_objstore_buck
         }
       } else {
         if (dst_file_path.parent_path() != last_parent_path &&
-            !fs::exists(dst_file_path.parent_path())) {
+            !fs::exists(dst_file_path.parent_path(), errcode)) {
+          if (errcode) {
+            return Status(Errors::SE_IO_ERROR, errcode.value(),
+                          errcode.message());
+          }
           int ret = mkdir_p(dst_file_path.parent_path().native());
           if (ret != 0) {
             return Status(Errors::SE_IO_ERROR, ret,
@@ -362,15 +491,19 @@ int init_object_store(const std::string_view &provider,
   objstore = create_object_store(provider, region, nullptr, false, err_msg);
   if (objstore == nullptr) {
     ret = 1;
-    cleanup_objstore_provider(objstore);
+    cleanup_objstore_provider(provider);
     return ret;
   }
   return 0;
 }
 
 void cleanup_object_store(ObjectStore *&objstore) {
-  cleanup_objstore_provider(objstore);
+  if (objstore == nullptr) return;
+
+  const std::string provider{objstore->get_provider()};
   delete objstore;
+  objstore = nullptr;
+  cleanup_objstore_provider(provider);
 }
 
 }  // namespace objstore

@@ -72,8 +72,7 @@ public:
 
   void release_objstore_client(objstore::ObjectStore *client)
   {
-    objstore::destroy_object_store(client);
-    objstore::cleanup_objstore_provider(obj_store_);
+    objstore::cleanup_object_store(client);
   }
   void TearDown() 
   {

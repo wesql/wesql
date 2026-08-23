@@ -18,6 +18,7 @@
 #define MY_OBJSTORE_S3_H_INCLUDED
 
 #include <string>
+#include <utility>
 
 #include <aws/s3/S3Client.h>
 
@@ -29,7 +30,7 @@ class S3ObjectStore : public ObjectStore {
  public:
   explicit S3ObjectStore(const std::string_view region,
                          Aws::S3::S3Client &&s3_client)
-      : region_(region), s3_client_(s3_client) {}
+      : region_(region), s3_client_(std::move(s3_client)) {}
   virtual ~S3ObjectStore() = default;
 
   Status create_bucket(const std::string_view &bucket) override;

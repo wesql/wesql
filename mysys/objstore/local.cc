@@ -16,7 +16,6 @@
 
 #include "mysys/objstore/local.h"
 
-#include <assert.h>
 #include <sys/errno.h>
 #include <algorithm>
 #include <cerrno>
@@ -25,7 +24,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
+#include <iterator>
+#include <limits>
 #include <system_error>
 
 namespace objstore {
@@ -44,40 +44,90 @@ Errors std_err_code_to_objstore_error(std::error_code err_code) {
   return Errors::SE_IO_ERROR;
 }
 
-int get_obj_meta_from_file(fs::path path, ObjectMeta &meta, bool is_dir) {
+bool path_is_within(const fs::path &root, const fs::path &path) {
+  auto root_component = root.begin();
+  auto path_component = path.begin();
+  for (; root_component != root.end(); ++root_component, ++path_component) {
+    if (path_component == path.end() || *path_component != *root_component) {
+      return false;
+    }
+  }
+  return true;
+}
+
+int get_obj_meta_from_file(const fs::path &path, ObjectMeta &meta, bool is_dir) {
   std::error_code errcode;
 
   fs::file_time_type ftime = fs::last_write_time(path, errcode);
-  if (errcode.value() != 0) {
+  if (errcode) {
     return errcode.value();
   }
-  int64_t epoch_in_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            ftime.time_since_epoch())
-                            .count();
+  const auto system_time = fs::file_time_type::clock::to_sys(ftime);
+  const int64_t epoch_in_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          system_time.time_since_epoch())
+          .count();
 
-  std::uintmax_t fsize = -1;
+  std::uintmax_t fsize = 0;
   if (is_dir) {
     fsize = 0;
   } else {
     errcode.clear();
     fsize = fs::file_size(path, errcode);
-    if (errcode.value() != 0) {
+    if (errcode) {
       return errcode.value();
+    }
+    if (fsize > static_cast<std::uintmax_t>(
+                    std::numeric_limits<long long>::max())) {
+      return EOVERFLOW;
     }
   }
 
   meta.last_modified = epoch_in_ms;
-  meta.size = fsize;
+  meta.size = static_cast<long long>(fsize);
 
   return 0;
 }
 
 }  // anonymous namespace
 
+bool LocalObjectStore::is_valid_local_bucket(std::string_view bucket) {
+  return is_valid_key(bucket) &&
+         bucket.find('\0') == std::string_view::npos && bucket != "." &&
+         bucket != ".." &&
+         bucket.find('/') == std::string_view::npos &&
+         bucket.find('\\') == std::string_view::npos;
+}
+
+bool LocalObjectStore::is_valid_local_key(std::string_view key) {
+  if (!is_valid_key(key) || key.find('\0') != std::string_view::npos) {
+    return false;
+  }
+
+  const fs::path path{std::string(key)};
+  if (path.is_absolute() || path.has_root_path()) return false;
+  for (const fs::path &component : path) {
+    if (component == "." || component == "..") return false;
+  }
+  return true;
+}
+
+bool LocalObjectStore::is_path_in_bucket(std::string_view bucket,
+                                         std::string_view key) {
+  std::error_code error;
+  fs::path root = fs::weakly_canonical(fs::absolute(basepath_, error), error);
+  if (error) return false;
+
+  const fs::path bucket_root = (root / std::string(bucket)).lexically_normal();
+  const fs::path candidate =
+      fs::weakly_canonical(bucket_root / std::string(key), error);
+  return !error && path_is_within(bucket_root, candidate);
+}
+
 Status LocalObjectStore::create_bucket(const std::string_view &bucket) {
   const std::lock_guard<std::mutex> _(mutex_);
 
-  if (!is_valid_key(bucket)) {
+  if (!is_valid_local_bucket(bucket) || !is_path_in_bucket(bucket, "")) {
     return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
   }
 
@@ -89,7 +139,7 @@ Status LocalObjectStore::create_bucket(const std::string_view &bucket) {
 Status LocalObjectStore::delete_bucket(const std::string_view &bucket) {
   const std::lock_guard<std::mutex> _(mutex_);
 
-  if (!is_valid_key(bucket)) {
+  if (!is_valid_local_bucket(bucket) || !is_path_in_bucket(bucket, "")) {
     return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
   }
 
@@ -103,48 +153,41 @@ Status LocalObjectStore::put_object_from_file(
     const std::string_view &data_file_path) {
   const std::lock_guard<std::mutex> _(mutex_);
 
-  if (!is_valid_key(key)) {
+  if (data_file_path.find('\0') != std::string_view::npos) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid input file path");
+  }
+  if (!is_valid_local_bucket(bucket) || !is_path_in_bucket(bucket, "")) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
+  }
+  if (!is_valid_local_key(key) || !is_path_in_bucket(bucket, key)) {
     return Status(Errors::SE_INVALID, EINVAL, "invalid key");
   }
 
-  std::string key_path = generate_path(bucket, key);
+  const std::string key_path = generate_path(bucket, key);
+
+  std::error_code errcode;
+  if (!fs::is_regular_file(fs::path{std::string(data_file_path)}, errcode)) {
+    const int error = errcode ? errcode.value() : EINVAL;
+    const Errors object_error =
+        errcode ? std_err_code_to_objstore_error(errcode) : Errors::SE_INVALID;
+    return Status(object_error, error,
+                  "Couldn't open input file");
+  }
+
   // key may contains '/', so if its parent directory does not exists, we
   // create for it.
-  int ret = mkdir_p(fs::path(key_path).parent_path().native());
-  assert(!ret);
-
-  // open output file.
-  std::ofstream output_file(key_path, std::ios::binary | std::ios::trunc);
-  if (!output_file) {
-    return Status(Errors::SE_INVALID, EINVAL, "Couldn't open file");
+  const int ret = mkdir_p(fs::path(key_path).parent_path().native());
+  if (ret != 0) {
+    return Status(Errors::SE_IO_ERROR, ret,
+                  std::generic_category().message(ret));
   }
 
-  // open input file.
-  std::ifstream input_file(std::string(data_file_path), std::ios::in | std::ios::binary);
-  if (!input_file.is_open()) {
-    std::error_code errcode(errno, std::generic_category());
-    // if (ENOENT == errcode.value() && !fs::exists(generate_path(bucket))) {
-    //   return Status(Errors::SE_NO_SUCH_BUCKET, ENOENT, "bucket not found");
-    // }
-    Errors error_code = std_err_code_to_objstore_error(errcode);
-    return Status(error_code, errcode.value(), "Couldn't open file");
-  }
-
-  // read input file.
-  input_file.seekg(0, std::ios::end);
-  std::streamsize fileSize = input_file.tellg();
-  input_file.seekg(0, std::ios::beg);
-
-  std::string body;
-  body.resize(fileSize);
-  bool fail = !input_file.read(body.data(), body.size());
-  input_file.close();
-  if (fail) 
-    return Status(Errors::SE_IO_ERROR, EINVAL, "read fail");
-  // write output file.
-  fail = !output_file.write(body.data(), body.size());
-  output_file.close();
-  return fail ? Status(Errors::SE_IO_ERROR, EINVAL, "write fail") : Status();
+  errcode.clear();
+  fs::copy_file(fs::path{std::string(data_file_path)}, fs::path{key_path},
+                fs::copy_options::overwrite_existing, errcode);
+  return errcode ? Status(std_err_code_to_objstore_error(errcode),
+                          errcode.value(), errcode.message())
+                 : Status();
 }
 
 Status LocalObjectStore::get_object_to_file(
@@ -152,44 +195,23 @@ Status LocalObjectStore::get_object_to_file(
     const std::string_view &output_file_path) {
   const std::lock_guard<std::mutex> _(mutex_);
 
-  if (!is_valid_key(key)) {
+  if (output_file_path.find('\0') != std::string_view::npos) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid output file path");
+  }
+  if (!is_valid_local_bucket(bucket)) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
+  }
+  if (!is_valid_local_key(key) || !is_path_in_bucket(bucket, key)) {
     return Status(Errors::SE_INVALID, EINVAL, "invalid key");
   }
 
-  std::string key_path = generate_path(bucket, key);
-
-  // open output file.
-  std::ofstream output_file(std::string(output_file_path), std::ios::binary | std::ios::trunc);
-  if (!output_file) {
-    return Status(Errors::SE_INVALID, EINVAL, "Couldn't open file");
-  }
-
-  // open input file.
-  std::ifstream input_file(key_path, std::ios::in | std::ios::binary);
-  if (!input_file.is_open()) {
-    std::error_code errcode(errno, std::generic_category());
-    // if (ENOENT == errcode.value() && !fs::exists(generate_path(bucket))) {
-    //   return Status(Errors::SE_NO_SUCH_BUCKET, ENOENT, "bucket not found");
-    // }
-    Errors error_code = std_err_code_to_objstore_error(errcode);
-    return Status(error_code, errcode.value(), "Couldn't open file");
-  }
-
-  // read input file.
-  input_file.seekg(0, std::ios::end);
-  std::streamsize fileSize = input_file.tellg();
-  input_file.seekg(0, std::ios::beg);
-
-  std::string body;
-  body.resize(fileSize);
-  bool fail = !input_file.read(body.data(), body.size());
-  input_file.close();
-  if (fail) 
-    return Status(Errors::SE_IO_ERROR, EINVAL, "read fail");
-  // write output file.
-  fail = !output_file.write(body.data(), body.size());
-  output_file.close();
-  return fail ? Status(Errors::SE_IO_ERROR, EINVAL, "write fail") : Status();
+  const std::string key_path = generate_path(bucket, key);
+  std::error_code errcode;
+  fs::copy_file(fs::path{key_path}, fs::path{std::string(output_file_path)},
+                fs::copy_options::overwrite_existing, errcode);
+  return errcode ? Status(std_err_code_to_objstore_error(errcode),
+                          errcode.value(), errcode.message())
+                 : Status();
 }
 
 Status LocalObjectStore::put_object(const std::string_view &bucket,
@@ -198,7 +220,10 @@ Status LocalObjectStore::put_object(const std::string_view &bucket,
                                     bool forbid_overwrite) {
   const std::lock_guard<std::mutex> _(mutex_);
 
-  if (!is_valid_key(key)) {
+  if (!is_valid_local_bucket(bucket)) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
+  }
+  if (!is_valid_local_key(key) || !is_path_in_bucket(bucket, key)) {
     return Status(Errors::SE_INVALID, EINVAL, "invalid key");
   }
 
@@ -214,8 +239,13 @@ Status LocalObjectStore::put_object(const std::string_view &bucket,
   //
   // c++ 23 provide std::ios::noreplace flag for std::ofstream, which can
   // simplify this logic later if we support it.
-  if (forbid_overwrite && fs::exists(key_path)) {
+  std::error_code errcode;
+  if (forbid_overwrite && fs::exists(key_path, errcode)) {
     return Status(Errors::SE_OBJECT_FORBID_OVERWRITE, EEXIST, "file exists");
+  }
+  if (errcode) {
+    return Status(std_err_code_to_objstore_error(errcode), errcode.value(),
+                  errcode.message());
   }
 
   if (key_path.back() == '/') {
@@ -232,14 +262,24 @@ Status LocalObjectStore::put_object(const std::string_view &bucket,
   } else {
     // key may contains '/', so if its parent directory does not exists, we
     // create for it.
-    int ret = mkdir_p(fs::path(key_path).parent_path().native());
-    assert(!ret);
+    const int ret = mkdir_p(fs::path(key_path).parent_path().native());
+    if (ret != 0) {
+      return Status(Errors::SE_IO_ERROR, ret,
+                    std::generic_category().message(ret));
+    }
+    if (data.size() >
+        static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+      return Status(Errors::SE_INVALID, EOVERFLOW, "object is too large");
+    }
     std::ofstream output_file(key_path, std::ios::binary | std::ios::trunc);
     if (!output_file) {
-      return Status(Errors::SE_INVALID, EINVAL, "Couldn't open file");
+      const int error = errno == 0 ? EIO : errno;
+      return Status(Errors::SE_IO_ERROR, error, "Couldn't open file");
     }
 
-    bool fail = !output_file.write(data.data(), data.size());
+    output_file.write(data.data(), static_cast<std::streamsize>(data.size()));
+    output_file.flush();
+    const bool fail = !output_file;
     output_file.close();
     return fail ? Status(Errors::SE_IO_ERROR, EINVAL, "write fail") : Status();
   }
@@ -250,18 +290,22 @@ Status LocalObjectStore::get_object(const std::string_view &bucket,
                                     std::string &body) {
   const std::lock_guard<std::mutex> _(mutex_);
 
-  if (!is_valid_key(key)) {
+  if (!is_valid_local_bucket(bucket)) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
+  }
+  if (!is_valid_local_key(key) || !is_path_in_bucket(bucket, key)) {
     return Status(Errors::SE_INVALID, EINVAL, "invalid key");
   }
 
   std::string key_path = generate_path(bucket, key);
   if (key_path.back() == '/') {
-    if (!fs::exists(key_path)) {
-      // if (!fs::exists(generate_path(bucket))) {
-      //   return Status(Errors::SE_NO_SUCH_BUCKET, ENOENT, "bucket not found");
-      // } else {
+    std::error_code errcode;
+    if (!fs::is_directory(key_path, errcode)) {
+      if (errcode) {
+        return Status(std_err_code_to_objstore_error(errcode), errcode.value(),
+                      errcode.message());
+      }
       return Status(Errors::SE_NO_SUCH_KEY, ENOENT, "key not found");
-      // }
     }
     body.clear();
     return Status();
@@ -276,14 +320,13 @@ Status LocalObjectStore::get_object(const std::string_view &bucket,
       return Status(error_code, errcode.value(), "Couldn't open file");
     }
 
-    input_file.seekg(0, std::ios::end);
-    std::streamsize fileSize = input_file.tellg();
-    input_file.seekg(0, std::ios::beg);
-
-    body.resize(fileSize);
-    bool fail = !input_file.read(body.data(), body.size());
-    input_file.close();
-    return fail ? Status(Errors::SE_IO_ERROR, EIO, "read fail") : Status();
+    std::string result{std::istreambuf_iterator<char>{input_file},
+                       std::istreambuf_iterator<char>{}};
+    if (input_file.bad()) {
+      return Status(Errors::SE_IO_ERROR, EIO, "read fail");
+    }
+    body = std::move(result);
+    return Status();
   }
 }
 
@@ -292,18 +335,22 @@ Status LocalObjectStore::get_object(const std::string_view &bucket,
                                     size_t len, std::string &body) {
   const std::lock_guard<std::mutex> _(mutex_);
 
-  if (!is_valid_key(key)) {
+  if (!is_valid_local_bucket(bucket)) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
+  }
+  if (!is_valid_local_key(key) || !is_path_in_bucket(bucket, key)) {
     return Status(Errors::SE_INVALID, EINVAL, "invalid key");
   }
 
   std::string key_path = generate_path(bucket, key);
   if (key_path.back() == '/') {
-    if (!fs::exists(key_path)) {
-      // if (!fs::exists(generate_path(bucket))) {
-      //   return Status(Errors::SE_NO_SUCH_BUCKET, ENOENT, "bucket not found");
-      // } else {
+    std::error_code errcode;
+    if (!fs::is_directory(key_path, errcode)) {
+      if (errcode) {
+        return Status(std_err_code_to_objstore_error(errcode), errcode.value(),
+                      errcode.message());
+      }
       return Status(Errors::SE_NO_SUCH_KEY, ENOENT, "key not found");
-      // }
     }
     body.clear();
     return Status();
@@ -318,21 +365,37 @@ Status LocalObjectStore::get_object(const std::string_view &bucket,
       return Status(error_code, errcode.value(), "Couldn't open file");
     }
 
-    input_file.seekg(0, std::ios::end);
-    std::streamsize fileSize = input_file.tellg();
-    if (off >= static_cast<size_t>(fileSize)) {
+    std::error_code errcode;
+    const std::uintmax_t file_size = fs::file_size(key_path, errcode);
+    if (errcode) {
+      return Status(std_err_code_to_objstore_error(errcode), errcode.value(),
+                    errcode.message());
+    }
+    if (off >= file_size) {
       return Status(Errors::SE_INVALID, ERANGE, "offset out of range");
     }
 
-    input_file.seekg(off);
-    body.resize(len);
-    bool fail = !input_file.read(body.data(), len);
-    body.resize(input_file.gcount());
-    if (input_file.eof() && input_file.gcount() > 0) {
-      fail = false;
+    const std::uintmax_t remaining = file_size - off;
+    const size_t read_size =
+        static_cast<size_t>(std::min<std::uintmax_t>(remaining, len));
+    if (off > static_cast<size_t>(
+                  std::numeric_limits<std::streamoff>::max()) ||
+        read_size >
+        static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+      return Status(Errors::SE_INVALID, EOVERFLOW, "range too large");
     }
-    input_file.close();
-    return fail ? Status(Errors::SE_IO_ERROR, EIO, "read fail") : Status();
+
+    input_file.seekg(static_cast<std::streamoff>(off));
+    if (!input_file) {
+      return Status(Errors::SE_IO_ERROR, EIO, "seek fail");
+    }
+    std::string result(read_size, '\0');
+    input_file.read(result.data(), static_cast<std::streamsize>(read_size));
+    if (input_file.gcount() != static_cast<std::streamsize>(read_size)) {
+      return Status(Errors::SE_IO_ERROR, EIO, "read fail");
+    }
+    body = std::move(result);
+    return Status();
   }
 }
 
@@ -342,18 +405,23 @@ Status LocalObjectStore::get_object_meta(const std::string_view &bucket,
   const std::lock_guard<std::mutex> _(mutex_);
   bool is_dir = false;
 
-  if (!is_valid_key(key)) {
+  if (!is_valid_local_bucket(bucket) || !is_path_in_bucket(bucket, "")) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
+  }
+  if (!is_valid_local_key(key) || !is_path_in_bucket(bucket, key)) {
     return Status(Errors::SE_INVALID, EINVAL,
-                  std::string("invalid key:") + key.data());
+                  std::string("invalid key:") + std::string(key));
   }
   fs::path key_path = fs::path(generate_path(bucket, key));
-  if (key.back() == '/' && fs::is_directory(key_path)) {
+  std::error_code errcode;
+  if (key.back() == '/' && fs::is_directory(key_path, errcode)) {
     is_dir = true;
-  } else if (key.back() != '/' && fs::is_regular_file(key_path)) {
+  } else if (!errcode && key.back() != '/' &&
+             fs::is_regular_file(key_path, errcode)) {
     // empty
   } else {
     return Status(Errors::SE_INVALID, EINVAL,
-                  std::string("invalid key:") + key.data());
+                  std::string("invalid key:") + std::string(key));
   }
 
   int ret = get_obj_meta_from_file(key_path, meta, is_dir);
@@ -364,7 +432,7 @@ Status LocalObjectStore::get_object_meta(const std::string_view &bucket,
   std::string bucket_path = generate_path(bucket);
   // use lexically_relative() to remove the bucket prefix
   // example: entry: bucket/key_prefix_dir/key -> key_prefix_dir/key
-  meta.key = key_path.lexically_relative(bucket_path).c_str();
+  meta.key = key_path.lexically_relative(bucket_path).generic_string();
   return Status();
 }
 
@@ -374,21 +442,29 @@ Status process_local_obj_meta(ObjectMeta &meta,
                               std::string_view bucket_path,
                               const std::string_view &prefix, bool recursive) {
   bool is_dir = false;
-  if (fs::is_directory(entry)) {
+  std::error_code errcode;
+  if (entry.is_symlink(errcode)) {
+    return Status(Errors::SE_INVALID, ELOOP,
+                  "symbolic links are not valid local objects");
+  }
+  if (!errcode && entry.is_directory(errcode)) {
     is_dir = true;
-    meta.key = entry.path().lexically_relative(bucket_path).c_str();
+    meta.key =
+        entry.path().lexically_relative(bucket_path).generic_string();
     if (meta.key.back() != '/') {
       meta.key.append("/");
     }
-  } else if (fs::is_regular_file(entry)) {
+  } else if (!errcode && entry.is_regular_file(errcode)) {
     // use lexically_relative() to remove the bucket prefix
     // example: entry: bucket/key_prefix_dir/key -> key_prefix_dir/key
-    meta.key = entry.path().lexically_relative(bucket_path).c_str();
+    meta.key =
+        entry.path().lexically_relative(bucket_path).generic_string();
   } else {
-    return Status(Errors::SE_INVALID, EINVAL, "invalid file type");
+    const int error = errcode ? errcode.value() : EINVAL;
+    return Status(Errors::SE_INVALID, error, "invalid file type");
   }
 
-  if (meta.key.find(prefix) == 0) {
+  if (meta.key.starts_with(prefix)) {
     if (recursive || is_first_level_sub_key(meta.key, prefix)) {
       int ret = get_obj_meta_from_file(entry.path(), meta, is_dir);
       if (ret != 0) {
@@ -402,34 +478,66 @@ Status process_local_obj_meta(ObjectMeta &meta,
 }
 
 Status LocalObjectStore::list_object(const std::string_view &bucket,
-                                     const std::string_view &prefix
-                                     [[maybe_unused]],
+                                     const std::string_view &prefix,
                                      bool recursive,
-                                     std::string &start_after [[maybe_unused]],
+                                     std::string &start_after,
                                      bool &finished,
                                      std::vector<ObjectMeta> &objects) {
   const std::lock_guard<std::mutex> _(mutex_);
 
-  std::string bucket_path = generate_path(bucket);
+  if (!is_valid_local_bucket(bucket) || !is_path_in_bucket(bucket, "")) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
+  }
+  if ((!prefix.empty() &&
+       (!is_valid_local_key(prefix) || !is_path_in_bucket(bucket, prefix))) ||
+      (!start_after.empty() && !is_valid_local_key(start_after))) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid list key");
+  }
+
+  const std::string bucket_path = generate_path(bucket);
   objects.clear();
 
-  if (!fs::exists(bucket_path)) {
+  std::error_code errcode;
+  if (!fs::is_directory(bucket_path, errcode)) {
+    if (errcode && errcode.value() != ENOENT) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+    }
     return Status(Errors::SE_NO_SUCH_BUCKET, ENOENT, "bucket not found");
   }
 
-  for (const auto &entry : fs::recursive_directory_iterator(bucket_path)) {
+  fs::recursive_directory_iterator entry(bucket_path, errcode);
+  const fs::recursive_directory_iterator end;
+  if (errcode) {
+    return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+  }
+  for (; entry != end; entry.increment(errcode)) {
+    if (errcode) {
+      return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
+    }
     ObjectMeta meta;
-    Status s = process_local_obj_meta(meta, entry, objects, bucket_path,
+    Status s = process_local_obj_meta(meta, *entry, objects, bucket_path,
                                       prefix, recursive);
     if (!s.is_succ()) {
       return s;
     }
+  }
+  if (errcode) {
+    return Status(Errors::SE_IO_ERROR, errcode.value(), errcode.message());
   }
 
   // sort the objects by key in lexicographical order.
   std::sort(
       objects.begin(), objects.end(),
       [](const ObjectMeta &a, const ObjectMeta &b) { return a.key < b.key; });
+  if (!start_after.empty()) {
+    objects.erase(
+        objects.begin(),
+        std::upper_bound(
+            objects.begin(), objects.end(), start_after,
+            [](std::string_view key, const ObjectMeta &object) {
+              return key < object.key;
+            }));
+  }
 
   finished = true;
   return Status();
@@ -439,7 +547,10 @@ Status LocalObjectStore::delete_object(const std::string_view &bucket,
                                        const std::string_view &key) {
   const std::lock_guard<std::mutex> _(mutex_);
 
-  if (!is_valid_key(key)) {
+  if (!is_valid_local_bucket(bucket)) {
+    return Status(Errors::SE_INVALID, EINVAL, "invalid bucket");
+  }
+  if (!is_valid_local_key(key) || !is_path_in_bucket(bucket, key)) {
     return Status(Errors::SE_INVALID, EINVAL, "invalid key");
   }
 
@@ -451,13 +562,11 @@ Status LocalObjectStore::delete_object(const std::string_view &bucket,
       len -= 1;
     } else {
       return Status(Errors::SE_INVALID, EINVAL,
-                    std::string("invalid key:") + key.data());
+                    std::string("invalid key:") + std::string(key));
     }
   }
 
   const std::string key_path_str = generate_path(bucket, key.substr(0, len));
-  const std::string bucket_path_str = generate_path(bucket);
-
   fs::path key_path = fs::path(key_path_str);
 
   int ret = rm_f(key_path.c_str());
