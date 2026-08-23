@@ -47,3 +47,18 @@ index 1170d840..ac66fcd0 100644
 +#define WESQL_VERSION              "@WESQL_VERSION@"
 +
  #ifndef LICENSE
+diff --git a/mysys/print_version.cc b/mysys/print_version.cc
+index 6108ab48..0482781d 100644
+--- a/mysys/print_version.cc
++++ b/mysys/print_version.cc
+@@ -68,4 +68,10 @@ void print_version_debug() {
+ void print_explicit_version(const char *version) {
++#ifdef WESQL
++  printf("%s  Ver %s for %s on %s (%s) WeSQL %s\n", my_progname, version,
++         SYSTEM_TYPE, MACHINE_TYPE, MYSQL_COMPILATION_COMMENT_SERVER,
++         WESQL_VERSION);
++#else
+   printf("%s  Ver %s for %s on %s (%s)\n", my_progname, version, SYSTEM_TYPE,
+          MACHINE_TYPE, MYSQL_COMPILATION_COMMENT_SERVER);
++#endif
+ }
