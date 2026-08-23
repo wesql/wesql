@@ -45,12 +45,20 @@ MACRO(PREPARE_BUNDLED_OBJSTORE_S3)
   SET(AWS_WARNINGS_ARE_ERRORS OFF CACHE BOOL
     "Do not promote AWS CRT warnings to errors" FORCE)
 
+  # The bundled release tree has no .git directory. Let the SDK use its
+  # generated version header without emitting a failed Git probe.
+  SET(OBJSTORE_SAVED_GIT_FOUND ${GIT_FOUND})
+  SET(GIT_FOUND FALSE)
+
   # SYSTEM marks every AWS/CRT target created below, so their public headers
   # remain third-party headers when consumed by WeSQL targets.
   ADD_SUBDIRECTORY(
     ${PROJECT_SOURCE_DIR}/extra/aws-sdk-cpp
     ${OBJSTORE_AWS_BINARY_DIR}
     SYSTEM)
+
+  SET(GIT_FOUND ${OBJSTORE_SAVED_GIT_FOUND})
+  UNSET(OBJSTORE_SAVED_GIT_FOUND)
 ENDMACRO()
 
 MACRO(FIND_SYSTEM_OBJSTORE_S3)
