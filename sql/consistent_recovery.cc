@@ -1582,6 +1582,8 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
   source_se_objecstore_prefix.append(
       CONSISTENT_RECOVERY_SMARTENGINE_OBJECTSTORE_ROOT_PATH);
   source_se_objecstore_prefix.append(FN_DIRSEP);
+  const std::string source_se_objecstore_locks_prefix =
+      source_se_objecstore_prefix + "locks/";
 
   err_msg.assign("recovery smartengine sst from source ");
   err_msg.append(source_se_objecstore_prefix);
@@ -1597,6 +1599,11 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
 
   assert(objects.size() > 0);
   for (const auto &object : objects) {
+    // Locks belong to the source instance and must not be restored.
+    if (object.key.compare(0, source_se_objecstore_locks_prefix.length(),
+                           source_se_objecstore_locks_prefix) == 0)
+      continue;
+
     std::string data{};
     // get object from source object store.
     objstore::Status ss = recovery_objstore->get_object(
@@ -1610,8 +1617,6 @@ bool Consistent_recovery::recovery_smartengine_objectstore_data() {
       LogErr(ERROR_LEVEL, ER_CONSISTENT_RECOVERY_LOG, err_msg.c_str());
       return true;
     }
-    // skip smartengine lease_lock object.
-    if (object.key.find("lease_lock") != std::string::npos) continue;
     // replace smartengine root path
     // suffix of the object key
     std::string object_key_suffix =
