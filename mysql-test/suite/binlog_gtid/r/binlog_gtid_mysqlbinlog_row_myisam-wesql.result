@@ -2393,10 +2393,8 @@ DELIMITER /*!*/;
 # # server id #  end_log_pos # CRC32 # 	Start: binlog v #, server v # created # at startup
 ROLLBACK/*!*/;
 # at #
-# at #
 # # server id #  end_log_pos # CRC32 # 	Previous-GTIDs
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=1785
+# [empty]
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=no	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -2511,8 +2509,6 @@ crn INT -- row number
 ) ENGINE=MyISAM DEFAULT CHARSET latin1
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=790
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -2619,8 +2615,6 @@ SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=6368
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -2725,8 +2719,6 @@ BEGIN
 SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=5600
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -2914,8 +2906,6 @@ SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=6613
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -3101,8 +3091,6 @@ SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=6613
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -3287,8 +3275,6 @@ BEGIN
 SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=5636
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -3475,8 +3461,6 @@ SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=5636
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -3662,8 +3646,6 @@ SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=6368
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -3768,8 +3750,6 @@ BEGIN
 SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=790
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -3876,8 +3856,6 @@ SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=5594
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -3982,8 +3960,6 @@ BEGIN
 SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=571
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -4188,10 +4164,8 @@ DELIMITER /*!*/;
 # # server id #  end_log_pos # CRC32 # 	Start: binlog v #, server v # created # at startup
 ROLLBACK/*!*/;
 # at #
-# at #
 # # server id #  end_log_pos # CRC32 # 	Previous-GTIDs
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=263
+# [empty]
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=no	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -4220,8 +4194,6 @@ c47 VARCHAR(24),
 crn INT -- row number
 ) ENGINE=MyISAM DEFAULT CHARSET latin1
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=491
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -4291,8 +4263,6 @@ BEGIN
 SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=605
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -4380,8 +4350,6 @@ BEGIN
 SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=453
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -4628,10 +4596,8 @@ DELIMITER /*!*/;
 # # server id #  end_log_pos # CRC32 # 	Start: binlog v #, server v # created # at startup
 ROLLBACK/*!*/;
 # at #
-# at #
 # # server id #  end_log_pos # CRC32 # 	Previous-GTIDs
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=270
+# [empty]
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=no	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -4661,8 +4627,6 @@ c_1_n INT -- row number
 ) ENGINE=MyISAM DEFAULT CHARSET latin1
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=270
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=no	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
 # immediate_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -4681,8 +4645,6 @@ c_2_n INT -- row number
 ) ENGINE=MyISAM DEFAULT CHARSET latin1
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=270
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=no	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
 # immediate_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -4700,8 +4662,6 @@ c_3_2 VARCHAR(255),
 c_3_n INT -- row number
 ) ENGINE=MyISAM DEFAULT CHARSET latin1
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=518
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -4772,8 +4732,6 @@ SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=518
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -4842,8 +4800,6 @@ BEGIN
 SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=518
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -4914,8 +4870,6 @@ SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=163
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=no	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
 # immediate_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -4928,8 +4882,6 @@ SET @@SESSION.GTID_NEXT= '#'/*!*/;
 SET TIMESTAMP=#/*!*/;
 ANALYZE TABLE t1
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=163
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=no	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -4944,8 +4896,6 @@ SET TIMESTAMP=#/*!*/;
 ANALYZE TABLE t2
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=163
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=no	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
 # immediate_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -4958,8 +4908,6 @@ SET @@SESSION.GTID_NEXT= '#'/*!*/;
 SET TIMESTAMP=#/*!*/;
 ANALYZE TABLE t3
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=1313
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
@@ -5157,8 +5105,6 @@ SET TIMESTAMP=#/*!*/;
 COMMIT
 /*!*/;
 # at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=896
-# at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -5349,10 +5295,8 @@ DELIMITER /*!*/;
 # # server id #  end_log_pos # CRC32 # 	Start: binlog v #, server v # created # at startup
 ROLLBACK/*!*/;
 # at #
-# at #
 # # server id #  end_log_pos # CRC32 # 	Previous-GTIDs
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=257
+# [empty]
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=no	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 # original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)
@@ -5381,8 +5325,6 @@ c2 INT,
 c3 VARCHAR(60)
 ) ENGINE=MyISAM DEFAULT CHARSET latin1
 /*!*/;
-# at #
-# # server id #  end_log_pos # CRC32 # 	Consensus flag=#	term=#	index=#	length=359
 # at #
 # # server id #  end_log_pos # CRC32 # 	GTID	last_committed=#	sequence_number=#	rbr_only=yes	original_committed_timestamp=#   immediate_commit_timestamp=#	transaction_length=#
 /*!50718 SET TRANSACTION ISOLATION LEVEL READ COMMITTED*//*!*/;
