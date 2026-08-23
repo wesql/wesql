@@ -30,7 +30,6 @@ master-bin.000001	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 master-bin.000001	#	Query	#	#	XA END X'7869645f706172746c795f726f6c6c65645f6261636b',X'',1
 master-bin.000001	#	XA_prepare	#	#	XA PREPARE X'7869645f706172746c795f726f6c6c65645f6261636b',X'',1
 master-bin.000001	#	Query	#	#	XA ROLLBACK X'7869645f706172746c795f726f6c6c65645f6261636b',X'',1
-master-bin.000001	#	Consensus_empty	#	#	##CONSENSUS EMPTY'
 SET @save.sql_log_bin = @@session.sql_log_bin;
 SET @@session.sql_log_bin = 0;
 XA ROLLBACK 'xid_partly_rolled_back';

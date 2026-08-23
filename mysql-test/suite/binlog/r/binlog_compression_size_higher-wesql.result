@@ -7,5 +7,4 @@ binlog_transaction_compression	ON
 PREPARE s FROM "INSERT INTO t1 (x) VALUES (?)";
 SET @a = LOAD_FILE('../../std_data/binlog_compression.gz');
 EXECUTE s USING @a;
-include/assert_binlog_events.inc [Previous_consensus_index # !Gtid_or_anon # !DDL # !Gtid_or_anon # Transaction_payload # !Begin # Table_map # Write_rows # Xid]
 DROP TABLE t1;

@@ -193,77 +193,6 @@ index d666e072d61..c13feed5899 100644
  #ifndef LICENSE
  #define LICENSE                     GPL
  #endif /* LICENSE */
-diff --git a/libbinlogevents/include/binlog_event.h b/libbinlogevents/include/binlog_event.h
-index f2714f6291b..4cf4175ab31 100644
---- a/libbinlogevents/include/binlog_event.h
-+++ b/libbinlogevents/include/binlog_event.h
-@@ -357,10 +357,14 @@ enum Log_event_type {
-   TRANSACTION_PAYLOAD_EVENT = 40,
- 
-   HEARTBEAT_LOG_EVENT_V2 = 41,
--  /**
--    Add new events here - right above this comment!
--    Existing events (except ENUM_END_EVENT) should never change their numbers
--  */
-+/**
-+  Add new events here - right above this comment!
-+  Existing events (except ENUM_END_EVENT) should never change their numbers
-+*/
-+  CONSENSUS_LOG_EVENT = 101,
-+  PREVIOUS_CONSENSUS_INDEX_LOG_EVENT = 102,
-+  CONSENSUS_CLUSTER_INFO_EVENT = 103,
-+  CONSENSUS_EMPTY_EVENT = 104,
-   ENUM_END_EVENT /* end marker */
- };
- 
-diff --git a/libbinlogevents/include/control_events.h b/libbinlogevents/include/control_events.h
-index d9277e14952..b0f3e7ab8be 100644
---- a/libbinlogevents/include/control_events.h
-+++ b/libbinlogevents/include/control_events.h
-@@ -47,6 +47,7 @@
- #include "compression/base.h"  // binary_log::transaction::compression::type
- #include "template_utils.h"
- #include "uuid.h"
-+#include "control_consensus_events.h"  // consensus events defination
- 
- namespace binary_log {
- /**
-diff --git a/libbinlogevents/src/CMakeLists.txt b/libbinlogevents/src/CMakeLists.txt
-index c21d493e40b..a7a4b1a2cfa 100644
---- a/libbinlogevents/src/CMakeLists.txt
-+++ b/libbinlogevents/src/CMakeLists.txt
-@@ -53,5 +53,6 @@ SET(REPLICATION_SOURCES
-   trx_boundary_parser.cpp
-   uuid.cpp
-+  control_consensus_events.cc
-   )
-
- MY_CHECK_CXX_COMPILER_WARNING("-Wmissing-profile" HAS_MISSING_PROFILE)
-diff --git a/libbinlogevents/src/control_events.cpp b/libbinlogevents/src/control_events.cpp
-index b3525d006f4..fe901b8d81b 100644
---- a/libbinlogevents/src/control_events.cpp
-+++ b/libbinlogevents/src/control_events.cpp
-@@ -92,7 +92,7 @@ Format_description_event::Format_description_event(uint8_t binlog_ver,
-         This will be used to initialize the post_header_len,
-         for binlog version 4.
-       */
--      static uint8_t server_event_header_length[] = {
-+      static uint8_t server_event_header_length[LOG_EVENT_TYPES + 1] = {
-           0, QUERY_HEADER_LEN, STOP_HEADER_LEN, ROTATE_HEADER_LEN,
-           INTVAR_HEADER_LEN, 0,
-           /*
-diff --git a/libbinlogevents/src/trx_boundary_parser.cpp b/libbinlogevents/src/trx_boundary_parser.cpp
-index b4e432ce47b..bd583174d36 100644
---- a/libbinlogevents/src/trx_boundary_parser.cpp
-+++ b/libbinlogevents/src/trx_boundary_parser.cpp
-@@ -247,6 +247,7 @@ Transaction_boundary_parser::get_event_boundary_type(
-     case binary_log::HEARTBEAT_LOG_EVENT:
-     case binary_log::HEARTBEAT_LOG_EVENT_V2:
-     case binary_log::PREVIOUS_GTIDS_LOG_EVENT:
-+    case binary_log::PREVIOUS_CONSENSUS_INDEX_LOG_EVENT:
-     case binary_log::STOP_EVENT:
-     case binary_log::SLAVE_EVENT:
-     case binary_log::DELETE_FILE_EVENT:
 diff --git a/mysql-test/CMakeLists.txt b/mysql-test/CMakeLists.txt
 index 67154713258..615336f2cd9 100644
 --- a/mysql-test/CMakeLists.txt
@@ -310,62 +239,6 @@ index 67154713258..615336f2cd9 100644
        DESTINATION ${INSTALL_DOCREADMEDIR}
        COMPONENT TestReadme
        RENAME README-test
-diff --git a/mysql-test/extra/rpl_tests/create_recursive_construct.inc b/mysql-test/extra/rpl_tests/create_recursive_construct.inc
-index e33fe7c6c3b..9afded4de3b 100644
---- a/mysql-test/extra/rpl_tests/create_recursive_construct.inc
-+++ b/mysql-test/extra/rpl_tests/create_recursive_construct.inc
-@@ -346,7 +346,12 @@ if ($CRC_RET_stmt_sidef) {
-   --source include/assert.inc
- 
-   --let $assert_text= Only two events should exist in the binary log
--  --let $assert_cond= "[SHOW BINLOG EVENTS, Event_type, 3]" = "No such row"
-+  {
-+    --let $assert_cond= "[SHOW BINLOG EVENTS, Event_type, 3]" = "No such row"
-+  }
-+  {
-+    --let $assert_cond= "[SHOW BINLOG EVENTS, Event_type, 4]" = "No such row"
-+  }
-   --source include/assert.inc
-   SET SQL_LOG_BIN = 1;
- 
-@@ -371,6 +378,16 @@ if ($CRC_RET_stmt_sidef) {
-   {
-     --let $tbl_map_event_pos = 6
-   }
-+  {
-+    #  1. Format_description_log_event
-+    #  2. Previous_consensus_index_log_event
-+    #  3. Previous_gtids_log_event
-+    #  4. Consensus_log_event
-+    #  5. Gtid_log_event
-+    #  6. Query_event('BEGIN')
-+    #  7. Table_map_log_event for the unsafe statement.
-+    --let $tbl_map_event_pos =`SELECT $tbl_map_event_pos + 2`
-+  }
-   --let $assert_text= Event should be a Table_map_log_event
-   --let $assert_cond= "[SHOW BINLOG EVENTS, Event_type, $tbl_map_event_pos]" = "Table_map"
-   --source include/assert.inc
-diff --git a/mysql-test/include/assert_binlog_events.inc b/mysql-test/include/assert_binlog_events.inc
-index 5cbb100c634..5e478d8b76d 100644
---- a/mysql-test/include/assert_binlog_events.inc
-+++ b/mysql-test/include/assert_binlog_events.inc
-@@ -269,14 +269,14 @@ while ($_abe_verdict != 'ok')
-       if (
-         # include header events
-         ($include_header_events and
--         ($1 eq 'Format_desc' || $1 eq 'Rotate' || $1 eq 'Previous_gtids')) or
-+         ($1 eq 'Format_desc' || $1 eq 'Rotate' || $1 eq 'Previous_gtids' || $1 eq 'Consensus_empty' || $1 eq 'Consensus_log')) or
- 
-         # include trx payload events
-         ($include_trx_payload_events and ($1 eq 'Transaction_payload')) or
- 
-         # include all other events
-         ($1 ne 'Format_desc' && $1 ne 'Rotate' &&
--         $1 ne 'Previous_gtids' && $1 ne 'Transaction_payload')
-+         $1 ne 'Previous_gtids' && $1 ne 'Transaction_payload' && $1 ne 'Consensus_empty' && $1 ne 'Consensus_log')
-       )
-       {
-         chomp;
 diff --git a/mysql-test/include/default_mysqld.cnf b/mysql-test/include/default_mysqld.cnf
 index 1cc96ca8723..bff4b458cd0 100644
 --- a/mysql-test/include/default_mysqld.cnf
@@ -376,47 +249,6 @@ index 1cc96ca8723..bff4b458cd0 100644
  log-error-verbosity=3
 +[mysqld.1]
 +report-port=                @mysqld.1.port
-diff --git a/mysql-test/include/mysqlbinlog.inc b/mysql-test/include/mysqlbinlog.inc
-index 7bc2cc19ce2..e0e6ddd8275 100644
---- a/mysql-test/include/mysqlbinlog.inc
-+++ b/mysql-test/include/mysqlbinlog.inc
-@@ -113,6 +113,15 @@ if (!$mysqlbinlog_skip_replace)
-     /SET @@session.immediate_server_version=[0-9]*/SET @@session.immediate_server_version= IMMEDIATE_SERVER_VERSION/
-     /SET @@SESSION.GTID_NEXT= '.*'/SET @@SESSION.GTID_NEXT= '#'/
-     /CRC32 0x[0-9a-f]{8}/CRC32 #/
-+    /Previous Consensus index=[0-9]*/Previous Consensus index=#/
-+    /Consensus flag=[0-9]*/Consensus flag=#/
-+    /term=[0-9]*/term=#/
-+    /index=[0-9]*/index=#/
-+    /PREV_CONSENSUS_INDEX: [0-9]*/PREV_CONSENSUS_INDEX: #/
-+    /CONSENSUS FLAG: [0-9]*/CONSENSUS FLAG: #/
-+    /TERM: [0-9]*/TERM: #/
-+    /INDEX: [0-9]*/INDEX: #/
-+    /LENGTH: [0-9]*/LENGTH: #/
-     /# [a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}:/# #:/;
- }
- 
-diff --git a/mysql-test/include/show_events.inc b/mysql-test/include/show_events.inc
-index 8d2399a9bae..4d31622c76d 100644
---- a/mysql-test/include/show_events.inc
-+++ b/mysql-test/include/show_events.inc
-@@ -108,6 +108,7 @@ let $script=
-   s{((?:master|slave|slave-relay)-bin\.[0-9]{6};pos=)[0-9]+DOLLAR}{DOLLAR1POS};
-   s{(binlog\.[0-9]{6};pos=)[0-9]+DOLLAR}{DOLLAR1POS};
-   s{SONAME ".*"}{SONAME "LIB"};
-+  s{##PREV_CONSENSUS_INDEX: [0-9]+}{##PREV_CONSENSUS_INDEX: #};
-   s{DOLLARmysqltest_vardir}{MYSQLTEST_VARDIR}g;
- ||
- --let $pre_script= my DOLLARmysqltest_vardir = DOLLARENV{'MYSQLTEST_VARDIR'};
-@@ -170,6 +171,8 @@ if (!$keep_ddl_xid)
- {
-   --let $script= $script s{ /\* XID # \*/}{};
- }
-+--let $script= $script DOLLAR_ = '' if (m{\t(?:Previous_consensus_index)\t});
-+--let $script= $script DOLLAR_ = '' if (m{\t(?:Consensus_log)\t});
- --delimiter ;
- 
- #--let $select_columns= 1 3 6
 diff --git a/mysql-test/include/wait_condition.inc b/mysql-test/include/wait_condition.inc
 index 4d505e9fdd4..e5ed7959926 100644
 --- a/mysql-test/include/wait_condition.inc
@@ -2129,18 +1961,6 @@ index c3ffc36e21b..139b436c815 100644
      case binary_log::WRITE_ROWS_EVENT:
        ev = new Write_rows_log_event(buf, fde);
        break;
-+    case binary_log::CONSENSUS_LOG_EVENT:
-+      ev = new Consensus_log_event(buf, 0, fde);
-+      break;
-+    case binary_log::PREVIOUS_CONSENSUS_INDEX_LOG_EVENT:
-+      ev = new Previous_consensus_index_log_event(buf, 0, fde);
-+      break;
-+    case binary_log::CONSENSUS_CLUSTER_INFO_EVENT:
-+      ev = new Consensus_cluster_info_log_event(buf, 0, fde);
-+      break;
-+    case binary_log::CONSENSUS_EMPTY_EVENT:
-+      ev = new Consensus_empty_log_event(buf, 0, fde);
-+      break;
      case binary_log::UPDATE_ROWS_EVENT:
        ev = new Update_rows_log_event(buf, fde);
        break;
@@ -2505,14 +2325,6 @@ index b8e1541b2a9..81fcfe57ad2 100644
        return "XA_prepare";
      case binary_log::PARTIAL_UPDATE_ROWS_EVENT:
        return "Update_rows_partial";
-+    case binary_log::CONSENSUS_LOG_EVENT:
-+      return "Consensus_log";
-+    case binary_log::PREVIOUS_CONSENSUS_INDEX_LOG_EVENT:
-+      return "Previous_consensus_index";
-+    case binary_log::CONSENSUS_CLUSTER_INFO_EVENT:
-+      return "Consensus_cluster_info";
-+    case binary_log::CONSENSUS_EMPTY_EVENT:
-+      return "Consensus_empty";
      case binary_log::TRANSACTION_PAYLOAD_EVENT:
        return "Transaction_payload";
      default:
@@ -2520,7 +2332,6 @@ index b8e1541b2a9..81fcfe57ad2 100644
                which IO thread instantiates via queue_binlog_ver_3_event.
             */
             get_type_code() == binary_log::ROTATE_EVENT ||
-+           get_type_code() == binary_log::PREVIOUS_CONSENSUS_INDEX_LOG_EVENT ||
             /*
                The previous event has its checksum option defined
                according to the format description event.
@@ -2528,7 +2339,6 @@ index b8e1541b2a9..81fcfe57ad2 100644
        uint2korr(buf + FLAGS_OFFSET) & LOG_EVENT_IGNORABLE_F;
    return std::make_pair(false, event_info);
  }
-+#include "consensus_log_event.cc"
 diff --git a/sql/log_event.h b/sql/log_event.h
 index c288026b810..22d6c7b9d24 100644
 --- a/sql/log_event.h
@@ -2537,22 +2347,6 @@ index c288026b810..22d6c7b9d24 100644
      return common_header->type_code;
    }
  
-+  bool is_control_event() {
-+    return common_header->type_code == binary_log::FORMAT_DESCRIPTION_EVENT ||
-+           common_header->type_code ==
-+               binary_log::PREVIOUS_CONSENSUS_INDEX_LOG_EVENT ||
-+           common_header->type_code == binary_log::PREVIOUS_GTIDS_LOG_EVENT ||
-+           common_header->type_code == binary_log::CONSENSUS_LOG_EVENT ||
-+           common_header->type_code == binary_log::ROTATE_EVENT;
-+  }
-+  /* event generate by consensus replication */
-+  bool is_consensus_event() {
-+    return common_header->type_code ==
-+               binary_log::PREVIOUS_CONSENSUS_INDEX_LOG_EVENT ||
-+           common_header->type_code == binary_log::CONSENSUS_LOG_EVENT ||
-+           common_header->type_code == binary_log::CONSENSUS_EMPTY_EVENT ||
-+           common_header->type_code == binary_log::CONSENSUS_CLUSTER_INFO_EVENT;
-+  }
    /**
      Return true if the event has to be logged using SBR for DMLs.
    */
@@ -2560,7 +2354,6 @@ index c288026b810..22d6c7b9d24 100644
  /**
    @} (end of group Replication)
  */
-+#include "sql/consensus_log_event.h"
  
  #endif /* _log_event_h */
 diff --git a/sql/mysqld.cc b/sql/mysqld.cc

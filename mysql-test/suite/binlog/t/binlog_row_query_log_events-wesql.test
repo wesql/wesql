@@ -23,9 +23,6 @@ if (`SELECT @@session.binlog_transaction_compression`)
   --let $row_number= 4
 }
 
---echo ##Adding event and consensus log event  The number of query event is modified from 3 to 5
---let $row_number= 4
-
 --let $logged_query= query_get_value(SHOW BINLOG EVENTS IN "$binlog_file" FROM $binlog_position, Info, $row_number)
 --let $assert_cond= `SELECT "$logged_query" LIKE "%$query"`
 --source include/assert.inc

@@ -44,7 +44,6 @@
 #include "sql/binlog_ostream.h"
 #include "sql/binlog_reader.h"
 #include "sql/changestreams/apply/replication_thread_status.h"
-#include "sql/consensus_log_event.h"
 #include "sql/consistent_archive.h"
 #include "sql/debug_sync.h"
 #include "sql/derror.h"

@@ -63,11 +63,8 @@ CREATE TEMPORARY TABLE binlogs
 (id INT PRIMARY KEY AUTO_INCREMENT, filename VARCHAR(512));
 include/rpl_read_binlog_index_into_table.inc
 master-bin.000001
-include/assert_binlog_events.inc [Format_desc # Previous_consensus_index # Previous_gtids(.|#)*]
 master-bin.000002
-include/assert_binlog_events.inc [Format_desc # Previous_consensus_index # Previous_gtids(.|#)*]
 master-bin.000003
-include/assert_binlog_events.inc [Format_desc # Previous_consensus_index # Previous_gtids(.|#)*]
 DROP TEMPORARY TABLE binlogs;
 SET SQL_LOG_BIN= 1;
 ==== Test that relay logs contain Previous_gtids ====

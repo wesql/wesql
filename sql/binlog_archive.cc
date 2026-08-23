@@ -43,7 +43,6 @@
 #include "sql/binlog_istream.h"
 #include "sql/binlog_ostream.h"
 #include "sql/binlog_reader.h"
-#include "sql/consensus_log_event.h"
 #include "sql/consistent_archive.h"
 #include "sql/debug_sync.h"
 #include "sql/derror.h"
@@ -1714,12 +1713,6 @@ int Binlog_archive::archive_event(File_reader &reader, uchar *event_ptr,
         m_binlog_in_transaction = false;
         break;
       }
-      case binary_log::CONSENSUS_LOG_EVENT: {
-        Consensus_log_event ev(reinterpret_cast<char *>(event_ptr), event_len,
-                               &reader.format_description_event());
-        m_mysql_end_consensus_index = ev.get_index();
-        break;
-      }
       default: {
         break;
       }
@@ -1823,7 +1816,6 @@ int Binlog_archive::archive_event(File_reader &reader, uchar *event_ptr,
   // slice.
   if (m_binlog_in_transaction == false &&
       !(type == binary_log::GTID_LOG_EVENT ||
-        type == binary_log::CONSENSUS_LOG_EVENT ||
         type == binary_log::ANONYMOUS_GTID_LOG_EVENT) &&
       !(type == binary_log::USER_VAR_EVENT ||
         type == binary_log::INTVAR_EVENT || type == binary_log::RAND_EVENT)) {
