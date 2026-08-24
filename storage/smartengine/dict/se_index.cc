@@ -19,7 +19,7 @@
 #include "field.h"
 #include "sql_table.h"
 #include "table.h"
-#include "my_bit.h"
+#include <bit>
 #include "dict/se_field_pack.h"
 #include "dict/se_table.h"
 #include "dict/se_cf_manager.h"
@@ -511,7 +511,7 @@ uint SeKeyDef::pack_index_tuple(TABLE *tbl, uchar *pack_buffer,
   uint key_len = calculate_key_len(tbl, m_keyno, keypart_map);
   key_restore(tbl->record[0], key_tuple_local, &tbl->key_info[m_keyno], key_len);
 
-  uint n_used_parts = my_count_bits(keypart_map);
+  uint n_used_parts = std::popcount(keypart_map);
   if (keypart_map == HA_WHOLE_KEY)
     n_used_parts = 0; // Full key is used
 

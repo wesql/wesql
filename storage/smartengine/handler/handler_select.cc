@@ -20,7 +20,7 @@
 #include "sql/debug_sync.h"
 #include "sql/item.h"
 #include "sql/sql_class.h"
-#include "my_bit.h"
+#include <bit>
 #include "dict/se_field_pack.h"
 #include "dict/se_table.h"
 #include "dict/se_dict_util.h"
@@ -2121,7 +2121,7 @@ int ha_smartengine::index_read_map_impl(uchar *const buf,
 
   bool use_all_keys = false;
   if (find_flag == HA_READ_KEY_EXACT &&
-      my_count_bits(keypart_map) == kd.get_key_parts())
+      std::popcount(keypart_map) == kd.get_key_parts())
     use_all_keys = true;
 
   SeTransaction *const tx = get_or_create_tx(table->in_use);

@@ -136,7 +136,9 @@ const SeCollationCodec *se_init_collation_mapping(const my_core::CHARSET_INFO *c
           for (uint idx = 0; idx < p.second.size(); idx++)
           {
             uchar src= p.second[idx];
-            uchar bits= my_bit_log2(my_round_up_to_next_power(p.second.size()));
+            uchar bits = static_cast<uchar>(
+                std::bit_width(std::bit_ceil(p.second.size())) -
+                (p.second.size() != 0));
             cur->m_enc_idx[src]= idx;
             cur->m_enc_size[src]= bits;
             cur->m_dec_size[dst]= bits;

@@ -19,9 +19,9 @@
 #define SE_DICT_XE_COLLATION_H_
 
 #include <array>
+#include <bit>
 #include <memory>
 #include <vector>
-#include "my_bit.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "dict/se_field_pack.h"
@@ -157,8 +157,9 @@ C *se_compute_lookup_values(const my_core::CHARSET_INFO *cs)
     for (T idx = 0; idx < p.second.size(); idx++)
     {
       auto src= p.second[idx];
-      uchar bits=
-        my_bit_log2(my_round_up_to_next_power(p.second.size()));
+      uchar bits = static_cast<uchar>(
+          std::bit_width(std::bit_ceil(p.second.size())) -
+          (p.second.size() != 0));
       cur->m_enc_idx[src]= idx;
       cur->m_enc_size[src]= bits;
       cur->m_dec_size[dst]= bits;
