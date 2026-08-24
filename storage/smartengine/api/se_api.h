@@ -61,6 +61,8 @@ typedef se_opaque_t		SE_CHARset_t;
 typedef se_ulint_t		se_bool_t;
 typedef se_u64_t		se_id_u64_t;
 
+namespace se {
+
 enum dberr_t {
   /**like DB_SUCCESS, but a new explicit record lock was created */
 	DB_SUCCESS_LOCKED_REC = 9,
@@ -224,6 +226,10 @@ enum dberr_t {
 	/**meta information in container is invalid */
 	DB_META_INVAL
 };
+
+}  // namespace se
+
+typedef se::dberr_t se_err_t;
 
 #define SE_SQL_NULL 0xFFFFFFFF
 #define SE_CFG_BINLOG_ENABLED 0x1
@@ -478,7 +484,6 @@ typedef struct {
 	int64_t seek_key_parts_;
 } se_iter_t;
 
-typedef enum dberr_t se_err_t;
 typedef struct se_request *se_request_t;
 typedef se_tuple_t *se_tpl_t;
 

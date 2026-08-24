@@ -16,6 +16,8 @@
 
 #include "se_api.h"
 
+using namespace se;
+
 #include <string>
 #include <set>
 #include <unordered_map>
