@@ -16,8 +16,6 @@
 
 #include "se_api.h"
 
-using namespace se;
-
 #include <string>
 #include <set>
 #include <unordered_map>
@@ -29,6 +27,8 @@ using namespace se;
 #include "dict/se_table.h"
 #include "handler/se_hton.h"
 #include "transactions/transaction_db_impl.h"
+
+using namespace se;
 
 // Export utilities functions from smartengine
 namespace smartengine

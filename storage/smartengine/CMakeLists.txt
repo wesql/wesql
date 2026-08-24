@@ -55,6 +55,7 @@ SET(SE_SOURCES
   handler/se_hton.h
   api/se_api.cc
   api/se_api.h
+  api/se_dberr_odr_gate.cc
   dict/se_dd_operations.cc 
   dict/se_dd_operations.h
   dict/se_cf_options.cc 
