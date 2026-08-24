@@ -19,7 +19,7 @@
 #include "dd/dictionary.h"
 #include "field.h"
 #include "field_types.h"
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql_class.h"
 #include "dd/cache/dictionary_client.h"
 #include "dict/se_index.h"

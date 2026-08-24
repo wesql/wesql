@@ -29,7 +29,7 @@
 #include "sql/log.h"
 #include "my_stacktrace.h"
 #include "sql_string.h"
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/psi/mysql_thread.h"
 #include "mysql/psi/mysql_rwlock.h"
 #include "mysql/components/services/bits/psi_rwlock_bits.h"

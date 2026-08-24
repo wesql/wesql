@@ -173,7 +173,7 @@ handler *ha_smartengine::clone(const char *name, MEM_ROOT *mem_root)
   return new_handler;
 
 err:
-  destroy(new_handler);
+  ::destroy_at(new_handler);
   return nullptr;
 }
 
