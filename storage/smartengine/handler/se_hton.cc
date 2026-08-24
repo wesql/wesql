@@ -710,7 +710,7 @@ void se_post_recover() { ddl_log_manager.recover(); }
 
 void se_post_engine_recover() {
   util::TransactionDBImpl *txn_db_impl;
-  LOG_INFO log_info;
+  Log_info log_info;
 
   txn_db_impl = dynamic_cast<util::TransactionDBImpl *>(se_db);
 
