@@ -2,10 +2,7 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 86a1e2b8..ee0c6c4d 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -520,6 +520,17 @@ PROJECT(${MYSQL_PROJECT_NAME}
-   VERSION ${MAJOR_VERSION}.${MINOR_VERSION}.${PATCH_VERSION})
- SET(CMAKE_CXX_STANDARD 23)
- 
+@@ -523 +523,12 @@ SET(CMAKE_CXX_STANDARD 23)
 +OPTION(WITH_WESQL "Build WeSQL extensions" ON)
 +OPTION(WITH_WESQL_TEST "Enable WeSQL-only test hooks" OFF)
 +IF(WITH_WESQL)
@@ -18,20 +15,14 @@ index 86a1e2b8..ee0c6c4d 100644
 +ENDIF()
 +
  # Various 3rd party libraries have this option.
- # Some have it ON, other OFF, by default.
- # https://cmake.org/cmake/help/latest/variable/BUILD_SHARED_LIBS.html:
-@@ -788,6 +799,10 @@ INCLUDE(CMakePushCheckState)
- 
- # Add macros
+@@ -790,2 +801,6 @@ INCLUDE(add_custom_target)
  INCLUDE(add_custom_target)
 +IF(WITH_WESQL)
 +  INCLUDE(aws_sdk_cpp)
 +  INCLUDE(aliyun_oss_sdk)
 +ENDIF()
  INCLUDE(pkg-config)
- INCLUDE(character_sets)
- INCLUDE(malloc_utils)
-@@ -2078,6 +2093,10 @@ IF(CURL_WARN_GIVEN)
+@@ -2078,4 +2093,8 @@ IF(CURL_WARN_GIVEN)
      "You can disable CURL with -DWITH_CURL=0"
      )
  ENDIF()
@@ -40,84 +31,46 @@ index 86a1e2b8..ee0c6c4d 100644
 +  MYSQL_CHECK_OBJSTORE_ALIYUN_OSS()
 +ENDIF()
  # Add RapidJSON library.
- MYSQL_CHECK_RAPIDJSON()
- 
 diff --git a/MYSQL_VERSION b/MYSQL_VERSION
 index 5be9001c..9768cd69 100644
 --- a/MYSQL_VERSION
 +++ b/MYSQL_VERSION
-@@ -3,3 +3,4 @@ MYSQL_VERSION_MINOR=7
- MYSQL_VERSION_PATCH=2
- MYSQL_VERSION_EXTRA=
+@@ -5 +5,2 @@ MYSQL_VERSION_EXTRA=
  MYSQL_VERSION_MATURITY="LTS"
 +WESQL_VERSION=0.1.0
 diff --git a/cmake/mysql_version.cmake b/cmake/mysql_version.cmake
 index 2fab7898..53a6986e 100644
 --- a/cmake/mysql_version.cmake
 +++ b/cmake/mysql_version.cmake
-@@ -63,12 +63,17 @@ MACRO(GET_MYSQL_VERSION)
-     MESSAGE(FATAL_ERROR "MYSQL_VERSION file cannot be parsed.")
-   ENDIF()
- 
+@@ -66 +66,2 @@ MACRO(GET_MYSQL_VERSION)
 +  MYSQL_GET_CONFIG_VALUE("WESQL_VERSION" WESQL_VERSION)
    MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_MATURITY" MYSQL_VERSION_MATURITY)
- 
-   IF(NOT DEFINED MYSQL_VERSION_MATURITY)
-     MESSAGE(FATAL_ERROR "MYSQL_VERSION file cannot be parsed, missing version attributes.")
-   ENDIF()
- 
+@@ -72 +73,5 @@ MACRO(GET_MYSQL_VERSION)
 +  IF(NOT DEFINED WESQL_VERSION OR WESQL_VERSION STREQUAL "")
 +    MESSAGE(FATAL_ERROR "MYSQL_VERSION file cannot be parsed, missing WESQL_VERSION.")
 +  ENDIF()
 +
    IF(NOT MYSQL_VERSION_MATURITY STREQUAL "\"LTS\"" AND
-      NOT MYSQL_VERSION_MATURITY STREQUAL "\"INNOVATION\"")
-     MESSAGE(FATAL_ERROR "MYSQL_VERSION_MATURITY can be set to INNOVATION or LTS.")
-@@ -94,6 +99,7 @@ MACRO(GET_MYSQL_VERSION)
-   SET(VERSION
-     "${MAJOR_VERSION}.${MINOR_VERSION}.${PATCH_VERSION}${EXTRA_VERSION}")
+@@ -96,2 +101,3 @@ MACRO(GET_MYSQL_VERSION)
    MESSAGE(STATUS "MySQL ${VERSION}")
 +  MESSAGE(STATUS "WeSQL ${WESQL_VERSION}")
    SET(MYSQL_BASE_VERSION
-     "${MAJOR_VERSION}.${MINOR_VERSION}" CACHE INTERNAL "MySQL Base version")
-   SET(MYSQL_NO_DASH_VERSION
-diff --git a/include/mysql/strings/m_ctype.h b/include/mysql/strings/m_ctype.h
-index 9f1641e6..911719bf 100644
---- a/include/mysql/strings/m_ctype.h
-+++ b/include/mysql/strings/m_ctype.h
-@@ -159,6 +159,11 @@ static constexpr uint32_t
- static constexpr uint32_t
-        MY_STRXFRM_PAD_TO_MAXLEN = 0x00000080; /* if pad tail(for filesort) */
- 
-+#ifdef WITH_SMARTENGINE
-+/* For smartengine packing, do not pad with spaces; keep 8.0.35 no-pad contract. */
-+static constexpr uint32_t MY_STRXFRM_NOPAD_WITH_SPACE = 0x10000000;
-+#endif
-+
- /* clang-format on */
- 
- struct MY_UNI_IDX {
 diff --git a/include/mysql_version.h.in b/include/mysql_version.h.in
 index 1170d840..ac66fcd0 100644
 --- a/include/mysql_version.h.in
 +++ b/include/mysql_version.h.in
-@@ -25,6 +25,8 @@
- #define LIBMYSQL_VERSION           "@VERSION@"
- #define LIBMYSQL_VERSION_ID         @MYSQL_VERSION_ID@
- 
+@@ -28 +28,3 @@
 +#define WESQL_VERSION              "@WESQL_VERSION@"
 +
  #ifndef LICENSE
- #define LICENSE                     GPL
- #endif /* LICENSE */
 diff --git a/mysys/CMakeLists.txt b/mysys/CMakeLists.txt
 index 37d70b47..70def3ff 100644
 --- a/mysys/CMakeLists.txt
 +++ b/mysys/CMakeLists.txt
-@@ -27,6 +27,44 @@ SET(MY_TIME_SOURCES my_time.cc my_systime.cc my_temporal.cc)
- 
+@@ -28,3 +28,41 @@ ADD_CONVENIENCE_LIBRARY(mytime ${MY_TIME_SOURCES})
  ADD_CONVENIENCE_LIBRARY(mytime ${MY_TIME_SOURCES})
- 
+-
++
 +SET(MYSYS_WESQL_LIBRARIES)
 +IF(WITH_WESQL)
 +  SET(MY_OBJSTORE_SOURCES
@@ -157,23 +110,15 @@ index 37d70b47..70def3ff 100644
 +ENDIF()
 +
  SET(MYSYS_SOURCES
-   base64_encode.cc
-   charset.cc
-@@ -196,6 +234,7 @@ ENDIF()
- ADD_CONVENIENCE_LIBRARY(mysys ${MYSYS_SOURCES}
-   LINK_LIBRARIES
+@@ -198,2 +236,3 @@ ADD_CONVENIENCE_LIBRARY(mysys ${MYSYS_SOURCES}
    mytime
 +  ${MYSYS_WESQL_LIBRARIES}
    strings
-   ext::zlib
-   ext::zstd
 diff --git a/mysys/print_version.cc b/mysys/print_version.cc
 index 6108ab48..0482781d 100644
 --- a/mysys/print_version.cc
 +++ b/mysys/print_version.cc
-@@ -66,8 +66,14 @@ void print_version_debug() {
- }
- 
+@@ -68,4 +68,10 @@ void print_version_debug() {
  void print_explicit_version(const char *version) {
 +#ifdef WESQL
 +  printf("%s  Ver %s for %s on %s (%s) WeSQL %s\n", my_progname, version,
@@ -184,15 +129,22 @@ index 6108ab48..0482781d 100644
           MACHINE_TYPE, MYSQL_COMPILATION_COMMENT_SERVER);
 +#endif
  }
- 
- void build_version(const std::string &progname, std::string *destination) {
+diff --git a/include/mysql/strings/m_ctype.h b/include/mysql/strings/m_ctype.h
+index 9f1641e6..911719bf 100644
+--- a/include/mysql/strings/m_ctype.h
++++ b/include/mysql/strings/m_ctype.h
+@@ -162 +162,6 @@ static constexpr uint32_t
++#ifdef WITH_SMARTENGINE
++/* For smartengine packing, do not pad with spaces; keep 8.0.35 no-pad contract. */
++static constexpr uint32_t MY_STRXFRM_NOPAD_WITH_SPACE = 0x10000000;
++#endif
++
+ /* clang-format on */
 diff --git a/strings/ctype-simple.cc b/strings/ctype-simple.cc
 index 77b6c09f..4675aaf2 100644
 --- a/strings/ctype-simple.cc
 +++ b/strings/ctype-simple.cc
-@@ -1489,7 +1489,11 @@ unsigned my_strxfrm_flag_normalize(unsigned flags) {
- 
- size_t my_strxfrm_pad(const CHARSET_INFO *cs, uint8_t *str, uint8_t *frmend,
+@@ -1491,3 +1491,7 @@ size_t my_strxfrm_pad(const CHARSET_INFO *cs, uint8_t *str, uint8_t *frmend,
                        uint8_t *strend, unsigned nweights, unsigned flags) {
 +#ifdef WITH_SMARTENGINE
 +  if (nweights && frmend < strend && !(flags & MY_STRXFRM_NOPAD_WITH_SPACE)) {
@@ -200,31 +152,22 @@ index 77b6c09f..4675aaf2 100644
    if (nweights && frmend < strend) {
 +#endif
      // PAD SPACE behavior.
-     unsigned const fill_length =
-         std::min<unsigned>(strend - frmend, nweights * cs->mbminlen);
 diff --git a/strings/ctype-uca.cc b/strings/ctype-uca.cc
 index 9e0ae347..bffc28e0 100644
 --- a/strings/ctype-uca.cc
 +++ b/strings/ctype-uca.cc
-@@ -2076,7 +2076,11 @@ static size_t my_strnxfrm_uca(const CHARSET_INFO *cs, Mb_wc mb_wc, uint8_t *dst,
-     if (dst < de) *dst++ = s_res & 0xFF;
-   }
- 
+@@ -2079,2 +2079,6 @@ static size_t my_strnxfrm_uca(const CHARSET_INFO *cs, Mb_wc mb_wc, uint8_t *dst,
 +#ifdef WITH_SMARTENGINE
 +  if (dst < de && !(flags & MY_STRXFRM_NOPAD_WITH_SPACE)) {
 +#else
    if (dst < de) {
 +#endif
      /*
-       PAD SPACE behavior.
- 
 diff --git a/strings/ctype-utf8.cc b/strings/ctype-utf8.cc
 index 469118e8..9019f4c4 100644
 --- a/strings/ctype-utf8.cc
 +++ b/strings/ctype-utf8.cc
-@@ -5083,7 +5083,11 @@ static inline size_t my_strnxfrm_unicode_tmpl(const CHARSET_INFO *cs,
-   }
- 
+@@ -5085,3 +5085,7 @@ static inline size_t my_strnxfrm_unicode_tmpl(const CHARSET_INFO *cs,
  pad:
 +#ifdef WITH_SMARTENGINE
 +  if (dst < de && nweights && !(flags & MY_STRXFRM_NOPAD_WITH_SPACE))
@@ -232,11 +175,7 @@ index 469118e8..9019f4c4 100644
    if (dst < de && nweights)  // PAD SPACE behavior.
 +#endif
      dst += my_strxfrm_pad_nweights_unicode(dst, de, nweights);
- 
-   if ((flags & MY_STRXFRM_PAD_TO_MAXLEN) && dst < de)
-@@ -5151,7 +5155,11 @@ size_t my_strnxfrm_unicode_full_bin(const CHARSET_INFO *cs, uint8_t *dst,
-         if (dst < de) *dst++ = 0x20;
-       }
+@@ -5153,3 +5157,7 @@ size_t my_strnxfrm_unicode_full_bin(const CHARSET_INFO *cs, uint8_t *dst,
      }
 +#ifdef WITH_SMARTENGINE
 +  } else if (!(flags & MY_STRXFRM_NOPAD_WITH_SPACE)) {
@@ -244,5 +183,3 @@ index 469118e8..9019f4c4 100644
    } else {
 +#endif
      // Regular PAD SPACE behavior.
-     for (; dst < de && nweights; nweights--) {
-       *dst++ = 0x00;
