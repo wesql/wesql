@@ -15,6 +15,8 @@
  */
 
 #include "se_dict_struct.h"
+#include "m_string.h"
+#include "nulls.h"
 
 namespace smartengine
 {

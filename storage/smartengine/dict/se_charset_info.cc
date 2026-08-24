@@ -18,6 +18,7 @@
 #include "se_charset_info.h"
 #include "dict/se_field_make_unpack_info.h"
 #include "dict/se_field_unpack_func.h"
+#include "strings/m_ctype_internals.h"
 
 namespace smartengine {
 
