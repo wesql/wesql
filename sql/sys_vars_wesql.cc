@@ -227,4 +227,3 @@ static Sys_var_charptr Sys_server_id_on_objstore(
   binlog_archive.cc pulls the TU into mysqld.
 */
 void wesql_sys_vars_force_link() {}
-
