@@ -59,6 +59,14 @@
 #include "sql/sql_parse.h"
 #include "unsafe_string_append.h"
 
+extern void wesql_sys_vars_force_link();
+namespace {
+struct Wesql_sys_vars_anchor {
+  Wesql_sys_vars_anchor() { wesql_sys_vars_force_link(); }
+};
+const Wesql_sys_vars_anchor wesql_sys_vars_anchor;
+}  // namespace
+
 const float Binlog_archive::PACKET_GROW_FACTOR = 2.0;
 const float Binlog_archive::PACKET_SHRINK_FACTOR = 0.5;
 
