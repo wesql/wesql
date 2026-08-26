@@ -208,9 +208,19 @@ static int se_init_func(void *const p)
   se_tbl_options.cache_index_and_filter_blocks = true;
   se_tbl_options.cache_index_and_filter_blocks_with_high_priority = true;
   se_tbl_options.pin_l0_filter_and_index_blocks_in_cache = false;
-  se_tbl_options.cluster_id = opt_repo_objstore_id;
-  se_tbl_options.cluster_id.append("/");
-  se_tbl_options.cluster_id.append(opt_branch_objstore_id);
+  // ObjectStore repo/branch are optional on clean initialize; nullptr
+  // must not enter std::string (strlen(NULL) SIGSEGV).
+  const char *repo_id =
+      (opt_repo_objstore_id != nullptr) ? opt_repo_objstore_id : "";
+  const char *branch_id =
+      (opt_branch_objstore_id != nullptr) ? opt_branch_objstore_id : "";
+  if (repo_id[0] == '\0' && branch_id[0] == '\0') {
+    se_tbl_options.cluster_id.clear();
+  } else {
+    se_tbl_options.cluster_id.assign(repo_id);
+    se_tbl_options.cluster_id.append("/");
+    se_tbl_options.cluster_id.append(branch_id);
+  }
   se_db_options.allow_concurrent_memtable_write = true;
   se_db_options.use_direct_write_for_wal = false;
   se_db_options.persistent_cache_mode = se_persistent_cache_mode;
