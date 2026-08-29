@@ -1504,10 +1504,10 @@ index f6432803..140bb72e 100644
  EXECUTE stmt;
  DROP PREPARE stmt;
 diff --git a/share/messages_to_clients.txt b/share/messages_to_clients.txt
-index d7652a7a..ea4a9c51 100644
+index d7652a7a..7ae0c4c9 100644
 --- a/share/messages_to_clients.txt
 +++ b/share/messages_to_clients.txt
-@@ -9985,6 +9985,20 @@ ER_WARN_AUDIT_LOG_FILTER_RECOVERY_LOGGING_DISABLED
+@@ -9985,6 +9985,24 @@ ER_WARN_AUDIT_LOG_FILTER_RECOVERY_LOGGING_DISABLED
  
  reserved-error-section 5000 5999
  
@@ -1525,6 +1525,10 @@ index d7652a7a..ea4a9c51 100644
 +  eng "file %s was not purged because binlog arhive not running."
 +ER_WARN_PURGE_LOG_NOT_PERSISTED
 +  eng "file %s was not purged because it is not persisted log file."
++ER_WESQL_DDL_COLLATION_REWRITTEN
++  eng "WeSQL DDL compat: remapped collation of indexed column '%-.64s' from %-.64s to %-.64s. Comparison rules changed."
++ER_WESQL_DDL_FK_STRIPPED
++  eng "WeSQL DDL compat: removed foreign key '%-.64s'. Parent/child checks and ON DELETE CASCADE are not enforced. The application must handle related deletes."
  
  ################################################################################
  # DO NOT add messages for the error-log to this file;
@@ -1613,10 +1617,10 @@ index 873fd9ca..8e6d8581 100644
  # Error numbers 50000 to 51999 are reserved. Please do not use them for
  # other error messages.
 diff --git a/sql/CMakeLists.txt b/sql/CMakeLists.txt
-index 3e265101..ce4052af 100644
+index 3e265101..87d93619 100644
 --- a/sql/CMakeLists.txt
 +++ b/sql/CMakeLists.txt
-@@ -633,7 +633,19 @@ SET(SQL_SHARED_SOURCES
+@@ -633,7 +633,20 @@ SET(SQL_SHARED_SOURCES
    xa/transaction_cache.cc
    xa/xid_extract.cc
    daemon_proxy_keyring/daemon_proxy_keyring.cc
@@ -1631,12 +1635,13 @@ index 3e265101..ce4052af 100644
 +    package/package_parse.cc
 +    package/proc_dummy.cc
 +    package/show_native_procedure.cc
++    wesql_ddl_compat.cc
    )
 +ENDIF()
  
  IF(BUILD_IS_SINGLE_CONFIG)
    GET_PROPERTY(CWD_DEFINITIONS DIRECTORY PROPERTY COMPILE_DEFINITIONS)
-@@ -1005,6 +1017,9 @@ SET(BINLOG_SOURCE
+@@ -1005,6 +1018,9 @@ SET(BINLOG_SOURCE
    binlog/monitoring/context.cc
    binlog/decompressing_event_object_istream.cc
    binlog.cc
@@ -1646,7 +1651,7 @@ index 3e265101..ce4052af 100644
    binlog_istream.cc
    binlog_ostream.cc
    binlog_reader.cc
-@@ -1013,6 +1028,10 @@ SET(BINLOG_SOURCE
+@@ -1013,6 +1029,10 @@ SET(BINLOG_SOURCE
    changestreams/misc/column_filters/column_filter_inbound_func_indexes.cc
    changestreams/misc/column_filters/column_filter_inbound_gipk.cc
    changestreams/misc/column_filters/column_filter_outbound_func_indexes.cc
@@ -3974,10 +3979,20 @@ index b6cb7d17..8a620467 100644
  
  int initialize_schema_table(st_plugin_int *plugin) {
 diff --git a/sql/sql_table.cc b/sql/sql_table.cc
-index 5269d211..d9f342d7 100644
+index 5269d211..e3a996ae 100644
 --- a/sql/sql_table.cc
 +++ b/sql/sql_table.cc
-@@ -8447,6 +8447,9 @@ bool validate_comment_length(THD *thd, const char *comment_str,
+@@ -149,6 +149,9 @@
+ #include "sql/rpl_rli.h"  // rli_slave etc
+ #include "sql/session_tracker.h"
+ #include "sql/sql_alter.h"
++#ifdef WESQL
++#include "sql/wesql_ddl_compat.h"
++#endif
+ #include "sql/sql_backup_lock.h"  // acquire_shared_backup_lock
+ #include "sql/sql_base.h"         // lock_table_names
+ #include "sql/sql_bitmap.h"
+@@ -8447,6 +8450,9 @@ bool validate_comment_length(THD *thd, const char *comment_str,
  
  static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
                                        const dd::Schema &schema) {
@@ -3987,7 +4002,7 @@ index 5269d211..d9f342d7 100644
    /*
      If the table character set was not given explicitly,
      let's fetch the database default character set and
-@@ -8455,6 +8458,12 @@ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
+@@ -8455,6 +8461,12 @@ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
    if (create_info->default_table_charset == nullptr) {
      if (get_default_db_collation(schema, &create_info->default_table_charset))
        return true;
@@ -4000,7 +4015,7 @@ index 5269d211..d9f342d7 100644
    } else {
      assert((create_info->used_fields & HA_CREATE_USED_CHARSET) == 0 ||
             (create_info->used_fields & HA_CREATE_USED_DEFAULT_CHARSET) ||
-@@ -8465,6 +8474,11 @@ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
+@@ -8465,6 +8477,11 @@ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
          create_info->default_table_charset == &my_charset_utf8mb4_0900_ai_ci) {
        create_info->default_table_charset =
            thd->variables.default_collation_for_utf8mb4;
@@ -4012,7 +4027,7 @@ index 5269d211..d9f342d7 100644
  
        // ALTER TABLE ... CONVERT TO CHARACTER SET ...
        if (create_info->used_fields & HA_CREATE_USED_CHARSET) {
-@@ -8473,8 +8487,17 @@ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
+@@ -8473,8 +8490,17 @@ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
      }
    }
  
@@ -4030,6 +4045,42 @@ index 5269d211..d9f342d7 100644
  
    return false;
  }
+@@ -8761,6 +8787,11 @@ static bool create_table_impl(
+ 
+   if (set_table_default_charset(thd, create_info, schema)) return true;
+ 
++#ifdef WESQL
++  if (wesql_ddl_compat_rewrite_create(thd, create_info, alter_info))
++    return true;
++#endif
++
+   const char *alias = table_case_name(create_info, table_name);
+ 
+   partition_info *part_info = thd->work_part_info;
+@@ -16675,6 +16706,11 @@ bool mysql_alter_table(THD *thd, const char *new_db, const char *new_name,
+   if (check_engine(alter_ctx.new_db, alter_ctx.new_name, create_info))
+     return true;
+ 
++#ifdef WESQL
++  if (wesql_ddl_compat_rewrite_alter_fk(thd, create_info, alter_info))
++    return true;
++#endif
++
+   /*
+     Do not allow change of storage engine if table participates in a foreign
+     key. Even in cases when both source and target storage engines support
+@@ -16973,6 +17009,11 @@ bool mysql_alter_table(THD *thd, const char *new_db, const char *new_name,
+ 
+   if (set_table_default_charset(thd, create_info, *schema)) return true;
+ 
++#ifdef WESQL
++  if (wesql_ddl_compat_rewrite_alter_collation(thd, create_info, alter_info))
++    return true;
++#endif
++
+   /*
+     Use copy algorithm if:
+     - old_alter_table system variable is set without in-place requested using
 diff --git a/sql/sql_yacc.yy b/sql/sql_yacc.yy
 index 2cd68bb4..d5e1f567 100644
 --- a/sql/sql_yacc.yy
