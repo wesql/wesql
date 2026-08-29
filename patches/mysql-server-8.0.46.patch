@@ -1,0 +1,4574 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f2587068..b5021276 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -532,6 +532,14 @@ ELSE()
+   MARK_AS_ADVANCED(MYSQL_PROJECT_NAME)
+ ENDIF()
+ 
++OPTION(WITH_WESQL "use wesql mode" ON)
++OPTION(WITH_WESQL_TEST "wesql test mode" OFF)
++IF(WITH_WESQL)
++  ADD_DEFINITIONS(-DWESQL)
++  IF(WITH_WESQL_TEST)
++    ADD_DEFINITIONS(-DWESQL_TEST)
++  ENDIF()
++ENDIF()
+ # Handle upgrade of old cmake cache
+ IF(DEFINED WITH_PLUGIN_NDBCLUSTER)
+   IF(NOT WITH_NDBCLUSTER)
+@@ -843,6 +851,8 @@ INCLUDE(CMakePushCheckState)
+ 
+ # Add macros
+ INCLUDE(add_custom_target)
++INCLUDE(aws_sdk_cpp)
++INCLUDE(aliyun_oss_sdk)
+ INCLUDE(pkg-config)
+ INCLUDE(character_sets)
+ INCLUDE(cmake_parse_arguments)
+@@ -1815,6 +1825,10 @@ ENDIF()
+ # See whether backtrace is supported.
+ MYSQL_CHECK_BACKTRACE()
+ 
++# Add bundled or system objstore lib, here is aws-sdk-cpp.
++MYSQL_CHECK_OBJSTORE_S3()
++# Add aliyun-oss-cpp-sdk, see https://github.com/aliyun/aliyun-oss-cpp-sdk
++MYSQL_CHECK_OBJSTORE_ALIYUN_OSS()
+ # Add bundled or system zlib.
+ MYSQL_CHECK_ZLIB()
+ 
+@@ -2128,6 +2142,20 @@ IF(WITH_PROTOBUF STREQUAL "bundled" OR WITH_FIDO STREQUAL "bundled")
+   ENDIF()
+ ENDIF()
+ 
++#Compile the smartengine storage plugin into mysqld.
++OPTION(WITH_SMARTENGINE "Compile smartengine" ON)
++IF (WITH_SMARTENGINE)
++  ADD_DEFINITIONS(-DWITH_SMARTENGINE)
++ENDIF()
++OPTION(WITH_QUERY_TRACE "WITH_QUERY_TRACE" ON)
++if (WITH_QUERY_TRACE)
++  add_definitions(-DWITH_QUERY_TRACE)
++endif()
++#Ensure compatibility with the usage patterns of xengine
++OPTION(WITH_XENGINE_COMPATIBLE_MODE "Compatible with xengine" OFF)
++IF (WITH_XENGINE_COMPATIBLE_MODE)
++  ADD_DEFINITIONS(-DWITH_XENGINE_COMPATIBLE_MODE)
++ENDIF()
+ #
+ # Setup maintainer mode options by the end. Platform checks are
+ # not run with the warning options as to not perturb fragile checks
+@@ -2408,6 +2436,9 @@ IF(LINUX AND NOT WITHOUT_SERVER)
+   IF(LINUX_SUSE)
+     ADD_SUBDIRECTORY(packaging/rpm-sles)
+   ENDIF()
++  IF(WITH_WESQL)
++    ADD_SUBDIRECTORY(packaging/build-wesql)
++  ENDIF()
+ ENDIF()
+ 
+ GET_PROPERTY(CWD_DEFINITIONS DIRECTORY PROPERTY COMPILE_DEFINITIONS)
+@@ -2549,7 +2580,7 @@ ENDIF()
+ #
+ IF(NOT INSTALL_LAYOUT MATCHES "RPM")
+   INSTALL(FILES
+-    README
++    README.md
+     LICENSE
+     DESTINATION ${INSTALL_DOCREADMEDIR} COMPONENT Readme)
+   INSTALL(FILES
+diff --git a/MYSQL_VERSION b/MYSQL_VERSION
+index 5bee977f..6fe6b884 100644
+--- a/MYSQL_VERSION
++++ b/MYSQL_VERSION
+@@ -3,3 +3,4 @@ MYSQL_VERSION_MINOR=0
+ MYSQL_VERSION_PATCH=46
+ MYSQL_VERSION_EXTRA=
+ MYSQL_VERSION_STABILITY="LTS"
++WESQL_VERSION=0.1.0
+diff --git a/cmake/mysql_version.cmake b/cmake/mysql_version.cmake
+index 43811abc..6138e95b 100644
+--- a/cmake/mysql_version.cmake
++++ b/cmake/mysql_version.cmake
+@@ -56,6 +56,9 @@ MACRO(GET_MYSQL_VERSION)
+   MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_MINOR" MINOR_VERSION)
+   MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_PATCH" PATCH_VERSION)
+   MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_EXTRA" EXTRA_VERSION)
++  IF(WITH_WESQL)
++    MYSQL_GET_CONFIG_VALUE("WESQL_VERSION" WESQL_VERSION)
++  ENDIF()
+ 
+   IF(NOT DEFINED MAJOR_VERSION OR
+      NOT DEFINED MINOR_VERSION OR
+diff --git a/include/m_ctype.h b/include/m_ctype.h
+index 1afb44c8..f0385f46 100644
+--- a/include/m_ctype.h
++++ b/include/m_ctype.h
+@@ -156,6 +156,10 @@ static constexpr uint32_t
+ /* Flags for strxfrm */
+ #define MY_STRXFRM_PAD_TO_MAXLEN 0x00000080 /* if pad tail(for filesort) */
+ 
++/* For smartengine packing, do not pad with spaces, follow < 8.0.2 behavior */
++#ifdef WITH_SMARTENGINE
++#define MY_STRXFRM_NOPAD_WITH_SPACE 0x10000000
++#endif
+ typedef struct MY_UNI_IDX {
+   uint16 from;
+   uint16 to;
+diff --git a/include/m_string.h b/include/m_string.h
+index e63de2ce..21581baf 100644
+--- a/include/m_string.h
++++ b/include/m_string.h
+@@ -288,6 +288,7 @@ static constexpr int FLOATING_POINT_BUFFER{311 + DECIMAL_NOT_SPECIFIED};
+ #define MY_GCVT_MAX_FIELD_WIDTH \
+   (DBL_DIG + 4 + std::max(5, MAX_DECPT_FOR_F_FORMAT))
+ 
++extern char *int2str(long val, char *dst, int radix, int upcase);
+ const char *str2int(const char *src, int radix, long lower, long upper,
+                     long *val);
+ longlong my_strtoll10(const char *nptr, const char **endptr, int *error);
+@@ -313,6 +314,7 @@ static inline char *ullstr(longlong value, char *buff) {
+ }
+ 
+ #define STRING_WITH_LEN(X) (X), ((sizeof(X) - 1))
++#define C_STRING_WITH_LEN(X) ((const char *)(X)), ((sizeof(X) - 1))
+ 
+ /**
+   Skip trailing space (ASCII spaces only).
+diff --git a/include/my_base.h b/include/my_base.h
+index 0a1a404c..43552647 100644
+--- a/include/my_base.h
++++ b/include/my_base.h
+@@ -993,8 +993,15 @@ Information in the data-dictionary needs to be updated. */
+ #define HA_ERR_SAMPLING_INIT_FAILED 208
+ /** Too many sub-expression in search string */
+ #define HA_ERR_FTS_TOO_MANY_NESTED_EXP 209
++#ifdef WITH_SMARTENGINE
++/** Unexpected nullptr in smartengine handler */
++#define HA_ERR_INVALID_NULL_ERROR 210
++/** Copy of last error number */
++#define HA_ERR_LAST 210
++#else
+ /** Copy of last error number */
+ #define HA_ERR_LAST 209
++#endif //end of WITH_SMARTENGINE
+ 
+ /* Number of different errors */
+ #define HA_ERR_ERRORS (HA_ERR_LAST - HA_ERR_FIRST + 1)
+diff --git a/include/my_sqlcommand.h b/include/my_sqlcommand.h
+index 66e726bc..89128546 100644
+--- a/include/my_sqlcommand.h
++++ b/include/my_sqlcommand.h
+@@ -203,6 +203,8 @@ enum enum_sql_command {
+   SQLCOM_RESTART_SERVER,
+   SQLCOM_CREATE_SRS,
+   SQLCOM_DROP_SRS,
++  SQLCOM_ADMIN_PROC,
++  SQLCOM_TRANS_PROC,
+   /* This should be the last !!! */
+   SQLCOM_END
+ };
+diff --git a/include/mysql/plugin_audit.h.pp b/include/mysql/plugin_audit.h.pp
+index 8db4d6ee..1ee6d781 100644
+--- a/include/mysql/plugin_audit.h.pp
++++ b/include/mysql/plugin_audit.h.pp
+@@ -335,6 +335,8 @@ enum enum_sql_command {
+   SQLCOM_RESTART_SERVER,
+   SQLCOM_CREATE_SRS,
+   SQLCOM_DROP_SRS,
++  SQLCOM_ADMIN_PROC,
++  SQLCOM_TRANS_PROC,
+   SQLCOM_END
+ };
+ #include "plugin_audit_message_types.h"
+diff --git a/include/mysql_version.h.in b/include/mysql_version.h.in
+index d666e072..baa56f02 100644
+--- a/include/mysql_version.h.in
++++ b/include/mysql_version.h.in
+@@ -25,6 +25,7 @@
+ #define LIBMYSQL_VERSION           "@VERSION@"
+ #define LIBMYSQL_VERSION_ID         @MYSQL_VERSION_ID@
+ 
++#define WESQL_VERSION              "@WESQL_VERSION@"
+ #ifndef LICENSE
+ #define LICENSE                     GPL
+ #endif /* LICENSE */
+diff --git a/mysql-test/CMakeLists.txt b/mysql-test/CMakeLists.txt
+index 80f32dbf..1e9ff49d 100644
+--- a/mysql-test/CMakeLists.txt
++++ b/mysql-test/CMakeLists.txt
+@@ -42,7 +42,32 @@ IF(INSTALL_MYSQLTESTDIR)
+     PATTERN "mtr.out*" EXCLUDE
+     PATTERN "*.cmake" EXCLUDE
+     PATTERN "*.in" EXCLUDE
++    PATTERN "autotest_*" EXCLUDE
++    PATTERN "wesql" EXCLUDE
+     )
++  IF (WITH_SMARTENGINE)
++    INSTALL(
++      DIRECTORY suite/
++      DESTINATION ${INSTALL_MYSQLTESTDIR}/suite
++      USE_SOURCE_PERMISSIONS
++      COMPONENT Test
++      PATTERN "suite/smartengine*"
++      )
++    FILE(GLOB autotestfiles "autotest_*.sh")
++    INSTALL(
++      FILES ${autotestfiles}
++      DESTINATION ${INSTALL_MYSQLTESTDIR}/
++      COMPONENT Test
++      )
++  ENDIF()
++  IF (WITH_WESQL)
++    INSTALL(
++      DIRECTORY suite/wesql
++      DESTINATION ${INSTALL_MYSQLTESTDIR}/suite/
++      USE_SOURCE_PERMISSIONS
++      COMPONENT Test
++      )
++  ENDIF()
+   IF(NOT INSTALL_LAYOUT MATCHES "RPM" AND
+       NOT INSTALL_LAYOUT MATCHES "DEB")
+     INSTALL(FILES ${CMAKE_SOURCE_DIR}/LICENSE
+@@ -50,7 +75,7 @@ IF(INSTALL_MYSQLTESTDIR)
+       COMPONENT TestReadme
+       RENAME LICENSE-test
+       )
+-    INSTALL(FILES ${CMAKE_SOURCE_DIR}/README
++    INSTALL(FILES ${CMAKE_SOURCE_DIR}/README.md
+       DESTINATION ${INSTALL_DOCREADMEDIR}
+       COMPONENT TestReadme
+       RENAME README-test
+diff --git a/mysql-test/include/default_mysqld.cnf b/mysql-test/include/default_mysqld.cnf
+index 1cc96ca8..c9bb3927 100644
+--- a/mysql-test/include/default_mysqld.cnf
++++ b/mysql-test/include/default_mysqld.cnf
+@@ -68,3 +68,5 @@ loose-performance-schema-consumer-thread-instrumentation=ON
+ # log file. The note messages will contain important information and
+ # will be useful while debugging an issue as well.
+ log-error-verbosity=3
++[mysqld.1]
++report-port=                @mysqld.1.port
+diff --git a/mysql-test/include/wait_condition.inc b/mysql-test/include/wait_condition.inc
+index 4d505e9f..e5ed7959 100644
+--- a/mysql-test/include/wait_condition.inc
++++ b/mysql-test/include/wait_condition.inc
+@@ -26,7 +26,7 @@
+ #    events_bugs.test, events_time_zone.test
+ #
+ 
+-let $wait_counter= 300;
++let $wait_counter = 300;
+ if ($wait_timeout)
+ {
+   let $wait_counter= `SELECT $wait_timeout * 10`;
+diff --git a/mysql-test/mysql-test-run.pl b/mysql-test/mysql-test-run.pl
+index 9d81da37..f85f5148 100755
+--- a/mysql-test/mysql-test-run.pl
++++ b/mysql-test/mysql-test-run.pl
+@@ -143,7 +143,7 @@ my $opt_include_ndbcluster = 0;
+ my $opt_lock_order         = env_or_val(MTR_LOCK_ORDER => 0);
+ my $opt_max_save_core      = env_or_val(MTR_MAX_SAVE_CORE => 5);
+ my $opt_max_save_datadir   = env_or_val(MTR_MAX_SAVE_DATADIR => 20);
+-my $opt_max_test_fail      = env_or_val(MTR_MAX_TEST_FAIL => 10);
++my $opt_max_test_fail      = env_or_val(MTR_MAX_TEST_FAIL => 1000);
+ my $opt_mysqlx_baseport    = $ENV{'MYSQLXPLUGIN_PORT'} || "auto";
+ my $opt_port_base          = $ENV{'MTR_PORT_BASE'} || "auto";
+ my $opt_port_exclude       = $ENV{'MTR_PORT_EXCLUDE'} || "none";
+@@ -229,6 +229,11 @@ our $opt_summary_report;
+ our $opt_vardir;
+ our $opt_xml_report;
+ our $ports_per_thread   = 30;
++our $opt_objectstore_provider = "";
++our $opt_objectstore_region = "";
++our $opt_objectstore_bucket = "";
++our $opt_objectstore_endpoint = "";
++our $opt_repo_objstore_id = "";
+ 
+ #
+ # Suites run by default (i.e. when invoking ./mtr without parameters)
+@@ -450,6 +455,7 @@ sub main {
+ 
+   command_line_setup();
+ 
++  clean_objectstore_test_dir("", "all");
+   # Create build thread id directory
+   create_unique_id_dir();
+ 
+@@ -933,6 +939,7 @@ sub main {
+ 
+   remove_vardir_subs() if $opt_clean_vardir;
+ 
++  clean_objectstore_test_dir("", "all");
+   exit(0);
+ }
+ 
+@@ -1176,10 +1183,10 @@ sub run_test_server ($$$) {
+           # Unknown message from worker
+           mtr_error("Unknown response: '$line' from client");
+         }
+-	# Thread has received 'BYE', no need to look for more tests
+-	if (exists $closed_sock{$sock}) {
+-	  next;
+-	}
++        # Thread has received 'BYE', no need to look for more tests
++        if (exists $closed_sock{$sock}) {
++          next;
++        }
+         # Find next test to schedule
+         # - Try to use same configuration as worker used last time
+         # - Limit number of parallel ndb tests
+@@ -1817,6 +1824,31 @@ sub command_line_setup {
+ 
+   GetOptions(%options) or usage("Can't read options");
+ 
++  # eg: --table_on_objectstore=true --objectstore_provider=aws --objectstore_region=cn-northwest-1 --objectstore_bucket=ljc
++  foreach my $arg (@opt_extra_bootstrap_opt) {
++    if ($arg =~ /^--objectstore_provider=(.*)$/) {
++      $opt_objectstore_provider = $1;
++    }
++    if ($arg =~ /^--objectstore_region=(.*)$/) {
++      $opt_objectstore_region = $1;
++    }
++    if ($arg =~ /^--objectstore_bucket=(.*)$/) {
++      $opt_objectstore_bucket = $1;
++    }
++    if ($arg =~ /^--objectstore_endpoint=(.*)$/) {
++      $opt_objectstore_endpoint= $1;
++    }
++    if ($arg =~ /^--repo_objectstore_id=(.*)$/) {
++      $opt_repo_objstore_id = $1;
++    }
++  }
++  if ($opt_objectstore_provider) {
++    mtr_report("opt_objectstore_provider:$opt_objectstore_provider");
++    mtr_report("opt_objectstore_region:$opt_objectstore_region");
++    mtr_report("opt_objectstore_bucket:$opt_objectstore_bucket");
++    mtr_report("opt_objectstore_endpoint:$opt_objectstore_endpoint");
++    mtr_report("opt_repo_objstore_id:$opt_repo_objstore_id");
++  }
+   usage("") if $opt_usage;
+   list_options(\%options) if $opt_list_options;
+ 
+@@ -1921,7 +1953,6 @@ sub command_line_setup {
+     }
+   }
+ 
+-  # Find out type of logging that are being used
+   foreach my $arg (@opt_extra_mysqld_opt) {
+     if ($arg =~ /binlog[-_]format=(\S+)/) {
+       # Save this for collect phase
+@@ -2340,6 +2371,133 @@ sub command_line_setup {
+   check_fips_support();
+ }
+ 
++sub clean_aliyun_bucket_dir($)
++{
++  if (!$opt_objectstore_bucket) {
++    return;
++  }
++  my ($objectstore_test_dir) = @_;
++  my $objectstore_bucket = $opt_objectstore_bucket;
++  my $objectstore_cmd = "aliyun oss rm -f oss://$objectstore_test_dir  --recursive";
++  my $objectstore_cmd_output = `$objectstore_cmd`;
++  if ($? != 0) {
++    mtr_error("Failed to clean up object store bucket dir oss://$objectstore_test_dir");
++    mtr_error("Command: $objectstore_cmd");
++    mtr_error("Output: $objectstore_cmd_output");
++    return;
++  } else {
++    # make sure the bucket is empty
++    $objectstore_cmd = "aliyun oss ls oss://$objectstore_test_dir";
++    # wait for the bucket to be empty
++    my $timeout = 60;
++    while ($timeout > 0) {
++      $timeout = $timeout - 1;
++      sleep(1);
++      $objectstore_cmd_output = `$objectstore_cmd`;
++      # print "objectstore_cmd_output: $objectstore_cmd_output\n";
++      if ($objectstore_cmd_output =~ /Object Number is: 0/) {
++        last;
++      }
++      if ($? != 0) {
++        mtr_error("Failed to list object store bucket oss://$objectstore_test_dir");
++        mtr_error("Command: $objectstore_cmd");
++        mtr_error("Output: $objectstore_cmd_output");
++        return;
++      }
++    }
++    # print "objectstore_cmd_output: $objectstore_cmd_output\n";
++    if ($objectstore_cmd_output !~ /Object Number is: 0/) {
++      mtr_error("Failed to clean up object store bucket dir oss://$objectstore_test_dir");
++      mtr_error("Bucket is not empty");
++      return;
++    } else {
++      #print "Object store bucket oss://$objectstore_test_dir cleaned up\n";
++    }
++  }
++}
++sub clean_aws_bucket_dir($)
++{
++  if (!$opt_objectstore_bucket) {
++    return;
++  }
++  my $objectstore_bucket = $opt_objectstore_bucket;
++  my $objectstore_endpoint = $opt_objectstore_endpoint;
++  my $objectstore_test_dir = shift;
++  my $objectstore_cmd = "aws s3 rm s3://$objectstore_test_dir  --recursive";
++  if ($opt_objectstore_endpoint) {
++    $objectstore_cmd = "aws --endpoint-url $objectstore_endpoint s3 rm s3://$objectstore_test_dir  --recursive";
++  }
++  my $objectstore_cmd_output = `$objectstore_cmd`;
++  if ($? != 0) {
++    mtr_error("Failed to clean up object store bucket dir $objectstore_test_dir");
++    mtr_error("Command: $objectstore_cmd");
++    mtr_error("Output: $objectstore_cmd_output");
++    return;
++  } else {
++    # make sure the bucket is empty
++    $objectstore_cmd = "aws s3 ls s3://$objectstore_test_dir";
++    if ($opt_objectstore_endpoint) {
++      $objectstore_cmd = "aws --endpoint-url $objectstore_endpoint s3 ls s3://$objectstore_test_dir";
++    }
++    # wait for the bucket to be empty
++    my $timeout = 60;
++    while ($timeout > 0) {
++      $timeout = $timeout - 1;
++      sleep(1);
++      $objectstore_cmd_output = `$objectstore_cmd`;
++      if ($objectstore_cmd_output eq "") {
++        last;
++      }
++      # 1 means no such directory
++      if ($? != 0 && $? != 1) {
++        mtr_error("Failed to list object store bucket $objectstore_test_dir");
++        mtr_error("Command: $objectstore_cmd");
++        mtr_error("Output: $objectstore_cmd_output");
++        return;
++      }
++    }
++    if ($objectstore_cmd_output ne "") {
++      mtr_error("Failed to clean up object store bucket dir $objectstore_test_dir");
++      mtr_error("Bucket is not empty");
++      return;
++    } else {
++      #print "Object store bucket $objectstore_test_dir cleaned up\n";
++    }
++  }
++}
++sub clean_objectstore_test_dir($$)
++{
++  if (!$opt_objectstore_provider || !$opt_objectstore_bucket) {
++    return;
++  }
++  my $objectstore_test_dir = shift;
++  my $test_name = shift;
++  if (!$test_name || $test_name eq "shutdown_report") {
++    return;
++  }
++  my $objectstore_provider = $opt_objectstore_provider;
++  my $objectstore_region = $opt_objectstore_region;
++  my $objectstore_bucket = $opt_objectstore_bucket;
++  my $objectstore_endpoint = $opt_objectstore_endpoint;
++  my $objectstore_repo_id = $opt_repo_objstore_id;
++  if ($test_name eq "all") {
++    $objectstore_test_dir = "$objectstore_bucket";
++  } else {
++    $objectstore_test_dir = "$objectstore_bucket/$objectstore_test_dir ";
++  }
++  if ($objectstore_provider eq 'aws') {
++    clean_aws_bucket_dir($objectstore_test_dir );
++  } elsif ($objectstore_provider eq 'minio') {
++    clean_aws_bucket_dir($objectstore_test_dir);
++  } elsif ($objectstore_provider eq 'aliyun') {
++    clean_aliyun_bucket_dir($objectstore_test_dir);
++  } elsif ($objectstore_provider eq 'local') {
++    return;
++  } else {
++    mtr_error("Unsupported object store provider $objectstore_provider");
++    return;
++  }
++}
+ sub check_fips_support() {
+   # Run $exe_mysqltest to see if FIPS mode is supported.
+   my $args;
+@@ -4210,7 +4368,7 @@ sub default_mysqld {
+ # thus created will later be used for a quick "boot" whenever the
+ # server is restarted.
+ sub mysql_install_db {
+-  my ($mysqld, $datadir, $bootstrap_opts) = @_;
++  my ($mysqld, $datadir, $bootstrap_opts, $tinfo) = @_;
+ 
+   my $install_basedir = $mysqld->value('#mtr_basedir');
+   my $install_chsdir  = $mysqld->value('character-sets-dir');
+@@ -4247,6 +4405,19 @@ sub mysql_install_db {
+   mtr_add_arg($args,
+               "--loose-caching_sha2_password_auto_generate_rsa_keys=OFF");
+ 
++  if ($tinfo && $tinfo->{name} && !$opt_repo_objstore_id &&
++  $opt_objectstore_provider ne '' && $opt_objectstore_provider ne 'local') {
++    my $test_name = $tinfo->{name};
++    my $objstore_test_dir = $test_name;
++    $objstore_test_dir =~ s/\./-/g;
++    if (!$tinfo->{'objectstore_test_dir'}) {
++      $tinfo->{'objectstore_test_dir'} = $objstore_test_dir;
++    }
++    mtr_add_arg($args, "--repo_objectstore_id=$objstore_test_dir");
++    @opt_extra_bootstrap_opt = grep { $_ !~ /--repo_objectstore_id=/ } @opt_extra_bootstrap_opt;
++    push(@opt_extra_bootstrap_opt, "--repo_objectstore_id=$objstore_test_dir");
++    #print "opt_extra_bootstrap_opt: @opt_extra_bootstrap_opt\n";
++  }
+   # Arguments to bootstrap process.
+   my $init_file;
+   foreach my $extra_opt (@opt_extra_bootstrap_opt) {
+@@ -4282,6 +4453,9 @@ sub mysql_install_db {
+ 
+   # Create the bootstrap.sql file
+   my $bootstrap_sql_file = "$opt_vardir/tmp/bootstrap.sql";
++  if (-f $bootstrap_sql_file) {
++    rmtree($bootstrap_sql_file);
++  }
+ 
+   #Add the init-file to --initialize-insecure process
+   mtr_add_arg($args, "--init-file=$bootstrap_sql_file");
+@@ -4305,14 +4479,16 @@ sub mysql_install_db {
+     # Add the official mysql system tables in a production system.
+     mtr_tofile($bootstrap_sql_file, "use mysql;\n");
+ 
++    # Create mtr database
++    mtr_tofile($bootstrap_sql_file, "CREATE DATABASE mtr;\n");
+     # Add test data for timezone - this is just a subset, on a real
+     # system these tables will be populated either by mysql_tzinfo_to_sql
+     # or by downloading the timezone table package from our website
+     mtr_appendfile_to_file("include/mtr_test_data_timezone.sql",
+-                           $bootstrap_sql_file);
++      $bootstrap_sql_file);
+   } else {
+     mtr_error(
+-       "Error: The test_data_timezone.sql not found" . "in working directory.");
++      "Error: The test_data_timezone.sql not found" . "in working directory.");
+   }
+ 
+   if ($opt_skip_sys_schema) {
+@@ -4323,9 +4499,9 @@ sub mysql_install_db {
+   mtr_tofile(
+     $bootstrap_sql_file,
+     "UPDATE mysql.tables_priv SET
+-               timestamp = CURRENT_TIMESTAMP,
+-               Grantor= 'root\@localhost'
+-               WHERE USER= 'mysql.session';\n");
++    timestamp = CURRENT_TIMESTAMP,
++    Grantor= 'root\@localhost'
++    WHERE USER= 'mysql.session';\n");
+ 
+   # Make sure no anonymous accounts exists as a safety precaution
+   mtr_tofile($bootstrap_sql_file, "DELETE FROM mysql.user where user= '';\n");
+@@ -4333,33 +4509,29 @@ sub mysql_install_db {
+   # Create test database
+   if (defined $opt_charset_for_testdb) {
+     mtr_tofile($bootstrap_sql_file,
+-               "CREATE DATABASE test CHARACTER SET $opt_charset_for_testdb;\n");
++      "CREATE DATABASE test CHARACTER SET $opt_charset_for_testdb;\n");
+   } else {
+     mtr_tofile($bootstrap_sql_file, "CREATE DATABASE test;\n");
+   }
+ 
+-  # Create mtr database
+-  mtr_tofile($bootstrap_sql_file, "CREATE DATABASE mtr;\n");
++  # Add help tables and data for warning detection and suppression
++  mtr_tofile($bootstrap_sql_file, mtr_grab_file("include/mtr_warnings.sql"));
++  # Add procedures for checking server is restored after testcase
++  mtr_tofile($bootstrap_sql_file, mtr_grab_file("include/mtr_check.sql"));
+ 
+   mtr_tofile(
+     $bootstrap_sql_file,
+     "insert into mysql.db values('%','test','','Y','Y','Y','Y','Y',
+-            'Y','N','Y','Y','Y','Y','Y','Y','Y','Y','N','N','Y','Y'); \n");
++    'Y','N','Y','Y','Y','Y','Y','Y','Y','Y','N','N','Y','Y'); \n");
+ 
+   # Inserting in acl table generates a timestamp and conventional way
+   # generates a null timestamp.
+   mtr_tofile($bootstrap_sql_file,
+-             "DELETE FROM mysql.proxies_priv where user='root';\n");
++    "DELETE FROM mysql.proxies_priv where user='root';\n");
+   mtr_tofile(
+     $bootstrap_sql_file,
+     "INSERT INTO mysql.proxies_priv VALUES ('localhost', 'root',
+-              '', '', TRUE, '', now());\n");
+-
+-  # Add help tables and data for warning detection and suppression
+-  mtr_tofile($bootstrap_sql_file, mtr_grab_file("include/mtr_warnings.sql"));
+-
+-  # Add procedures for checking server is restored after testcase
+-  mtr_tofile($bootstrap_sql_file, mtr_grab_file("include/mtr_check.sql"));
++    '', '', TRUE, '', now());\n");
+ 
+   if (defined $init_file) {
+     # Append the contents of the init-file to the end of bootstrap.sql
+@@ -4414,6 +4586,9 @@ sub mysql_install_db {
+   if (-f "$datadir/auto.cnf") {
+     unlink "$datadir/auto.cnf";
+   }
++  if (-f $bootstrap_sql_file) {
++    rmtree($bootstrap_sql_file);
++  }
+ }
+ 
+ sub run_testcase_check_skip_test($) {
+@@ -4448,7 +4623,6 @@ sub run_query {
+                                  args   => \$args,
+                                  output => $outfile,
+                                  error  => $errfile);
+-
+   return $res;
+ }
+ 
+@@ -4486,10 +4660,6 @@ sub check_testcase($$) {
+   my %started;
+   foreach my $mysqld (mysqlds()) {
+     # Skip if server has been restarted with additional options
+-    if (defined $mysqld->{'proc'} && !exists $mysqld->{'restart_opts'}) {
+-      my $proc = start_check_testcase($tinfo, $mode, $mysqld);
+-      $started{ $proc->pid() } = $proc;
+-    }
+   }
+ 
+   # Return immediately if no check proceess was started
+@@ -4896,6 +5066,12 @@ sub find_bootstrap_opts {
+     unshift(@$opt_file_options, @$bootstrap_opts);
+   }
+ 
++  # For wesql serverless test
++  # Expand environment variables
++  foreach my $opt (@$bootstrap_opts) {
++    $opt =~ s/\$\{(\??\w+)\}/envsubst($1)/ge;
++    $opt =~ s/\$(\??\w+)/envsubst($1)/ge;
++  }
+   # Command line mysqld options should not have precedence over the opt
+   # file options.
+   unshift(@$opt_file_options, @opt_extra_mysqld_opt);
+@@ -5192,6 +5368,15 @@ sub run_testcase ($) {
+     if ($proc eq $test) {
+       my $res = $test->exit_status();
+ 
++      if ($res == 0 and
++        $opt_warnings and
++        not defined $tinfo->{'skip_check_warnings'} and
++        check_warnings($tinfo)) {
++        # Test case succeeded, but it has produced unexpected warnings,
++        # continue in $res == 1
++        $res = 1;
++        resfile_output($tinfo->{'warnings'}) if $opt_resfile;
++      }
+       if ($res == MYSQLTEST_NOSKIP_PASS or $res == MYSQLTEST_NOSKIP_FAIL) {
+         $tinfo->{'skip_ignored'} = 1;    # Mark test as noskip pass or fail
+       }
+@@ -5899,21 +6084,6 @@ sub check_warnings ($) {
+   # it possible to wait for any process to exit during the check.
+   my %started;
+   foreach my $mysqld (mysqlds()) {
+-    if (defined $mysqld->{'proc'}) {
+-      my $proc = start_check_warnings($tinfo, $mysqld);
+-      $started{ $proc->pid() } = $proc;
+-      if ($opt_valgrind_mysqld and clusters()) {
+-        # In an ndbcluster enabled mysqld, calling mtr.check_warnings()
+-        # involves acquiring the global schema lock(GSL) during execution.
+-        # And when running with valgrind, if multiple check warnings are run
+-        # in parallel, there is a chance that few of them might timeout
+-        # without acquiring the GSL and thus failing the test. To avoid that,
+-        # run them one by one if the mysqld is running with valgrind and
+-        # ndbcluster.
+-        my $res = wait_for_check_warnings(\%started, $tinfo);
+-        return $res if $res;
+-      }
+-    }
+   }
+ 
+   # Return immediately if no check proceess was started
+@@ -6023,8 +6193,10 @@ sub check_expected_crash_and_restart($$) {
+         }
+ 
+         # Start server with same settings as last time
+-        mysqld_start($mysqld, $mysqld->{'started_opts'},
+-                     $tinfo, $bootstrap_opts);
++        if (mysqld_start($mysqld, $mysqld->{'started_opts'},
++                     $tinfo, $bootstrap_opts)) {
++          return 1;
++        }
+ 
+         if ($tinfo->{'secondary-engine'}) {
+           my $restart_flag = 1;
+@@ -6103,7 +6275,9 @@ sub clean_datadir {
+       rmtree($mysqld_dir);
+     }
+   }
+-
++  if ($tinfo->{'objectstore_test_dir'}) {
++    clean_objectstore_test_dir($tinfo->{'objectstore_test_dir'}, $tinfo->{name});
++  }
+   # Remove all files in tmp and var/tmp
+   clean_dir("$opt_vardir/tmp");
+   if ($opt_tmpdir ne "$opt_vardir/tmp") {
+@@ -6186,7 +6360,7 @@ sub report_failure_and_restart ($) {
+     $tinfo->{'dont_kill_server'} = 1;
+   }
+ 
+-  # Shutdown properly if not to be killed (for valgrind)
++  # Shotdown properly if not to be killed (for valgrind)
+   stop_all_servers($tinfo->{'dont_kill_server'} ? $opt_shutdown_timeout : 0);
+ 
+   $tinfo->{'result'} = 'MTR_RES_FAILED';
+@@ -6445,6 +6619,7 @@ sub mysqld_start ($$$$) {
+ 
+   foreach my $arg (@$extra_opts) {
+     $daemonize_mysqld = 1 if ($arg eq "--daemonize");
++    # disable some case with cnf not supported
+   }
+ 
+   if ($opt_valgrind_mysqld) {
+@@ -6770,11 +6945,6 @@ sub servers_need_restart($) {
+   my @slaves;
+ 
+   foreach my $server (mysqlds()) {
+-    if (is_slave($server)) {
+-      push(@slaves, $server);
+-    } else {
+-      push(@masters, $server);
+-    }
+   }
+ 
+   # Check masters
+@@ -6782,10 +6952,12 @@ sub servers_need_restart($) {
+   foreach my $master (@masters) {
+     if (server_need_restart($tinfo, $master, $master_restarted)) {
+       $master_restarted = 1;
++      # cluster restart all server, skip here.
+       push(@restart_servers, $master);
+-    }
++        }
+   }
+ 
++  # cluster need restart all server when restart one
+   # Check slaves
+   foreach my $slave (@slaves) {
+     if (server_need_restart($tinfo, $slave, $master_restarted)) {
+@@ -6987,30 +7159,36 @@ sub start_servers($) {
+         my $path = ($opt_parallel == 1) ? "$opt_vardir" : "$opt_vardir/..";
+         my $install_db = "$path/data/";
+         if (!-d $datadir or
+-            (!$bootstrap_opts and
+-             !$mysqld->{need_reinitialization})
+-          ) {
++          (!$bootstrap_opts and
++           !$mysqld->{need_reinitialization})
++        ) {
+           copytree($install_db, $datadir) if -d $install_db;
+           mtr_error("Failed to copy system db to '$datadir'")
+-            unless -d $datadir;
++          unless -d $datadir;
+         }
+ 
+         # Restore the value of bootstrap command for the next run.
+         if ($initial_bootstrap_cmd ne $ENV{'MYSQLD_BOOTSTRAP_CMD'}) {
+           $ENV{'MYSQLD_BOOTSTRAP_CMD'} = $initial_bootstrap_cmd;
+         }
+-      }
++      } else {
++        # should bootstrap with $bootstrap_opts
++        mysql_install_db($mysqld, $datadir, $bootstrap_opts, $tinfo);
++        $mysqld->{need_reinitialization} = 0;
++        mtr_error("Failed to install system db to '$datadir'")
++        unless -d $datadir;
++            }
+     } else {
+       mysql_install_db($mysqld);    # For versional testing
+       mtr_error("Failed to install system db to '$datadir'")
+-        unless -d $datadir;
++      unless -d $datadir;
+     }
+ 
+     # Reinitialize the data directory if there are bootstrap options
+     # in the opt file.
+     if ($mysqld->{need_reinitialization}) {
+       clean_dir($datadir);
+-      mysql_install_db($mysqld, $datadir, $bootstrap_opts);
++      mysql_install_db($mysqld, $datadir, $bootstrap_opts, $tinfo);
+       $tinfo->{'reinitialized'} = 1;
+       # Remove the bootstrap.sql file so that a duplicate set of
+       # SQL statements do not get written to the same file.
+@@ -7024,17 +7202,12 @@ sub start_servers($) {
+ 
+     # Run <tname>-master.sh
+     if ($mysqld->option('#!run-master-sh') and
+-        run_sh_script($tinfo->{master_sh})) {
++      run_sh_script($tinfo->{master_sh})) {
+       $tinfo->{'comment'} = "Failed to execute '$tinfo->{master_sh}'";
+       return 1;
+     }
+ 
+     # Run <tname>-slave.sh
+-    if ($mysqld->option('#!run-slave-sh') and
+-        run_sh_script($tinfo->{slave_sh})) {
+-      $tinfo->{'comment'} = "Failed to execute '$tinfo->{slave_sh}'";
+-      return 1;
+-    }
+ 
+     # It's safe to not write log mark if the above sh scripts failed and
+     # caused the flow to not reach here, the test will be reported as failed and
+@@ -7044,7 +7217,10 @@ sub start_servers($) {
+     mark_testcase_start_in_logs($mysqld, $tinfo);
+ 
+     my $extra_opts = get_extra_opts($mysqld, $tinfo);
+-    mysqld_start($mysqld, $extra_opts, $tinfo, $bootstrap_opts);
++    if (mysqld_start($mysqld, $extra_opts, $tinfo, $bootstrap_opts)) {
++      $tinfo->{'comment'} = "Failed to start mysqld for " . $mysqld->name();
++      return 1;
++    }
+ 
+     # Save this test case information, so next can examine it
+     $mysqld->{'started_tinfo'} = $tinfo;
+@@ -7125,7 +7301,6 @@ sub start_check_testcase ($$$) {
+   mtr_add_arg($args, "--defaults-file=%s",         $path_config_file);
+   mtr_add_arg($args, "--defaults-group-suffix=%s", $mysqld->after('mysqld'));
+   mtr_add_arg($args, "--result-file=%s", "$opt_vardir/tmp/$name.result");
+-  mtr_add_arg($args, "--test-file=%s",   "include/check-testcase.test");
+   mtr_add_arg($args, "--verbose");
+   mtr_add_arg($args, "--logdir=%s/tmp",  $opt_vardir);
+ 
+diff --git a/mysql-test/r/mysqld--help-notwin.result b/mysql-test/r/mysqld--help-notwin.result
+index 1f47454c..fede8319 100644
+--- a/mysql-test/r/mysqld--help-notwin.result
++++ b/mysql-test/r/mysqld--help-notwin.result
+@@ -1488,6 +1488,280 @@ The following options may be given as the first argument:
+  Log slow queries to given log file. Defaults logging to
+  hostname-slow.log. Must be enabled to activate other slow
+  log options
++ --smartengine[=name]
++ Enable or disable SMARTENGINE plugin. Possible values are
++ ON, OFF, FORCE (don't start if the plugin fails to load).
++ --smartengine-auto-shrink-enabled
++ DBOptions::auto_shrink_enabled for SE
++ (Defaults to on; use --skip-smartengine-auto-shrink-enabled to disable.)
++ --smartengine-auto-shrink-schedule-interval=#
++ DBOptions::auto_shrink_schedule_interval for SE
++ --smartengine-base-background-compactions=#
++ DBOptions::base_background_compactions for SE
++ --smartengine-batch-group-max-group-size=#
++ DBOptions::batch_group_max_group_size for SE
++ --smartengine-batch-group-max-leader-wait-time-us=#
++ DBOptions::batch_group_max_leader_wait_time_us for SE
++ --smartengine-batch-group-slot-array-size=#
++ DBOptions::batch_group_slot_array_size for SE
++ --smartengine-block-cache-size=#
++ block_cache size for SE
++ --smartengine-block-size=#
++ BlockBasedTableOptions::block_size for SE
++ --smartengine-bottommost-level=#
++ CFOptions::bottommost_level for SE
++ --smartengine-bulk-load-size=#
++ Max #records in a batch for bulk-load mode
++ --smartengine-cfstats[=name]
++ Enable or disable SMARTENGINE_CFSTATS plugin. Possible
++ values are ON, OFF, FORCE (don't start if the plugin
++ fails to load).
++ --smartengine-columns[=name]
++ Enable or disable SMARTENGINE_COLUMNS plugin. Possible
++ values are ON, OFF, FORCE (don't start if the plugin
++ fails to load).
++ --smartengine-compact-cf=#
++ Compact sub table
++ --smartengine-compaction-delete-percent=#
++ CFOptions::compaction_delete_percent for SE
++ --smartengine-compaction-history[=name]
++ Enable or disable SMARTENGINE_COMPACTION_HISTORY plugin.
++ Possible values are ON, OFF, FORCE (don't start if the
++ plugin fails to load).
++ --smartengine-compaction-mode=#
++ DBOptions::compaction_mode for SE
++ --smartengine-compaction-stats[=name]
++ Enable or disable SMARTENGINE_COMPACTION_STATS plugin.
++ Possible values are ON, OFF, FORCE (don't start if the
++ plugin fails to load).
++ --smartengine-compaction-task[=name]
++ Enable or disable SMARTENGINE_COMPACTION_TASK plugin.
++ Possible values are ON, OFF, FORCE (don't start if the
++ plugin fails to load).
++ --smartengine-compaction-task-extents-limit=#
++ CFOptions::compaction_task_extents_limit for SE
++ --smartengine-compaction-type=#
++ DBOptions::compaction_type for SE
++ --smartengine-compression-options=name
++ CFOptions::compression_opts for SE
++ --smartengine-compression-per-level=name
++ CFOptions::compression_per_level for SE
++ --smartengine-concurrent-writable-file-buffer-num=#
++ DBOptions::concurrent_writable_file_buffer_num for SE
++ --smartengine-concurrent-writable-file-buffer-switch-limit=#
++ DBOptions::concurrent_writable_file_buffer_switch_limit
++ for SE
++ --smartengine-concurrent-writable-file-single-buffer-size=#
++ DBOptions::concurrent_writable_file_single_buffer_size
++ for SE
++ --smartengine-cpu-compaction-thread-num=#
++ DBOptions::cpu_compaction_thread_num for SE
++ --smartengine-datadir[=name]
++ SE data directory
++ --smartengine-db-total-write-buffer-size=#
++ DBOptions::db_total_write_buffer_size for SE
++ --smartengine-db-write-buffer-size=#
++ DBOptions::db_write_buffer_size for SE
++ --smartengine-dbstats[=name]
++ Enable or disable SMARTENGINE_DBSTATS plugin. Possible
++ values are ON, OFF, FORCE (don't start if the plugin
++ fails to load).
++ --smartengine-ddl[=name]
++ Enable or disable SMARTENGINE_DDL plugin. Possible values
++ are ON, OFF, FORCE (don't start if the plugin fails to
++ load).
++ --smartengine-deadlock-detect
++ Enables deadlock detection
++ --smartengine-debug-info[=name]
++ Enable or disable SMARTENGINE_DEBUG_INFO plugin. Possible
++ values are ON, OFF, FORCE (don't start if the plugin
++ fails to load).
++ --smartengine-disable-auto-compactions
++ CFOptions::disable_auto_compaction for SE
++ --smartengine-disable-instant-ddl
++ disable instant ddl feature if necessary.
++ --smartengine-disable-online-ddl=#
++ disable online ddl feature if necessary.0: not disable
++ online ddl,1: disable online-rebuild ddl, like modify
++ pk,2: disable all type online-ddl include
++ rebuild/norebuild
++ --smartengine-disable-parallel-ddl
++ disable parall ddl feature if necessary.
++ --smartengine-dump-malloc-stats
++ DBOptions::dump_malloc_stats for se
++ --smartengine-dump-memtable-limit-size=#
++ DBOptions::dump_memtable_limit_size for SE
++ --smartengine-enable-2pc
++ Enable two phase commit for SE
++ (Defaults to on; use --skip-smartengine-enable-2pc to disable.)
++ --smartengine-estimate-cost-depth=#
++ DBOptions::estimate_cost_depth for SE
++ --smartengine-flush-delete-percent=#
++ CFOptions::flush_delete_percent for SE
++ --smartengine-flush-delete-percent-trigger=#
++ CFOptions::flush_delete_percent_trigger for SE
++ --smartengine-flush-delete-record-trigger=#
++ CFOptions::flush_delete_record_trigger for SE
++ --smartengine-flush-log-at-trx-commit=#
++ Sync on transaction commit. Similar to
++ innodb_flush_log_at_trx_commit. 1: sync on commit, 0: not
++ sync until wal_bytes_per_sync, 2: sync per second
++ --smartengine-force-flush-memtable-now
++ Forces memstore flush which may block all write requests
++ so be careful
++ --smartengine-fpga-compaction-thread-num=#
++ DBOptions::fpga_compaction_thread_num for SE
++ --smartengine-global-info[=name]
++ Enable or disable SMARTENGINE_GLOBAL_INFO plugin.
++ Possible values are ON, OFF, FORCE (don't start if the
++ plugin fails to load).
++ --smartengine-hotbackup=name
++ Hot Backup
++ --smartengine-idle-tasks-schedule-time=#
++ DBOptions::idle_tasks_schedule_time for SE
++ --smartengine-index-file-map[=name]
++ Enable or disable SMARTENGINE_INDEX_FILE_MAP plugin.
++ Possible values are ON, OFF, FORCE (don't start if the
++ plugin fails to load).
++ --smartengine-level-compaction-dynamic-level-bytes
++ CFOptions::level_compaction_dynamic_level_bytes for SE
++ (Defaults to on; use --skip-smartengine-level-compaction-dynamic-level-bytes to disable.)
++ --smartengine-level0-file-num-compaction-trigger=#
++ CFOptions::level0_file_num_compaction_trigger for SE
++ --smartengine-level0-layer-num-compaction-trigger=#
++ CFOptions::level0_layer_num_compaction_trigger for SE
++ --smartengine-level1-extents-major-compaction-trigger=#
++ CFOptions::level1_extents_major_compaction_trigger for SE
++ --smartengine-level2-usage-percent=#
++ CFOptions::level2_usage_percent for SE
++ --smartengine-lock-scanned-rows
++ Take and hold locks on rows that are scanned but not
++ updated
++ --smartengine-lock-wait-timeout=#
++ Number of seconds to wait for lock
++ --smartengine-locks[=name]
++ Enable or disable SMARTENGINE_LOCKS plugin. Possible
++ values are ON, OFF, FORCE (don't start if the plugin
++ fails to load).
++ --smartengine-master-thread-monitor-interval-ms[=#]
++ DBOptions::master_thread_monitor_interval_ms for SE
++ --smartengine-max-background-compactions=#
++ DBOptions::max_background_compactions for SE
++ --smartengine-max-background-dumps=#
++ DBOptions::max_background_dumps for SE
++ --smartengine-max-background-flushes=#
++ DBOptions::max_background_flushes for SE
++ --smartengine-max-free-extent-percent=#
++ DBOptions::max_free_extent_percent for SE
++ --smartengine-max-manifest-file-size=#
++ DBOptions::max_manifest_file_size for SE
++ --smartengine-max-row-locks=#
++ Maximum number of locks a transaction can have
++ --smartengine-max-shrink-extent-count=#
++ DBOptions::max_shrink_extent_count for SE
++ --smartengine-max-total-wal-size=#
++ DBOptions::max_total_wal_size for SE
++ --smartengine-max-write-buffer-number=#
++ CFOptions::max_write_buffer_number for SE
++ --smartengine-max-write-buffer-number-to-maintain=#
++ CFOptions::max_write_buffer_number_to_maintain for SE
++ --smartengine-mem-alloc[=name]
++ Enable or disable SMARTENGINE_MEM_ALLOC plugin. Possible
++ values are ON, OFF, FORCE (don't start if the plugin
++ fails to load).
++ --smartengine-memtable=name
++ options for CFOptions::memtable in SE
++ --smartengine-min-write-buffer-number-to-merge=#
++ CFOptions::min_write_buffer_number_to_merge for SE
++ --smartengine-mutex-backtrace-threshold-ns=#
++ DBOptions::mutex_backtrace_threshold_ns for SE
++ --smartengine-parallel-read-threads=#
++ Number of threads to do parallel read.
++ --smartengine-parallel-recovery-thread-num=#
++ DBOptions::parallel_recovery_thread_num for SE. Default
++ is 0
++ --smartengine-parallel-wal-recovery
++ DBOptions::parallel_wal_recovery for SE. Default is FALSE
++ --smartengine-pause-background-work
++ Disable all se background operations
++ --smartengine-perf-context[=name]
++ Enable or disable SMARTENGINE_PERF_CONTEXT plugin.
++ Possible values are ON, OFF, FORCE (don't start if the
++ plugin fails to load).
++ --smartengine-perf-context-global[=name]
++ Enable or disable SMARTENGINE_PERF_CONTEXT_GLOBAL plugin.
++ Possible values are ON, OFF, FORCE (don't start if the
++ plugin fails to load).
++ --smartengine-purge-invalid-subtable-bg
++ Turn on to enable purging invalid subtable in background
++ (Defaults to on; use --skip-smartengine-purge-invalid-subtable-bg to disable.)
++ --smartengine-query-trace[=name]
++ Enable or disable SMARTENGINE_QUERY_TRACE plugin.
++ Possible values are ON, OFF, FORCE (don't start if the
++ plugin fails to load).
++ --smartengine-query-trace-print-slow
++ If print slow query detail in error log for SE
++ --smartengine-query-trace-sum=name
++ If record query detail in IS table for SE
++ --smartengine-query-trace-threshold-time=#
++ If a query use more than this, a trace log will be
++ printed to error log
++ --smartengine-rate-limiter-bytes-per-sec=#
++ DBOptions::rate_limiter bytes_per_sec for SE
++ --smartengine-reset-pending-shrink=#
++ reset subtable's pending shrink
++ --smartengine-row-cache-size=#
++ row_cache size for SE
++ --smartengine-scan-add-blocks-limit=#
++ CFOptions::scan_add_blocks_limit for SE
++ --smartengine-shrink-allocate-interval=#
++ DBOptions::shrink_allocate_interval for SE
++ --smartengine-shrink-table-space=#
++ Shrink se table space
++ --smartengine-sort-buffer-size=#
++ Memory buffer size for index creation
++ --smartengine-stats-dump-period-sec=#
++ DBOptions::stats_dump_period_sec for SE
++ --smartengine-strict-collation-check
++ Enforce case sensitive collation for SE indexes
++ (Defaults to on; use --skip-smartengine-strict-collation-check to disable.)
++ --smartengine-strict-collation-exceptions=name
++ List of tables (using regex) that are excluded from the
++ case sensitive collation enforcement
++ --smartengine-subtable[=name]
++ Enable or disable SMARTENGINE_SUBTABLE plugin. Possible
++ values are ON, OFF, FORCE (don't start if the plugin
++ fails to load).
++ --smartengine-table-cache-numshardbits=#
++ DBOptions::table_cache_numshardbits for SE
++ --smartengine-table-cache-size=#
++ DBOptions::table_cache_size for SE
++ --smartengine-table-space[=name]
++ Enable or disable SMARTENGINE_TABLE_SPACE plugin.
++ Possible values are ON, OFF, FORCE (don't start if the
++ plugin fails to load).
++ --smartengine-tables[=name]
++ Enable or disable SMARTENGINE_TABLES plugin. Possible
++ values are ON, OFF, FORCE (don't start if the plugin
++ fails to load).
++ --smartengine-total-max-shrink-extent-count=#
++ DBOptions::total_max_shrink_extent_count for SE
++ --smartengine-trx[=name]
++ Enable or disable SMARTENGINE_TRX plugin. Possible values
++ are ON, OFF, FORCE (don't start if the plugin fails to
++ load).
++ --smartengine-unsafe-for-binlog
++ Allowing statement based binary logging which may break
++ consistency
++ --smartengine-wal-dir=name
++ DBOptions::wal_dir for SE
++ --smartengine-wal-recovery-mode=#
++ DBOptions::wal_recovery_mode for SE. Default is
++ kAbsoluteConsistency
++ --smartengine-write-buffer-size=#
++ CFOptions::write_buffer_size for SE
++ --smartengine-write-disable-wal
++ WriteOptions::disableWAL for SE
+  --socket=name       Socket file to use for connection
+  --sort-buffer-size=# 
+  Each thread that needs to do a sort allocates a buffer of
+@@ -2036,6 +2310,114 @@ slave-transaction-retries 10
+ slave-type-conversions 
+ slow-launch-time 2
+ slow-query-log FALSE
++smartengine OFF
++smartengine-auto-shrink-enabled TRUE
++smartengine-auto-shrink-schedule-interval 3600
++smartengine-base-background-compactions 1
++smartengine-batch-group-max-group-size 8
++smartengine-batch-group-max-leader-wait-time-us 50
++smartengine-batch-group-slot-array-size 8
++smartengine-block-cache-size 536870912
++smartengine-block-size 16384
++smartengine-bottommost-level 2
++smartengine-bulk-load-size 10000
++smartengine-cfstats OFF
++smartengine-columns OFF
++smartengine-compact-cf 0
++smartengine-compaction-delete-percent 70
++smartengine-compaction-history OFF
++smartengine-compaction-mode 0
++smartengine-compaction-stats OFF
++smartengine-compaction-task OFF
++smartengine-compaction-task-extents-limit 1000
++smartengine-compaction-type 0
++smartengine-compression-options -14:1:0
++smartengine-compression-per-level kNoCompression
++smartengine-concurrent-writable-file-buffer-num 4
++smartengine-concurrent-writable-file-buffer-switch-limit 32768
++smartengine-concurrent-writable-file-single-buffer-size 65536
++smartengine-cpu-compaction-thread-num 8
++smartengine-datadir ./.smartengine
++smartengine-db-total-write-buffer-size 107374182400
++smartengine-db-write-buffer-size 107374182400
++smartengine-dbstats OFF
++smartengine-ddl OFF
++smartengine-deadlock-detect FALSE
++smartengine-debug-info OFF
++smartengine-disable-auto-compactions FALSE
++smartengine-disable-instant-ddl FALSE
++smartengine-disable-online-ddl 0
++smartengine-disable-parallel-ddl FALSE
++smartengine-dump-malloc-stats FALSE
++smartengine-dump-memtable-limit-size 67108864
++smartengine-enable-2pc TRUE
++smartengine-estimate-cost-depth 0
++smartengine-flush-delete-percent 70
++smartengine-flush-delete-percent-trigger 700000
++smartengine-flush-delete-record-trigger 700000
++smartengine-flush-log-at-trx-commit 1
++smartengine-force-flush-memtable-now FALSE
++smartengine-fpga-compaction-thread-num 8
++smartengine-global-info OFF
++smartengine-hotbackup
++smartengine-idle-tasks-schedule-time 60
++smartengine-index-file-map OFF
++smartengine-level-compaction-dynamic-level-bytes TRUE
++smartengine-level0-file-num-compaction-trigger 64
++smartengine-level0-layer-num-compaction-trigger 8
++smartengine-level1-extents-major-compaction-trigger 1000
++smartengine-level2-usage-percent 70
++smartengine-lock-scanned-rows FALSE
++smartengine-lock-wait-timeout 1
++smartengine-locks OFF
++smartengine-master-thread-monitor-interval-ms 60000
++smartengine-max-background-compactions 1
++smartengine-max-background-dumps 1
++smartengine-max-background-flushes 1
++smartengine-max-free-extent-percent 10
++smartengine-max-manifest-file-size 18446744073709551615
++smartengine-max-row-locks 1073741824
++smartengine-max-shrink-extent-count 512
++smartengine-max-total-wal-size 107374182400
++smartengine-max-write-buffer-number 1000
++smartengine-max-write-buffer-number-to-maintain 1000
++smartengine-mem-alloc OFF
++smartengine-memtable
++smartengine-min-write-buffer-number-to-merge 2
++smartengine-mutex-backtrace-threshold-ns 1000000000
++smartengine-parallel-read-threads 4
++smartengine-parallel-recovery-thread-num 0
++smartengine-parallel-wal-recovery FALSE
++smartengine-pause-background-work FALSE
++smartengine-perf-context OFF
++smartengine-perf-context-global OFF
++smartengine-purge-invalid-subtable-bg TRUE
++smartengine-query-trace OFF
++smartengine-query-trace-print-slow FALSE
++smartengine-query-trace-sum OFF
++smartengine-query-trace-threshold-time 100
++smartengine-rate-limiter-bytes-per-sec 0
++smartengine-reset-pending-shrink 0
++smartengine-row-cache-size 0
++smartengine-scan-add-blocks-limit 100
++smartengine-shrink-allocate-interval 3600
++smartengine-shrink-table-space -1
++smartengine-sort-buffer-size 4194304
++smartengine-stats-dump-period-sec 600
++smartengine-strict-collation-check TRUE
++smartengine-strict-collation-exceptions (No default value)
++smartengine-subtable OFF
++smartengine-table-cache-numshardbits 7
++smartengine-table-cache-size 1073741824
++smartengine-table-space OFF
++smartengine-tables OFF
++smartengine-total-max-shrink-extent-count 7680
++smartengine-trx OFF
++smartengine-unsafe-for-binlog FALSE
++smartengine-wal-dir
++smartengine-wal-recovery-mode 1
++smartengine-write-buffer-size 268435456
++smartengine-write-disable-wal FALSE
+ sort-buffer-size 262144
+ source-verify-checksum FALSE
+ sporadic-binlog-dump-fail FALSE
+diff --git a/mysql-test/suite/funcs_1/t/is_engines.test b/mysql-test/suite/funcs_1/t/is_engines.test
+index b1aa71cf..6b0a95ff 100644
+--- a/mysql-test/suite/funcs_1/t/is_engines.test
++++ b/mysql-test/suite/funcs_1/t/is_engines.test
+@@ -117,9 +117,6 @@ DROP TABLE information_schema.engines;
+ 
+ --error ER_DBACCESS_DENIED_ERROR
+ ALTER TABLE information_schema.engines RENAME db_datadict.engines;
+---error ER_DBACCESS_DENIED_ERROR
+-ALTER TABLE information_schema.engines RENAME information_schema.xengines;
+-
+ # Cleanup
+ DROP DATABASE db_datadict;
+ 
+diff --git a/mysql-test/suite/rpl/t/rpl_drop_scheduled_event.test b/mysql-test/suite/rpl/t/rpl_drop_scheduled_event.test
+index e8e9d2db..80e20887 100644
+--- a/mysql-test/suite/rpl/t/rpl_drop_scheduled_event.test
++++ b/mysql-test/suite/rpl/t/rpl_drop_scheduled_event.test
+@@ -38,7 +38,6 @@ CREATE EVENT e1
+ --sleep $naptime
+ 
+ SET GLOBAL EVENT_SCHEDULER= ON;
+-
+ --echo Wait until the event is dropped to disable the event scheduler again.
+ --let $wait_condition= SELECT COUNT(*) = 0 FROM information_schema.events
+ --source include/wait_condition.inc
+diff --git a/mysys/CMakeLists.txt b/mysys/CMakeLists.txt
+index 9bf43714..fb6ae126 100644
+--- a/mysys/CMakeLists.txt
++++ b/mysys/CMakeLists.txt
+@@ -27,6 +27,33 @@ SET(MY_TIME_SOURCES my_time.cc my_systime.cc)
+ 
+ ADD_CONVENIENCE_LIBRARY(mytime ${MY_TIME_SOURCES})
+ 
++SET(MY_OBJSTORE_SOURCES
++  objstore/local.cc
++  objstore/objstore.cc
++  objstore/objstore_lock.cc
++  objstore/aliyun_oss.cc
++  objstore/s3.cc)
++ADD_CONVENIENCE_LIBRARY(myobjstore ${MY_OBJSTORE_SOURCES})
++IF(NOT APPLE)
++  TARGET_LINK_LIBRARIES(myobjstore_objlib
++    PRIVATE
++    ${OBJSTORE_LIBRARIES}
++    ${OBJSTORE_OSS_LIBRARIES}
++    ${OBJSTORE_PLATFORM_DEPS}
++    )
++  add_dependencies(myobjstore_objlib ${OBJSTORE_OSS_TARGET})
++ENDIF()
++TARGET_LINK_LIBRARIES(myobjstore
++  PRIVATE
++  ${OBJSTORE_LIBRARIES}
++  ${OBJSTORE_OSS_LIBRARIES}
++  ${OBJSTORE_PLATFORM_DEPS}
++  "stdc++fs"
++  )
++add_dependencies(myobjstore ${OBJSTORE_OSS_TARGET})
++# shut up the compile warning when encountering aws-sdk-cpp header files.
++SET_SOURCE_FILES_PROPERTIES(${MY_OBJSTORE_SOURCES} PROPERTIES COMPILE_FLAGS
++    "-Wno-error=extra-semi -Wno-error=undef -Wno-error=cast-qual -Wno-error=overloaded-virtual -Wno-error=unused-variable -Wno-error=unused-parameter -Wno-error=suggest-override")
+ SET(MYSYS_SOURCES
+   array.cc
+   charset.cc
+@@ -185,6 +212,7 @@ ENDIF()
+ ADD_CONVENIENCE_LIBRARY(mysys ${MYSYS_SOURCES}
+   LINK_LIBRARIES
+   mytime
++  myobjstore
+   strings
+   ext::zlib
+   ext::zstd
+diff --git a/mysys/my_handler_errors.h b/mysys/my_handler_errors.h
+index a95c8774..cb3d5edf 100644
+--- a/mysys/my_handler_errors.h
++++ b/mysys/my_handler_errors.h
+@@ -125,7 +125,11 @@ static const char *handler_error_messages[] = {
+     "Invalid table name",
+     "Path is too long for the OS",
+     "Histogram sampling initialization failed",
+-    "Too many nested sub-expressions in a full-text search"};
++    "Too many nested sub-expressions in a full-text search",
++#ifdef WITH_SMARTENGINE
++    "Unexpected nullptr in smartengine handler"
++#endif
++};
+ 
+ // clang-format on
+ 
+diff --git a/mysys/print_version.cc b/mysys/print_version.cc
+index b46c85cc..ec833852 100644
+--- a/mysys/print_version.cc
++++ b/mysys/print_version.cc
+@@ -64,8 +64,12 @@ void print_version_debug() {
+ }
+ 
+ void print_explicit_version(const char *version) {
+-  printf("%s  Ver %s for %s on %s (%s)\n", my_progname, version, SYSTEM_TYPE,
++  printf("%s  Ver %s for %s on %s (%s)", my_progname, version, SYSTEM_TYPE,
+          MACHINE_TYPE, MYSQL_COMPILATION_COMMENT_SERVER);
++#ifdef WESQL
++  printf(" WeSQL %s", WESQL_VERSION);
++#endif
++  printf("\n");
+ }
+ 
+ void build_version(const std::string &progname, std::string *destination) {
+@@ -75,3 +79,6 @@ void build_version(const std::string &progname, std::string *destination) {
+                 << MACHINE_TYPE << " (" << MYSQL_COMPILATION_COMMENT << ")";
+   *destination = output_buffer.str();
+ }
++#ifdef WESQL
++void print_wesql_version() { printf("WeSQL Ver %s \n", WESQL_VERSION); }
++#endif
+diff --git a/plugin/clone/CMakeLists.txt b/plugin/clone/CMakeLists.txt
+index 4daf8cb4..e786478a 100644
+--- a/plugin/clone/CMakeLists.txt
++++ b/plugin/clone/CMakeLists.txt
+@@ -28,6 +28,9 @@ ADD_DEFINITIONS(-DMYSQL_SERVER)
+ ADD_DEFINITIONS(-DLOG_SUBSYSTEM_TAG="Clone")
+ ADD_DEFINITIONS(-DLOG_COMPONENT_TAG="Clone")
+ 
++MY_ADD_COMPILE_DEFINITIONS(
++  src/clone_plugin.cc
++  COMPILE_DEFINITIONS MYSQL_DYNAMIC_PLUGIN)
+ MYSQL_ADD_PLUGIN(clone
+   src/clone_plugin.cc
+   src/clone_client.cc
+@@ -36,6 +39,5 @@ MYSQL_ADD_PLUGIN(clone
+   src/clone_local.cc
+   src/clone_os.cc
+   src/clone_hton.cc
+-  MODULE_ONLY
+   MODULE_OUTPUT_NAME "mysql_clone"
+   )
+diff --git a/plugin/clone/src/clone_plugin.cc b/plugin/clone/src/clone_plugin.cc
+index 71550066..eef920fb 100644
+--- a/plugin/clone/src/clone_plugin.cc
++++ b/plugin/clone/src/clone_plugin.cc
+@@ -27,8 +27,15 @@ Clone Plugin: Plugin interface
+ 
+ */
+ 
++#ifdef MYSQL_DYNAMIC_PLUGIN
++#undef MYSQL_DYNAMIC_PLUGIN
+ #include <mysql/plugin.h>
+ #include <mysql/plugin_clone.h>
++#define MYSQL_DYNAMIC_PLUGIN
++#else
++#include <mysql/plugin.h>
++#include <mysql/plugin_clone.h>
++#endif
+ 
+ #include "plugin/clone/include/clone_client.h"
+ #include "plugin/clone/include/clone_local.h"
+@@ -648,7 +655,7 @@ static SYS_VAR *clone_system_variables[] = {
+     nullptr};
+ 
+ /** Declare clone plugin */
+-mysql_declare_plugin(clone_plugin){
++mysql_declare_plugin(clone){
+     MYSQL_CLONE_PLUGIN,
+ 
+     &clone_descriptor,
+diff --git a/scripts/CMakeLists.txt b/scripts/CMakeLists.txt
+index 272ffcf3..709bc230 100644
+--- a/scripts/CMakeLists.txt
++++ b/scripts/CMakeLists.txt
+@@ -151,17 +151,42 @@ ADD_CUSTOM_COMMAND(
+   ${CMAKE_CURRENT_SOURCE_DIR}/firewall_stored_procedures.sql
+ )
+ 
++IF(WITH_WESQL)
++  ADD_CUSTOM_COMMAND(
++    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables_wesql.h
++    COMMAND comp_sql
++    wesql_system_tables
++    ${CMAKE_CURRENT_SOURCE_DIR}/wesql_system_tables.sql
++    sql_commands_system_tables_wesql.h
++    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
++    DEPENDS comp_sql
++    ${CMAKE_CURRENT_SOURCE_DIR}/wesql_system_tables.sql
++  )
++ENDIF()
+ # Add target for the above to be built
+ IF(NOT WITHOUT_SERVER)
+-  MY_ADD_CUSTOM_TARGET(GenBootstrapPriv
+-    ALL
+-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_data.h
+-    ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables.h
+-    ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_users.h
+-    ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_help_data.h
+-    ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables_data_fix.h
+-    ${CMAKE_CURRENT_BINARY_DIR}/sql_firewall_stored_procedures.h
+-  )
++  IF(NOT WITH_WESQL)
++    MY_ADD_CUSTOM_TARGET(GenBootstrapPriv
++      ALL
++      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_data.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_users.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_help_data.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables_data_fix.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_firewall_stored_procedures.h
++    )
++  ELSE()
++    MY_ADD_CUSTOM_TARGET(GenBootstrapPriv
++      ALL
++      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_data.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_users.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_help_data.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables_data_fix.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_firewall_stored_procedures.h
++      ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables_wesql.h
++    )
++  ENDIF()
+ ENDIF()
+ 
+ IF(UNIX)
+diff --git a/scripts/mysql_system_tables.sql b/scripts/mysql_system_tables.sql
+index f6432803..140bb72e 100644
+--- a/scripts/mysql_system_tables.sql
++++ b/scripts/mysql_system_tables.sql
+@@ -27,6 +27,7 @@
+ 
+ set @have_innodb= (select count(engine) from information_schema.engines where engine='INNODB' and support != 'NO');
+ set @is_mysql_encrypted = (select ENCRYPTION from information_schema.INNODB_TABLESPACES where NAME='mysql');
++set @have_smartengine = (select count(engine) from information_schema.engines where engine='SMARTENGINE' and support != 'NO');
+ 
+ -- Tables below are NOT treated as DD tables by MySQL server yet.
+ 
+@@ -386,7 +387,7 @@ SET @cmd="CREATE TABLE IF NOT EXISTS slave_relay_log_info (
+   Assign_gtids_to_anonymous_transactions_value TEXT CHARACTER SET utf8mb3 COLLATE utf8mb3_bin  COMMENT 'Indicates the UUID used while generating GTIDs for anonymous transactions',
+   PRIMARY KEY(Channel_name)) DEFAULT CHARSET=utf8mb3 STATS_PERSISTENT=0 COMMENT 'Relay Log Information'";
+ 
+-SET @str=IF(@have_innodb <> 0, CONCAT(@cmd, ' ENGINE= INNODB ROW_FORMAT=DYNAMIC TABLESPACE=mysql ENCRYPTION=\'', @is_mysql_encrypted,'\''), CONCAT(@cmd, ' ENGINE= MYISAM'));
++SET @str=IF(@@global.serverless AND @have_smartengine <> 0, CONCAT(@cmd, ' ENGINE= SMARTENGINE'), IF(@have_innodb <> 0, CONCAT(@cmd, ' ENGINE= INNODB ROW_FORMAT=DYNAMIC TABLESPACE=mysql ENCRYPTION=\'', @is_mysql_encrypted,'\''), CONCAT(@cmd, ' ENGINE= MYISAM')));
+ PREPARE stmt FROM @str;
+ EXECUTE stmt;
+ DROP PREPARE stmt;
+@@ -427,7 +428,7 @@ SET @cmd= "CREATE TABLE IF NOT EXISTS slave_master_info (
+   Gtid_only BOOLEAN NOT NULL DEFAULT FALSE COMMENT 'Indicates if this channel only uses GTIDs and does not persist positions.',
+   PRIMARY KEY(Channel_name)) DEFAULT CHARSET=utf8mb3 STATS_PERSISTENT=0 COMMENT 'Master Information'";
+ 
+-SET @str=IF(@have_innodb <> 0, CONCAT(@cmd, ' ENGINE= INNODB ROW_FORMAT=DYNAMIC TABLESPACE=mysql ENCRYPTION=\'', @is_mysql_encrypted,'\''), CONCAT(@cmd, ' ENGINE= MYISAM'));
++SET @str=IF(@@global.serverless AND @have_smartengine <> 0, CONCAT(@cmd, ' ENGINE= SMARTENGINE'), IF(@have_innodb <> 0, CONCAT(@cmd, ' ENGINE= INNODB ROW_FORMAT=DYNAMIC TABLESPACE=mysql ENCRYPTION=\'', @is_mysql_encrypted,'\''), CONCAT(@cmd, ' ENGINE= MYISAM')));
+ PREPARE stmt FROM @str;
+ EXECUTE stmt;
+ DROP PREPARE stmt;
+@@ -448,7 +449,7 @@ SET @cmd= "CREATE TABLE IF NOT EXISTS slave_worker_info (
+   Channel_name VARCHAR(64) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci NOT NULL COMMENT 'The channel on which the replica is connected to a source. Used in Multisource Replication',
+   PRIMARY KEY(Channel_name, Id)) DEFAULT CHARSET=utf8mb3 STATS_PERSISTENT=0 COMMENT 'Worker Information'";
+ 
+-SET @str=IF(@have_innodb <> 0, CONCAT(@cmd, ' ENGINE= INNODB ROW_FORMAT=DYNAMIC TABLESPACE=mysql ENCRYPTION=\'', @is_mysql_encrypted,'\''), CONCAT(@cmd, ' ENGINE= MYISAM'));
++SET @str=IF(@@global.serverless AND @have_smartengine <> 0, CONCAT(@cmd, ' ENGINE= SMARTENGINE'), IF(@have_innodb <> 0, CONCAT(@cmd, ' ENGINE= INNODB ROW_FORMAT=DYNAMIC TABLESPACE=mysql ENCRYPTION=\'', @is_mysql_encrypted,'\''), CONCAT(@cmd, ' ENGINE= MYISAM')));
+ PREPARE stmt FROM @str;
+ EXECUTE stmt;
+ DROP PREPARE stmt;
+@@ -459,7 +460,7 @@ SET @cmd= "CREATE TABLE IF NOT EXISTS gtid_executed (
+     interval_end BIGINT NOT NULL COMMENT 'Last number of interval.',
+     PRIMARY KEY(source_uuid, interval_start)) STATS_PERSISTENT=0";
+ 
+-SET @str=IF(@have_innodb <> 0, CONCAT(@cmd, ' ENGINE= INNODB ROW_FORMAT=DYNAMIC TABLESPACE=mysql ENCRYPTION=\'', @is_mysql_encrypted,'\''), CONCAT(@cmd, ' ENGINE= MYISAM'));
++SET @str=IF(@@global.serverless AND @have_smartengine <> 0, CONCAT(@cmd, ' ENGINE= SMARTENGINE'), IF(@have_innodb <> 0, CONCAT(@cmd, ' ENGINE= INNODB ROW_FORMAT=DYNAMIC TABLESPACE=mysql ENCRYPTION=\'', @is_mysql_encrypted,'\''), CONCAT(@cmd, ' ENGINE= MYISAM')));
+ PREPARE stmt FROM @str;
+ EXECUTE stmt;
+ DROP PREPARE stmt;
+diff --git a/share/messages_to_clients.txt b/share/messages_to_clients.txt
+index d7652a7a..ea4a9c51 100644
+--- a/share/messages_to_clients.txt
++++ b/share/messages_to_clients.txt
+@@ -9985,6 +9985,20 @@ ER_WARN_AUDIT_LOG_FILTER_RECOVERY_LOGGING_DISABLED
+ 
+ reserved-error-section 5000 5999
+ 
++################################################################################
++#
++# Start of WeSQL error message. 7500 - 7999
++# Error message intended to be sent to client should start here.
++#
++start-error-number 7500
++ER_NATIVE_PROC_PARAMETER_MISMATCH
++  eng "The %dth parameter didn't match for native procedure %s"
++ER_FORCE_STORAGE_ENGINE_TO_SMARTENGINE
++  eng "Force change storage engine from %s to smartengine in serverless mode"
++ER_WARN_PURGE_LOG_IN_BINLOG_ARCHIVE_NOT_RUNNING
++  eng "file %s was not purged because binlog arhive not running."
++ER_WARN_PURGE_LOG_NOT_PERSISTED
++  eng "file %s was not purged because it is not persisted log file."
+ 
+ ################################################################################
+ # DO NOT add messages for the error-log to this file;
+diff --git a/share/messages_to_error_log.txt b/share/messages_to_error_log.txt
+index 873fd9ca..8e6d8581 100644
+--- a/share/messages_to_error_log.txt
++++ b/share/messages_to_error_log.txt
+@@ -12375,6 +12375,79 @@ ER_WARN_AUDIT_LOG_FILTER_RECOVERY_LOGGING_DISABLED_LOG
+ # End of 8.0 error messages intended to be written to the server error log.
+ #
+ 
++################################################################################
++#
++# Start of WeSQL error messages intended to be logged to the server error log.
++# 25000 - 29999
++################################################################################
++start-error-number 25000
++ER_OBJSTORE_ID_CHECK_ERROR
++  eng "Failed to verify the ID of data directory in the object store with the specified repo_objectstore_id: %s"
++ER_BINLOG_ARCHIVE_LOG
++  eng "Binlog archive: %s."
++ER_BINLOG_ARCHIVE_WORKER_LOG
++  eng "Binlog archive: worker %d %s."
++ER_BINLOG_ARCHIVE_UPDATE_INDEX_WORKER_LOG
++  eng "Binlog archive: update index worker %s."
++ER_BINLOG_ARCHIVE_STARTUP
++  eng "Binlog archive: startup %s."
++ER_BINLOG_ARCHIVE_CREATE_OBJECT_STORE
++  eng "Binlog archive: create objstore provider=%s region=%s endpoint=%s bucket=%s use_https=%s %s."
++ER_BINLOG_ARCHIVE_GET_OBJECT_TO_FILE
++  eng "Binlog archive: get object %s key=%s file=%s %s."
++ER_BINLOG_ARCHIVE_PUT_OBJECT_FROM_BINLOG_SLICE_FILE
++  eng "Binlog archive: put binlog slice to objstore key=%s file=%s size=%lld %s."
++ER_BINLOG_ARCHIVE_PUT_OBJECT_FROM_BINLOG_INDEX_FILE
++  eng "Binlog archive: put binlog index to objstore key=%s index_entry=%s %s."
++ER_BINLOG_ARCHIVE_LIST_OBJECT
++  eng "Binlog archive: list objects %s key_prefix=%s %s."
++ER_BINLOG_ARCHIVE_OPEN_INDEX
++  eng "Binlog archive: open index %s  index=%s."
++ER_BINLOG_ARCHIVE_OPEN_INDEX_TERM_CHANGED
++  eng "Binlog archive: open index term changed %lld to %lld."
++ER_BINLOG_ARCHIVE_LOG_START
++  eng "Binlog archive: persistent mysql binlog %s/%lld"
++ER_BINLOG_ARCHIVE_LOG_SLICE
++  eng "Binlog archive: persistent binlog slice %s"
++ER_BINLOG_ARCHIVE_PURGE_LOG
++  eng "Binlog archive: purge persistent binlog %s"
++ER_BINLOG_ARCHIVE_REPLICA
++  eng "Binlog archive replica: %s."
++ER_BINLOG_ARCHIVE_REPLICA_CREATE_SOURCE_OBJECT_STORE
++  eng "Binlog archive replica: create source objstore provider=%s region=%s endpoint=%s bucket=%s use_https=%s %s."
++ER_BINLOG_ARCHIVE_REPLICA_RELAY_WORKER
++  eng "Binlog archive replica: relay worker %s."
++ER_BINLOG_ARCHIVE_REPLICA_IO_WORKER
++  eng "Binlog archive replica: io worker %d %s."
++ER_BINLOG_ARCHIVE_REPLICA_GET_OBJECT_TO_FILE
++  eng "Binlog archive replica: get object %s key=%s file=%s %s."
++ER_BINLOG_ARCHIVE_REPLICA_LIST_OBJECT
++  eng "Binlog archive replica: list objects %s key_prefix=%s %s."
++ER_BINLOG_ARCHIVE_REPLICA_OPEN_INDEX
++  eng "Binlog archive replica: open index %s  index=%s."
++ER_CONSISTENT_SNAPSHOT_LOG
++   eng "Snapshot archive: %s"
++ER_CONSISTENT_SNAPSHOT_ARCHIVE_THREAD_LOG
++   eng "Snapshot archive thread: %s"
++ER_CONSISTENT_SNAPSHOT_ARCHIVE_INNODB_LOG
++   eng "Snapshot archive innodb: %s"
++ER_CONSISTENT_SNAPSHOT_ARCHIVE_SMARTENGINE_LOG
++   eng "Snapshot archive smartengine: %s"
++ER_CONSISTENT_SNAPSHOT_ARCHIVE_BINLOG_LOG
++   eng "Snapshot archive binlog: %s"
++ER_CONSISTENT_SNAPSHOT_PURGE_LOG
++   eng "Snapshot archive purge: %s"
++ER_CONSISTENT_SNAPSHOT_ARCHIVE_INDEX_LOG
++   eng "Snapshot archive index: %s"
++ER_CONSISTENT_RECOVERY_LOG
++  eng "Snapshot recovery: %s"
++ER_CONSISTENT_RECOVERY_GET_LAST_BINLOG_CONSENSUS_INDEX_LOG
++  eng "Snapshot recovery get last persistent binlog consensus index: %s."
++ER_FORCE_DEFAULT_STORAGE_ENGINE_TO_SMARTENGINE
++  eng "Force to use smartengine as default storage engine in serverless mode, not %s."
++#
++# End of WeSQL error messages intended to be logged to the server error log.
++#
+ ################################################################################
+ # Error numbers 50000 to 51999 are reserved. Please do not use them for
+ # other error messages.
+diff --git a/sql/CMakeLists.txt b/sql/CMakeLists.txt
+index 3e265101..ce4052af 100644
+--- a/sql/CMakeLists.txt
++++ b/sql/CMakeLists.txt
+@@ -633,7 +633,19 @@ SET(SQL_SHARED_SOURCES
+   xa/transaction_cache.cc
+   xa/xid_extract.cc
+   daemon_proxy_keyring/daemon_proxy_keyring.cc
++)
++IF(WITH_WESQL)
++  LIST(APPEND SQL_SHARED_SOURCES
++    common/component.cc
++    package/package.cc
++    package/package_cache.cc
++    package/package_common.cc
++    package/proc.cc
++    package/package_parse.cc
++    package/proc_dummy.cc
++    package/show_native_procedure.cc
+   )
++ENDIF()
+ 
+ IF(BUILD_IS_SINGLE_CONFIG)
+   GET_PROPERTY(CWD_DEFINITIONS DIRECTORY PROPERTY COMPILE_DEFINITIONS)
+@@ -1005,6 +1017,9 @@ SET(BINLOG_SOURCE
+   binlog/monitoring/context.cc
+   binlog/decompressing_event_object_istream.cc
+   binlog.cc
++  binlog_archive.cc
++  binlog_archive_replica.cc
++  binlog_archive_command.cc
+   binlog_istream.cc
+   binlog_ostream.cc
+   binlog_reader.cc
+@@ -1013,6 +1028,10 @@ SET(BINLOG_SOURCE
+   changestreams/misc/column_filters/column_filter_inbound_func_indexes.cc
+   changestreams/misc/column_filters/column_filter_inbound_gipk.cc
+   changestreams/misc/column_filters/column_filter_outbound_func_indexes.cc
++  consistent_archive.cc
++  consistent_recovery.cc
++  consistent_snapshot_purge_command.cc
++  consistent_snapshot_force_command.cc
+   log_event.cc
+   rpl_commit_stage_manager.cc
+   rpl_filter.cc
+diff --git a/sql/basic_istream.h b/sql/basic_istream.h
+index 9e24dd29..d32123be 100644
+--- a/sql/basic_istream.h
++++ b/sql/basic_istream.h
+@@ -120,7 +120,6 @@ class IO_CACHE_istream : public Basic_seekable_istream {
+      Get the length of the file.
+   */
+   my_off_t length() override;
+-
+  private:
+   IO_CACHE m_io_cache;
+ };
+diff --git a/sql/binlog.cc b/sql/binlog.cc
+index 53a2c7a6..7808029b 100644
+--- a/sql/binlog.cc
++++ b/sql/binlog.cc
+@@ -85,6 +85,7 @@
+ #include "partition_info.h"
+ #include "prealloced_array.h"
+ #include "scope_guard.h"
++#include "sql/binlog_archive.h"
+ #include "sql/binlog/decompressing_event_object_istream.h"
+ #include "sql/binlog/global.h"
+ #include "sql/binlog/group_commit/bgc_ticket_manager.h"  // Bgc_ticket_manager
+@@ -6062,6 +6063,7 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
+   bool exit_loop = false;
+   LOG_INFO log_info;
+   THD *thd = current_thd;
++  LOG_INFO last_persisted_log_info;
+   DBUG_TRACE;
+   DBUG_PRINT("info", ("to_log= %s", to_log));
+ 
+@@ -6085,6 +6087,32 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
+     goto err;
+   }
+ 
++  if (opt_serverless && opt_binlog_archive) {
++    Binlog_archive *binlog_archive = Binlog_archive::get_instance();
++    mysql_mutex_t *binlog_archive_lock =
++        binlog_archive->get_binlog_archive_lock();
++    mysql_mutex_lock(binlog_archive_lock);
++    if (!binlog_archive->is_thread_running()) {
++      mysql_mutex_unlock(binlog_archive_lock);
++      if (!auto_purge)
++        push_warning_printf(
++            thd, Sql_condition::SL_WARNING,
++            ER_WARN_PURGE_LOG_IN_BINLOG_ARCHIVE_NOT_RUNNING,
++            ER_THD(thd, ER_WARN_PURGE_LOG_IN_BINLOG_ARCHIVE_NOT_RUNNING),
++            to_log);
++      goto err;
++    }
++    mysql_mutex_unlock(binlog_archive_lock);
++    binlog_archive->get_mysql_current_archive_binlog(&last_persisted_log_info,
++                                                     true);
++    if (last_persisted_log_info.log_file_name[0] == '\0') {
++      if (!auto_purge)
++        push_warning_printf(
++            thd, Sql_condition::SL_WARNING, ER_WARN_PURGE_LOG_NOT_PERSISTED,
++            ER_THD(thd, ER_WARN_PURGE_LOG_NOT_PERSISTED), to_log);
++      goto err;
++    }
++  }
+   /*
+     File name exists in index file; delete until we find this file
+     or a file that is used.
+@@ -6094,6 +6122,18 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
+ 
+   while ((compare_log_name(to_log, log_info.log_file_name) ||
+           (exit_loop = included))) {
++    if (opt_serverless && opt_binlog_archive) {
++      // If binlog_archive is enabled, check if log file is persisted by
++      // binlog_archive thread before purging it.
++      if (compare_log_name(last_persisted_log_info.log_file_name,
++                           log_info.log_file_name) <= 0) {
++        if (!auto_purge)
++          push_warning_printf(
++              thd, Sql_condition::SL_WARNING, ER_WARN_PURGE_LOG_NOT_PERSISTED,
++              ER_THD(thd, ER_WARN_PURGE_LOG_NOT_PERSISTED), to_log);
++        break;
++      }
++    }
+     if (is_active(log_info.log_file_name)) {
+       if (!auto_purge)
+         push_warning_printf(
+@@ -6991,6 +7031,20 @@ bool MYSQL_BIN_LOG::truncate_update_log_file(const char *log_name,
+   return true;
+ }
+ 
++bool update_log_file_set_flag_in_use(const char *log_name, bool in_use) {
++  std::unique_ptr<MYSQL_BIN_LOG::Binlog_ofile> ofile(
++      MYSQL_BIN_LOG::Binlog_ofile::open_existing(key_file_binlog, log_name, MYF(MY_WME)));
++  if (!ofile) {
++    LogErr(ERROR_LEVEL, ER_BINLOG_CANT_OPEN_CRASHED_BINLOG);
++    return false;
++  }
++  uchar flags = in_use ? 1 : 0;
++  if (ofile->update(&flags, 1, BIN_LOG_HEADER_SIZE + FLAGS_OFFSET)) {
++    LogErr(ERROR_LEVEL, ER_BINLOG_CANT_CLEAR_IN_USE_FLAG_FOR_CRASHED_BINLOG);
++    return false;
++  }
++  return true;
++}
+ bool MYSQL_BIN_LOG::write_event(Log_event *ev, Master_info *mi) {
+   DBUG_TRACE;
+ 
+diff --git a/sql/binlog.h b/sql/binlog.h
+index 1d946878..e8d329d6 100644
+--- a/sql/binlog.h
++++ b/sql/binlog.h
+@@ -1177,4 +1177,5 @@ extern ulong rpl_read_size;
+ 
+ bool normalize_binlog_name(char *to, const char *from, bool is_relay_log);
+ 
++bool update_log_file_set_flag_in_use(const char *log_name, bool in_use);
+ #endif /* BINLOG_H_INCLUDED */
+diff --git a/sql/dd/impl/system_registry.cc b/sql/dd/impl/system_registry.cc
+index ddac145f..bd8e6414 100644
+--- a/sql/dd/impl/system_registry.cc
++++ b/sql/dd/impl/system_registry.cc
+@@ -211,6 +211,8 @@ void System_tables::add_remaining_dd_tables() {
+   register_table("backup_sbt_history", system);
+   register_table("columns_priv", system);
+   register_table("component", system);
++#ifdef WESQL
++#endif
+   register_table("db", system);
+   register_table("default_roles", system);
+   register_table("engine_cost", system);
+diff --git a/sql/dd/impl/upgrade/server.cc b/sql/dd/impl/upgrade/server.cc
+index cc5e37ed..ed71477f 100644
+--- a/sql/dd/impl/upgrade/server.cc
++++ b/sql/dd/impl/upgrade/server.cc
+@@ -67,6 +67,9 @@
+ #include "sql/trigger.h"  // Trigger
+ #include "sql/trigger_def.h"
+ 
++#ifdef WESQL
++#include "scripts/sql_commands_system_tables_wesql.h"
++#endif
+ typedef ulonglong sql_mode_t;
+ extern const char *mysql_sys_schema[];
+ extern const char *fill_help_tables[];
+@@ -1085,5 +1088,68 @@ bool I_S_upgrade_required() {
+          opt_upgrade_mode == UPGRADE_FORCE;
+ }
+ 
++#ifdef WESQL
++static bool create_wesql_tables(THD *thd) {
++  const char **query_ptr;
++  DBUG_EXECUTE_IF(
++      "schema_read_only",
++      if (dd::execute_query(thd, "CREATE SCHEMA schema_read_only") ||
++          dd::execute_query(thd, "ALTER SCHEMA schema_read_only READ ONLY=1") ||
++          dd::execute_query(thd, "CREATE TABLE schema_read_only.t(i INT)") ||
++          dd::execute_query(thd, "DROP SCHEMA schema_read_only") ||
++          dd::execute_query(thd, "CREATE TABLE IF NOT EXISTS S.upgrade(i INT)"))
++          assert(false););
++  if (ignore_error_and_execute(thd, "USE mysql")) {
++    LogErr(ERROR_LEVEL, ER_DD_UPGRADE_FAILED_FIND_VALID_DATA_DIR);
++    return true;
++  }
++  LogErr(INFORMATION_LEVEL, ER_SERVER_UPGRADE_MYSQL_TABLES);
++  for (query_ptr = &wesql_system_tables[0]; *query_ptr != nullptr;
++       query_ptr++)
++    if (ignore_error_and_execute(thd, *query_ptr)) return true;
++  return false;
++}
++static bool fix_wesql_tables(THD *thd) {
++  const char **query_ptr;
++  DBUG_EXECUTE_IF(
++      "schema_read_only",
++      if (dd::execute_query(thd, "CREATE SCHEMA schema_read_only") ||
++          dd::execute_query(thd, "ALTER SCHEMA schema_read_only READ ONLY=1") ||
++          dd::execute_query(thd, "CREATE TABLE schema_read_only.t(i INT)") ||
++          dd::execute_query(thd, "DROP SCHEMA schema_read_only") ||
++          dd::execute_query(thd, "CREATE TABLE IF NOT EXISTS S.upgrade(i INT)"))
++          assert(false););
++  if (ignore_error_and_execute(thd, "USE mysql")) {
++    LogErr(ERROR_LEVEL, ER_DD_UPGRADE_FAILED_FIND_VALID_DATA_DIR);
++    return true;
++  }
++  LogErr(INFORMATION_LEVEL, ER_SERVER_UPGRADE_MYSQL_TABLES);
++  for (query_ptr = &wesql_system_tables[0]; *query_ptr != nullptr;
++       query_ptr++)
++    if (ignore_error_and_execute(thd, *query_ptr)) return true;
++  return false;
++}
++bool initialize_wesql_schemas(THD *thd) {
++  Disable_autocommit_guard autocommit_guard(thd);
++  Bootstrap_error_handler bootstrap_error_handler;
++  Server_option_guard<bool> acl_guard(&opt_noacl, true);
++  Server_option_guard<bool> general_log_guard(&opt_general_log, false);
++  Server_option_guard<bool> slow_log_guard(&opt_slow_log, false);
++  Disable_binlog_guard disable_binlog(thd);
++  Disable_sql_log_bin_guard disable_sql_log_bin(thd);
++  bootstrap_error_handler.set_log_error(false);
++  bool err = false;
++  if (thd->system_thread == SYSTEM_THREAD_SERVER_INITIALIZE) {
++    sysd::notify("STATUS=WeSQL schema create in progress\n");
++    err = create_wesql_tables(thd);
++  } else if (thd->system_thread == SYSTEM_THREAD_SERVER_UPGRADE) {
++    sysd::notify("STATUS=WeSQL schema upgrade in progress\n");
++    err = fix_wesql_tables(thd);
++  }
++  bootstrap_error_handler.set_log_error(true);
++  sysd::notify("STATUS=WeSQL schema process complete\n");
++  return dd::end_transaction(thd, err);
++}
++#endif
+ }  // namespace upgrade
+ }  // namespace dd
+diff --git a/sql/dd/upgrade/server.h b/sql/dd/upgrade/server.h
+index 7f3430ca..e790a2a8 100644
+--- a/sql/dd/upgrade/server.h
++++ b/sql/dd/upgrade/server.h
+@@ -83,6 +83,9 @@ bool no_server_upgrade_required();
+ 
+ bool I_S_upgrade_required();
+ 
++#ifdef WESQL
++bool initialize_wesql_schemas(THD *thd);
++#endif
+ }  // namespace upgrade
+ 
+ }  // namespace dd
+diff --git a/sql/dd_table_share.cc b/sql/dd_table_share.cc
+index de80efa7..ec9fb67c 100644
+--- a/sql/dd_table_share.cc
++++ b/sql/dd_table_share.cc
+@@ -383,6 +383,13 @@ static bool prepare_share(THD *thd, TABLE_SHARE *share,
+ 
+         field->set_flag(PART_KEY_FLAG);
+         if (key == primary_key) {
++#ifdef WITH_SMARTENGINE
++          /**For smartengine, reload ha_table_flags after pk index setup_key_part_field,
++           because handler flag HA_PRIMARY_KEY_IN_READ_INDEX may be setted. That will
++           influence add pk parts info to sk info(add_pk_parts_to_sk), which optimizer
++           use to build min-max tree for covering index.*/
++          ha_option = handler_file->ha_table_flags();
++#endif
+           field->set_flag(PRI_KEY_FLAG);
+           /*
+              If this field is part of the primary key and all keys contains
+diff --git a/sql/event_parse_data.cc b/sql/event_parse_data.cc
+index 6bb1b8b0..b774f400 100644
+--- a/sql/event_parse_data.cc
++++ b/sql/event_parse_data.cc
+@@ -531,8 +531,8 @@ void Event_parse_data::check_originator_id(THD *thd) {
+     DBUG_PRINT("info", ("Invoked object status set to SLAVESIDE_DISABLED."));
+     if ((status == Event_parse_data::ENABLED) ||
+         (status == Event_parse_data::DISABLED)) {
+-      status = Event_parse_data::SLAVESIDE_DISABLED;
+-      status_changed = true;
++        status = Event_parse_data::SLAVESIDE_DISABLED;
++        status_changed = true;
+     }
+     originator = thd->server_id;
+   } else
+diff --git a/sql/handler.cc b/sql/handler.cc
+index 3838e486..99df3237 100644
+--- a/sql/handler.cc
++++ b/sql/handler.cc
+@@ -8001,6 +8001,22 @@ int handler::ha_reset() {
+   return retval;
+ }
+ 
++#ifdef WITH_SMARTENGINE
++bool operating_on_smartengine_during_xa(THD *thd, handlerton *hton) {
++  if (hton->db_type == DB_TYPE_SMARTENGINE) {
++    const bool PRINT_ERROR_WHEN_CHECK_IN_XA = false;
++    const bool is_in_xa = (thd->get_transaction()->xid_state()->check_in_xa(
++          PRINT_ERROR_WHEN_CHECK_IN_XA));
++    if (is_in_xa) {
++      my_error(HA_ERR_WRONG_COMMAND, MYF(0),
++          "SMARTENGINE not support XA transactions");
++    }
++    return is_in_xa;
++  } else {
++    return false;
++  }
++}
++#endif
+ int handler::ha_write_row(uchar *buf) {
+   int error;
+   Log_func *log_func = Write_rows_log_event::binlog_row_logging_function;
+@@ -8010,6 +8026,12 @@ int handler::ha_write_row(uchar *buf) {
+   DBUG_EXECUTE_IF("inject_error_ha_write_row", return HA_ERR_INTERNAL_ERROR;);
+   DBUG_EXECUTE_IF("simulate_storage_engine_out_of_memory",
+                   return HA_ERR_SE_OUT_OF_MEMORY;);
++#ifdef WITH_SMARTENGINE
++  if (operating_on_smartengine_during_xa(ha_thd(), ht)) {
++    /**smartengine currently not support executing xa dml. */
++    return HA_ERR_UNSUPPORTED;
++  }
++#endif
+   mark_trx_read_write();
+ 
+   DBUG_EXECUTE_IF(
+@@ -8799,6 +8821,18 @@ void ha_post_recover(void) {
+                        MYSQL_STORAGE_ENGINE_PLUGIN, nullptr);
+ }
+ 
++#ifdef WITH_SMARTENGINE
++static bool post_engine_recover_handlerton(THD *, plugin_ref plugin, void *) {
++  handlerton *hton = plugin_data<handlerton *>(plugin);
++  if (hton->state == SHOW_OPTION_YES && hton->post_engine_recover)
++    hton->post_engine_recover();
++  return false;
++}
++void ha_post_engine_recover(void) {
++  (void)plugin_foreach(nullptr, post_engine_recover_handlerton,
++                       MYSQL_STORAGE_ENGINE_PLUGIN, nullptr);
++}
++#endif
+ void handler::ha_set_primary_handler(handler *primary_handler) {
+   assert((ht->flags & HTON_IS_SECONDARY_ENGINE) != 0);
+   assert(primary_handler->table->s->has_secondary_engine());
+diff --git a/sql/handler.h b/sql/handler.h
+index dd5fb980..81011fb2 100644
+--- a/sql/handler.h
++++ b/sql/handler.h
+@@ -205,6 +205,14 @@ enum enum_alter_inplace_result {
+   HA_ALTER_INPLACE_INSTANT
+ };
+ 
++/**smartengine hton name*/
++#ifdef WITH_SMARTENGINE
++#ifdef WITH_XENGINE_COMPATIBLE_MODE
++#define SMARTENGINE_NAME "XENGINE"
++#else
++#define SMARTENGINE_NAME "SMARTENGINE"
++#endif // end of WITH_XENGINE_COMPATIBLE_MODE
++#endif // end of WITH_SMARTENGINE
+ /* Bits in table_flags() to show what database can do */
+ 
+ #define HA_NO_TRANSACTIONS (1 << 0)     /* Doesn't support transactions */
+@@ -669,6 +677,9 @@ enum legacy_db_type {
+   /** Performance schema engine. */
+   DB_TYPE_PERFORMANCE_SCHEMA,
+   DB_TYPE_TEMPTABLE,
++#ifdef WITH_SMARTENGINE
++  DB_TYPE_SMARTENGINE,
++#endif
+   DB_TYPE_FIRST_DYNAMIC = 42,
+   DB_TYPE_DEFAULT = 127  // Must be last
+ };
+@@ -2289,6 +2300,38 @@ typedef void (*post_ddl_t)(THD *thd);
+ */
+ typedef void (*post_recover_t)(void);
+ 
++#ifdef WITH_SMARTENGINE
++/** do checkpoint for storage engine
++*/
++typedef int (*checkpoint_t)(THD *thd);
++/** Create a backup snapshot for storage engine.
++@param[out] backup_snapshot_id        Backup snapshot id to create.
++@param[out] binlog_file               Binlog file name.
++@param[out] binlog_file_offset        Binlog file offset.
++*/
++typedef int (*create_backup_snapshot_t)(THD *thd, uint64_t *backup_snapshot_id,
++                                        std::string &binlog_file,
++                                        uint64_t *binlog_file_offset);
++/** do incremental backup for storage engine
++*/
++typedef int (*incremental_backup_t)(THD *thd);
++/** Cleanup temporary backup directory for storage engine.
++ */
++typedef int (*cleanup_tmp_backup_dir_t)(THD *thd);
++/** Release a backup snapshot for storage engine.
++@param[in]  backup_snapshot_id        Backup snapshot id to release.
++*/
++typedef int (*release_backup_snapshot_t)(THD *thd, uint64_t backup_snapshot_id);
++/** List all backup snapshots for storage engine.
++@param[out] backup_snapshot_ids       Backup snapshot ids.
++ */
++typedef int (*list_backup_snapshots_t)(
++    THD *thd, std::vector<uint64_t> &backup_snapshot_ids);
++#endif
++/**
++  Perform SE-specific initialization after recovery of binlog/gtid.
++*/
++typedef void (*post_engine_recover_t)(void);
+ /**
+   Lock a handlerton (resource) log to collect log information.
+ */
+@@ -2764,6 +2807,17 @@ struct handlerton {
+ 
+   post_ddl_t post_ddl;
+   post_recover_t post_recover;
++#ifdef WITH_SMARTENGINE
++  post_engine_recover_t post_engine_recover;
++#endif
++#ifdef WITH_SMARTENGINE
++  checkpoint_t checkpoint;
++  create_backup_snapshot_t create_backup_snapshot;
++  incremental_backup_t incremental_backup;
++  cleanup_tmp_backup_dir_t cleanup_tmp_backup_dir;
++  release_backup_snapshot_t release_backup_snapshot;
++  list_backup_snapshots_t list_backup_snapshots;
++#endif
+ 
+   /** Clone data transfer interfaces */
+   Clone_interface_t clone_interface;
+@@ -6866,6 +6920,9 @@ class handler {
+     return false;
+   }
+ 
++#ifdef WITH_SMARTENGINE
++  virtual Handler_share **get_ha_share_ref() { return ha_share; }
++#endif
+   void set_ha_table(TABLE *table_arg) { table = table_arg; }
+ 
+   int get_lock_type() const { return m_lock_type; }
+@@ -7319,6 +7376,12 @@ int ha_recover(Xid_commit_list *commit_list = nullptr,
+ */
+ void ha_post_recover();
+ 
++#ifdef WITH_SMARTENGINE
++/**
++  Perform SE-specific initialization after recovery of binlog/gtid.
++*/
++void ha_post_engine_recover(void);
++#endif
+ /*
+  transactions: interface to low-level handlerton functions. These are
+  intended to be used by the transaction coordinators to
+diff --git a/sql/log.cc b/sql/log.cc
+index 9b4b92df..9c4b17d8 100644
+--- a/sql/log.cc
++++ b/sql/log.cc
+@@ -106,6 +106,10 @@
+ 
+ #include "sql/server_component/log_builtins_imp.h"
+ 
++#ifdef WITH_SMARTENGINE
++#include "storage/smartengine/core/monitoring/query_perf_context.h"
++#include "storage/smartengine/util/se_logger.h"
++#endif
+ using std::max;
+ using std::min;
+ 
+@@ -1976,6 +1980,10 @@ bool reopen_error_log() {
+     if (result)
+       my_error(ER_DA_CANT_OPEN_ERROR_LOG, MYF(0), error_log_file, ".",
+                ""); /* purecov: inspected */
++#ifdef WITH_SMARTENGINE
++    else if (mysql_reinit_se_log())
++      sql_print_error("Failed to re-initialize logger in smartengine: %s", error_log_file);
++#endif
+   }
+ 
+   return result;
+diff --git a/sql/log.h b/sql/log.h
+index 5d3e0b8b..02d84957 100644
+--- a/sql/log.h
++++ b/sql/log.h
+@@ -788,7 +788,11 @@ extern Slow_log_throttle log_throttle_qni;
+ #define sql_print_warning(...) \
+   log_errlog_formatted(WARNING_LEVEL, ##__VA_ARGS__)
+ 
++#ifdef WITH_SMARTENGINE
++#define sql_print_error(...) log_errlog_formatted(loglevel::ERROR_LEVEL, ##__VA_ARGS__)
++#else
+ #define sql_print_error(...) log_errlog_formatted(ERROR_LEVEL, ##__VA_ARGS__)
++#endif
+ 
+ /**
+   Prints a printf style message to the error log.
+diff --git a/sql/mysqld.cc b/sql/mysqld.cc
+index c8a7d00b..beb5f4d3 100644
+--- a/sql/mysqld.cc
++++ b/sql/mysqld.cc
+@@ -774,15 +774,19 @@ MySQL clients support the protocol:
+ #include "sql/auth/auth_common.h"         // grant_init
+ #include "sql/auth/sql_authentication.h"  // init_rsa_keys
+ #include "sql/auth/sql_security_ctx.h"
+-#include "sql/auto_thd.h"   // Auto_THD
+-#include "sql/binlog.h"     // mysql_bin_log
+-#include "sql/bootstrap.h"  // bootstrap
++#include "sql/auto_thd.h"        // Auto_THD
++#include "sql/binlog.h"          // mysql_bin_log
++#include "sql/binlog_archive.h"  // start_binlog_archive
++#include "sql/binlog_archive_replica.h" // start_binlog_archive_replica
++#include "sql/bootstrap.h"       // bootstrap
+ #include "sql/check_stack.h"
+ #include "sql/conn_handler/connection_acceptor.h"  // Connection_acceptor
+ #include "sql/conn_handler/connection_handler_impl.h"  // Per_thread_connection_handler
+ #include "sql/conn_handler/connection_handler_manager.h"  // Connection_handler_manager
+ #include "sql/conn_handler/socket_connection.h"  // stmt_info_new_packet
+-#include "sql/current_thd.h"                     // current_thd
++#include "sql/consistent_archive.h"              // start_consistent_archive
++#include "sql/consistent_recovery.h"
++#include "sql/current_thd.h"  // current_thd
+ #include "sql/dd/cache/dictionary_client.h"
+ #include "sql/debug_sync.h"  // debug_sync_end
+ #include "sql/derror.h"
+@@ -885,6 +889,9 @@ MySQL clients support the protocol:
+ #include "typelib.h"
+ #include "violite.h"
+ 
++#ifdef WESQL
++#include "sql/package/package_interface.h"
++#endif
+ #ifdef WITH_PERFSCHEMA_STORAGE_ENGINE
+ #include "storage/perfschema/pfs_server.h"
+ #endif /* WITH_PERFSCHEMA_STORAGE_ENGINE */
+@@ -1224,6 +1231,9 @@ bool opt_no_monitor = false;
+ 
+ bool opt_no_dd_upgrade = false;
+ long opt_upgrade_mode = UPGRADE_AUTO;
++#ifdef WESQL
++bool opt_upgrade_wesql = false;
++#endif
+ long opt_check_table_funs = CHECK_TABLE_FUN_ABORT;
+ bool opt_initialize = false;
+ bool opt_skip_replica_start = false;  ///< If set, slave is not autostarted
+@@ -1504,6 +1514,68 @@ char server_version[SERVER_VERSION_LENGTH];
+ const char *mysqld_unix_port;
+ char *opt_mysql_tmpdir;
+ 
++bool consistent_recovery_consensus_recovery = false;
++uint64_t consistent_recovery_snapshot_end_binlog_position = 0;
++uint64_t consistent_recovery_snasphot_end_consensus_index = 0;
++char consistent_recovery_apply_stop_timestamp[MAX_DATETIME_FULL_WIDTH +
++                                        4];  // YYYY-MM-DDTHH:MM:SS.######Z
++// The last truncated MySQL binlog file returned by consensus. The final binlog
++// may contain incomplete transactions that need to be truncated, but with the
++// current binlog archive design, incomplete transactions should not occur.
++char consistent_recovery_consensus_truncated_end_binlog[FN_REFLEN + 1];
++// The truncated position of last truncated MySQL binlog file returned by consensus.
++my_off_t consistent_recovery_consensus_truncated_end_position = 0;
++ulong opt_binlog_archive_slice_max_size = 0;
++bool opt_binlog_archive = true;
++char *opt_binlog_archive_dir = nullptr;
++bool opt_binlog_archive_using_consensus_index = false;
++bool opt_binlog_archive_expire_auto_purge = true;
++ulong opt_binlog_archive_expire_seconds = 0;
++ulonglong opt_binlog_archive_period = 0;
++ulong opt_binlog_archive_parallel_workers = 0;
++bool opt_binlog_archive_replica = false;
++ulong opt_binlog_archive_replica_flush_period = 0;
++char *opt_binlog_archive_replica_source_log_file = nullptr;
++ulong opt_binlog_archive_replica_source_log_pos = 0;
++char *opt_consistent_snapshot_archive_dir = nullptr;
++bool opt_consistent_snapshot_persistent_on_objstore = false;
++bool opt_initialize_use_objstore = false;
++bool opt_consistent_snapshot_archive = true;
++ulong opt_consistent_snapshot_archive_period = 10;
++bool opt_consistent_snapshot_expire_auto_purge = true;
++ulong opt_consistent_snapshot_expire_seconds = 0;
++ulong opt_consistent_snapshot_innodb_tar_mode = 0;
++ulong opt_consistent_snapshot_se_tar_mode = 0;
++bool opt_consistent_snapshot_smartengine_backup_checkpoint=false;
++bool opt_recovery_from_objstore = false;
++char *opt_recovery_consistent_snapshot_tmpdir = nullptr;
++bool opt_recovery_consistent_snapshot_only = false;
++char *opt_recovery_consistent_snapshot_timestamp = nullptr;
++bool opt_initialize_from_source_objectstore = false;
++char *opt_source_objectstore_provider = nullptr;
++char *opt_source_objectstore_region = nullptr;
++char *opt_source_objectstore_endpoint = nullptr;
++bool opt_source_objectstore_use_https = false;
++char *opt_source_objectstore_bucket = nullptr;
++char *opt_source_objectstore_repo_id = nullptr;
++char *opt_source_objectstore_branch_id = nullptr;
++bool opt_source_objectstore_smartengine_data = false;
++bool opt_serverless = true;
++/**
++  TODO(cnut): how to validate the relationship between different variables of
++  object store, such as if opt_table_on_objstore is true, opt_objstore_provider/
++  opt_objstore_region/opt_objstore_bucket can not be empty.
++*/
++bool opt_table_on_objstore = false;
++uint opt_objstore_lease_lock_timeout;
++char *opt_objstore_provider;
++char *opt_objstore_region;
++char *opt_objstore_endpoint;
++bool opt_objstore_use_https = false;
++char *opt_objstore_bucket;
++char *opt_repo_objstore_id = nullptr;
++char *opt_branch_objstore_id = nullptr;
++char *opt_server_id_on_objstore = nullptr;
+ char *opt_authentication_policy;
+ std::vector<std::string> authentication_policy_list;
+ /*
+@@ -2373,6 +2445,11 @@ static void close_connections(void) {
+   Call_close_conn call_close_conn(true);
+   thd_manager->do_for_all_thd(&call_close_conn);
+ 
++  // Must be called before ha_pre_dd_shutdown.ha_pre_dd_shutdown will close
++  // smartengine plugin and clone plugin.
++  stop_consistent_archive();
++  stop_binlog_archive();
++  stop_binlog_archive_replica();
+   (void)RUN_HOOK(server_state, after_server_shutdown, (nullptr));
+ 
+   /*
+@@ -2504,6 +2581,9 @@ void clean_up_mysqld_mutexes() { clean_up_mutexes(); }
+ static void mysqld_exit(int exit_code) {
+   assert((exit_code >= MYSQLD_SUCCESS_EXIT && exit_code <= MYSQLD_ABORT_EXIT) ||
+          exit_code == MYSQLD_RESTART_EXIT);
++  (Binlog_archive::get_instance())->deinit_pthread_object();
++  (Consistent_archive::get_instance())->deinit_pthread_object();
++  (Binlog_archive_replica::get_instance())->deinit_pthread_object();
+   mysql_audit_finalize();
+   Srv_session::module_deinit();
+   delete_optimizer_cost_module();
+@@ -4523,6 +4603,12 @@ SHOW_VAR com_status_vars[] = {
+     {"xa_start",
+      (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_XA_START]),
+      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
++    {"native_admin_proc",
++     (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_ADMIN_PROC]),
++     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
++    {"native_trans_proc",
++     (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_TRANS_PROC]),
++     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
+     {NullS, NullS, SHOW_LONG, SHOW_SCOPE_ALL}};
+ 
+ LEX_CSTRING sql_statement_names[(uint)SQLCOM_END + 1];
+@@ -4842,6 +4928,9 @@ int init_common_variables() {
+   */
+   mysql_bin_log.init_pthread_objects();
+ 
++  (Binlog_archive::get_instance())->init_pthread_object();
++  (Consistent_archive::get_instance())->init_pthread_object();
++  (Binlog_archive_replica::get_instance())->init_pthread_object();
+   /* TODO: remove this when my_time_t is 64 bit compatible */
+   if (!is_time_t_valid_for_timestamp(server_start_time)) {
+     LogErr(ERROR_LEVEL, ER_UNSUPPORTED_DATE);
+@@ -4884,6 +4973,12 @@ int init_common_variables() {
+   default_storage_engine = "InnoDB";
+   default_tmp_storage_engine = default_storage_engine;
+ 
++#ifdef WITH_SMARTENGINE
++  // Smartengine is the default storage engine of wesql.
++  if (!opt_initialize) {
++    default_storage_engine = SMARTENGINE_NAME;
++  }
++#endif // WITH_SMARTENGINE
+   /*
+     Add server status variables to the dynamic list of
+     status variables that is shown by SHOW STATUS.
+@@ -6313,6 +6408,14 @@ static int init_server_components() {
+       opt_bin_logname = my_strdup(key_memory_opt_bin_logname, buf, MYF(0));
+     }
+ 
++    // Recovery binlog from archive dir or object store.
++    // Must recovery binlog and index, before open index file first.
++    if (opt_serverless &&
++        consistent_recovery.recovery_binlog(opt_binlog_index_name, ln)) {
++      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
++             "Failed to recovery binlog from object storage");
++      unireg_abort(MYSQLD_ABORT_EXIT);
++    }
+     /*
+       Skip opening the index file if we start with --help. This is necessary
+       to avoid creating the file in an otherwise empty datadir, which will
+@@ -6530,6 +6633,32 @@ static int init_server_components() {
+       LogErr(ERROR_LEVEL, ER_CANT_INITIALIZE_BUILTIN_PLUGINS);
+     unireg_abort(1);
+   }
++  // innodb and smartengine are core plugins.
++  if (opt_serverless) {
++    // Consistent recovery innodb after innodb plugin is loaded.
++    if (consistent_recovery.recovery_mysql_innodb()) {
++      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
++             "Failed to recovery innodb data from object storage");
++      unireg_abort(MYSQLD_ABORT_EXIT);
++    }
++    // Consistent recovery smartengine after smartengine plugin is loaded.
++    if (consistent_recovery.recovery_smartengine()) {
++      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
++             "Failed to recovery smartengine data from object storage");
++      unireg_abort(MYSQLD_ABORT_EXIT);
++    }
++    // Consistent recovery smartengine sst when clone instance.
++    if (unlikely(opt_initialize) && opt_initialize_from_source_objectstore &&
++        consistent_recovery.recovery_smartengine_objectstore_data()) {
++      LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_LOG,
++             "Failed to recovery smartengine sst from object storage");
++      unireg_abort(MYSQLD_ABORT_EXIT);
++    }
++    // Consistent recovery finish.
++    consistent_recovery.recovery_consistent_snapshot_finish();
++    if(unlikely(opt_initialize) && opt_initialize_from_source_objectstore)
++      unireg_abort(MYSQLD_SUCCESS_EXIT);
++  }
+ 
+   /*
+     Needs to be done before dd::init() which runs DDL commands (for real)
+@@ -6812,6 +6941,26 @@ static int init_server_components() {
+     unireg_abort(1);
+   }
+ 
++#ifdef WESQL
++  if (!is_help_or_validate_option()) {
++    bool r = false;
++    init_optimizer_cost_module(true);
++    if (opt_initialize || dd_upgrade_was_initiated) {
++      r = ::bootstrap::run_bootstrap_thread(
++          nullptr, nullptr, &dd::upgrade::initialize_wesql_schemas,
++          SYSTEM_THREAD_SERVER_INITIALIZE);
++    } else if (opt_upgrade_wesql) {
++      r = ::bootstrap::run_bootstrap_thread(
++          nullptr, nullptr, &dd::upgrade::initialize_wesql_schemas,
++          SYSTEM_THREAD_SERVER_UPGRADE);
++    }
++    delete_optimizer_cost_module();
++    if (r) {
++      LogErr(ERROR_LEVEL, ER_SERVER_UPGRADE_FAILED);
++      unireg_abort(MYSQLD_ABORT_EXIT);
++    }
++  }
++#endif
+   if (opt_initialize) log_output_options = LOG_FILE;
+ 
+   /*
+@@ -6845,6 +6994,19 @@ static int init_server_components() {
+   /*
+     Set the default storage engines
+   */
++#ifdef WITH_SMARTENGINE
++  // In serverless mode, the storage engine of user tables is enforced to
++  // be smartengine, so the value of parameter default_storage_engine must
++  // be smartengine. Here, the degault storage engine is not implicitly
++  // change to smartengine, instead an error is raised. It's to avoid
++  // confusion in parameter configuration for default_storage_engine.
++  if (!opt_initialize && opt_serverless &&
++      (strlen(default_storage_engine) != strlen(SMARTENGINE_NAME) ||
++       0 != strncasecmp(default_storage_engine, SMARTENGINE_NAME, strlen(SMARTENGINE_NAME)))) {
++    LogErr(ERROR_LEVEL, ER_FORCE_DEFAULT_STORAGE_ENGINE_TO_SMARTENGINE, default_storage_engine);
++    unireg_abort(MYSQLD_ABORT_EXIT);
++  }
++#endif // WITH_SMARTENGINE
+   if (initialize_storage_engine(default_storage_engine, "",
+                                 &global_system_variables.table_plugin))
+     unireg_abort(MYSQLD_ABORT_EXIT);
+@@ -7563,6 +7725,10 @@ int mysqld_main(int argc, char **argv)
+   */
+   init_server_psi_keys();
+ 
++  /* Init conconcurrency control system */
++#ifdef WESQL
++  im::package_context_init();
++#endif
+   /*
+     Now that some instrumentation is in place,
+     recreate objects which were initialised early,
+@@ -7850,6 +8016,15 @@ int mysqld_main(int argc, char **argv)
+     unireg_abort(exit_state);
+   }
+ 
++  // In recovery serverless mode, we first create the data directory if it does
++  // not exist. Otherwise, my_setwd will fail.
++  if (!is_help_or_validate_option() && opt_serverless &&
++      (!opt_initialize && opt_recovery_from_objstore)) {
++    MY_STAT stat;
++    if (!my_stat(mysql_real_data_home, &stat, MYF(0)) &&
++        initialize_create_data_directory(mysql_real_data_home))
++      unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
++  }
+   /*
+    We have enough space for fiddling with the argv, continue
+   */
+@@ -7862,6 +8037,61 @@ int mysqld_main(int argc, char **argv)
+     unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
+   }
+ 
++  // Check the validity of the UUID using the specified objstore_uuid
++  if (!is_help_or_validate_option() && opt_serverless &&
++      opt_repo_objstore_id != nullptr) {
++    if (*opt_repo_objstore_id == '\0') {
++      LogErr(ERROR_LEVEL, ER_OBJSTORE_ID_CHECK_ERROR, "invalid empty objectstore id");
++      unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
++    }
++    std::string err_msg;
++    std::string_view endpoint(
++        opt_objstore_endpoint ? std::string_view(opt_objstore_endpoint) : "");
++    if (objstore::ensure_object_store_lock(
++            std::string_view(opt_objstore_provider),
++            std::string_view(opt_objstore_region), &endpoint,
++            std::string_view(opt_objstore_bucket),
++            std::string_view(opt_repo_objstore_id),
++            std::string_view(opt_branch_objstore_id),
++            !opt_initialize || !opt_table_on_objstore, err_msg)) {
++      LogErr(ERROR_LEVEL, ER_OBJSTORE_ID_CHECK_ERROR, err_msg.c_str());
++      unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
++    }
++  }
++  // 1. Recovery from object store, if $data_home/mysql directory not exists.
++  // 2. Clone a new instance from object store.
++  // InnoDB data recovery will be done after innodb plugin is loaded.
++  // Smartengine recovery will be done after smartengine plugin is loaded.
++  // Binlog recovery will be done after bin-log and bin-log-index option is
++  // ready.
++  if (!is_help_or_validate_option() && opt_serverless &&
++      (opt_recovery_from_objstore || opt_initialize_from_source_objectstore)) {
++    Consistent_snapshot_recovery_status recovery_status = {};
++    if (consistent_recovery.read_consistent_snapshot_recovery_status(
++            recovery_status) == 0) {
++      // If recovery process is not completed, we need to recover from object
++      // store again.
++      if (consistent_recovery.recovery_consistent_snapshot(0))
++        unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
++    } else {
++      // Only check if mysql directory exists when in recovery mode.
++      char mysql_path[FN_REFLEN];
++      MY_STAT stat;
++      strmake(mysql_path, mysql_real_data_home, sizeof(mysql_path) - 1);
++      convert_dirname(mysql_path, mysql_path, NullS);
++      strcat(mysql_path, "mysql");
++      if ((opt_initialize && opt_initialize_from_source_objectstore) ||
++          (!opt_initialize && opt_recovery_from_objstore &&
++           !my_stat(mysql_path, &stat, MYF(0)))) {
++        // 1. If $datadir/mysql not exists, we need to recover from object
++        // store.
++        // 2. If opt_initialize_from_source_objectstore is set, we need to recover from
++        // object store.
++        if (consistent_recovery.recovery_consistent_snapshot(0))
++          unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
++      }
++    }
++  }
+   /*
+    The subsequent calls may take a long time : e.g. innodb log read.
+    Thus set the long running service control manager timeout
+@@ -8030,6 +8260,12 @@ int mysqld_main(int argc, char **argv)
+     (void)RUN_HOOK(server_state, after_engine_recovery, (nullptr));
+   }
+ 
++#ifdef WITH_SMARTENGINE
++  ha_post_engine_recover();
++#endif
++  if (!opt_initialize && opt_serverless) {
++    consistent_recovery.consistent_snapshot_consensus_recovery_finish();
++  }
+   if (init_ssl_communication()) unireg_abort(MYSQLD_ABORT_EXIT);
+   if (network_init()) unireg_abort(MYSQLD_ABORT_EXIT);
+ 
+@@ -8167,6 +8403,13 @@ int mysqld_main(int argc, char **argv)
+ 
+   (void)RUN_HOOK(server_state, after_recovery, (nullptr));
+ 
++  // Start binlog and consistent snapshot threads after engine recovery.
++  if (!opt_initialize) {
++    // start binlog archive and consistent snapshot archive.
++    if (start_binlog_archive() || start_consistent_archive()) {
++      unireg_abort(MYSQLD_ABORT_EXIT);
++    }
++  }
+   if (Events::init(opt_noacl || opt_initialize))
+     unireg_abort(MYSQLD_ABORT_EXIT);
+ 
+@@ -8190,6 +8433,12 @@ int mysqld_main(int argc, char **argv)
+     return 1;
+   }
+ 
++  if (!opt_initialize) {
++    // start binlog archive replica.
++    if (start_binlog_archive_replica()) {
++      unireg_abort(MYSQLD_ABORT_EXIT);
++    }
++  }
+   /*
+     Invoke the bootstrap thread, if required.
+   */
+@@ -9308,6 +9557,11 @@ struct my_option my_long_options[] = {
+      &opt_upgrade_mode, &opt_upgrade_mode, &upgrade_mode_typelib, GET_ENUM,
+      REQUIRED_ARG, UPGRADE_AUTO, 0, 0, nullptr, 0, nullptr},
+ 
++#ifdef WESQL
++    {"upgrade-wesql", 0, "Set server upgrade system tables for wesql.",
++     &opt_upgrade_wesql, &opt_upgrade_wesql, nullptr, GET_BOOL, NO_ARG, 0, 0, 0,
++     nullptr, 0, nullptr},
++#endif
+     {nullptr, 0, nullptr, nullptr, nullptr, nullptr, GET_NO_ARG, NO_ARG, 0, 0,
+      0, nullptr, 0, nullptr}};
+ 
+@@ -11249,6 +11503,11 @@ static void set_server_version(void) {
+ #ifndef NDEBUG
+   if (!strstr(MYSQL_SERVER_SUFFIX_STR, "-debug"))
+     end = my_stpcpy(end, "-debug");
++#if defined(WESQL) && defined(WESQL_TEST)
++  if (SERVER_VERSION_LENGTH - (end - server_version) >
++      static_cast<int>(sizeof("-wtest")))
++    end = my_stpcpy(end, "-wtest");
++#endif
+ #endif
+ #ifdef HAVE_VALGRIND
+   if (SERVER_VERSION_LENGTH - (end - server_version) >
+@@ -11948,7 +12207,7 @@ static PSI_mutex_info all_server_mutexes[]=
+   { &key_monitor_info_run_lock, "Source_IO_monitor::run_lock", 0, 0, PSI_DOCUMENT_ME},
+   { &key_LOCK_delegate_connection_mutex, "LOCK_delegate_connection_mutex", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+   { &key_LOCK_group_replication_connection_mutex, "LOCK_group_replication_connection_mutex", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+-{ &key_LOCK_authentication_policy, "LOCK_authentication_policy", PSI_FLAG_SINGLETON, 0, "A lock to ensure execution of CREATE USER or ALTER USER sql and SET @@global.authentication_policy variable are serialized"},
++  { &key_LOCK_authentication_policy, "LOCK_authentication_policy", PSI_FLAG_SINGLETON, 0, "A lock to ensure execution of CREATE USER or ALTER USER sql and SET @@global.authentication_policy variable are serialized"},
+   { &key_LOCK_global_conn_mem_limit, "LOCK_global_conn_mem_limit", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME}
+ };
+ /* clang-format on */
+diff --git a/sql/mysqld.h b/sql/mysqld.h
+index 249f2d64..3000b5f2 100644
+--- a/sql/mysqld.h
++++ b/sql/mysqld.h
+@@ -181,6 +181,9 @@ extern MYSQL_PLUGIN_IMPORT std::atomic<int32>
+     connection_events_loop_aborted_flag;
+ extern bool opt_no_dd_upgrade;
+ extern long opt_upgrade_mode;
++#ifdef WESQL
++extern bool opt_upgrade_wesql;
++#endif
+ extern long opt_check_table_funs;
+ extern bool opt_initialize;
+ extern bool opt_safe_user_create;
+@@ -701,6 +704,58 @@ extern MYSQL_PLUGIN_IMPORT char pidfile_name[];
+ 
+ #define mysql_tmpdir (my_tmpdir(&mysql_tmpdir_list))
+ 
++extern char *opt_repo_objstore_id;
++extern char *opt_branch_objstore_id;
++extern char *opt_server_id_on_objstore;
++extern bool consistent_recovery_consensus_recovery;
++extern uint64_t consistent_recovery_snapshot_end_binlog_position;
++extern uint64_t consistent_recovery_snasphot_end_consensus_index;
++extern char consistent_recovery_apply_stop_timestamp[MAX_DATETIME_FULL_WIDTH + 4];
++extern char consistent_recovery_consensus_truncated_end_binlog[FN_REFLEN + 1];
++extern my_off_t consistent_recovery_consensus_truncated_end_position;
++extern ulong opt_binlog_archive_slice_max_size;
++extern bool opt_binlog_archive;
++extern char *opt_binlog_archive_dir;
++extern bool opt_binlog_archive_using_consensus_index;
++extern bool opt_binlog_archive_expire_auto_purge;
++extern ulong opt_binlog_archive_expire_seconds;
++extern ulonglong opt_binlog_archive_period;
++extern ulong opt_binlog_archive_parallel_workers;
++extern bool opt_binlog_archive_replica;
++extern ulong opt_binlog_archive_replica_flush_period;
++extern char *opt_binlog_archive_replica_source_log_file;
++extern ulong opt_binlog_archive_replica_source_log_pos;
++extern char *opt_consistent_snapshot_archive_dir;
++extern bool opt_consistent_snapshot_persistent_on_objstore;
++extern bool opt_initialize_use_objstore;
++extern bool opt_consistent_snapshot_archive;
++extern ulong opt_consistent_snapshot_archive_period;
++extern bool opt_consistent_snapshot_expire_auto_purge;
++extern ulong opt_consistent_snapshot_expire_seconds;
++extern ulong opt_consistent_snapshot_se_tar_mode;
++extern ulong opt_consistent_snapshot_innodb_tar_mode;
++extern bool opt_consistent_snapshot_smartengine_backup_checkpoint;
++extern bool opt_recovery_from_objstore;
++extern char *opt_recovery_consistent_snapshot_tmpdir;
++extern bool opt_recovery_consistent_snapshot_only;
++extern char *opt_recovery_consistent_snapshot_timestamp;
++extern bool opt_initialize_from_source_objectstore;
++extern char *opt_source_objectstore_provider;
++extern char *opt_source_objectstore_region;
++extern char *opt_source_objectstore_endpoint;
++extern bool opt_source_objectstore_use_https;
++extern char *opt_source_objectstore_bucket;
++extern char *opt_source_objectstore_repo_id;
++extern char *opt_source_objectstore_branch_id;
++extern bool opt_source_objectstore_smartengine_data;
++extern MYSQL_PLUGIN_IMPORT bool opt_serverless;
++extern MYSQL_PLUGIN_IMPORT bool opt_table_on_objstore;
++extern MYSQL_PLUGIN_IMPORT uint opt_objstore_lease_lock_timeout;
++extern MYSQL_PLUGIN_IMPORT char *opt_objstore_provider;
++extern MYSQL_PLUGIN_IMPORT char *opt_objstore_region;
++extern MYSQL_PLUGIN_IMPORT char *opt_objstore_endpoint;
++extern MYSQL_PLUGIN_IMPORT bool opt_objstore_use_https;
++extern MYSQL_PLUGIN_IMPORT char *opt_objstore_bucket;
+ /*
+   Server mutex locks and condition variables.
+  */
+diff --git a/sql/parse_tree_nodes.cc b/sql/parse_tree_nodes.cc
+index ed98ac10..340c7a28 100644
+--- a/sql/parse_tree_nodes.cc
++++ b/sql/parse_tree_nodes.cc
+@@ -2027,8 +2027,23 @@ bool PT_create_table_engine_option::contextualize(Table_ddl_parse_context *pc) {
+ 
+   pc->create_info->used_fields |= HA_CREATE_USED_ENGINE;
+   const bool is_temp_table = pc->create_info->options & HA_LEX_CREATE_TMP_TABLE;
++#ifdef WITH_SMARTENGINE
++  LEX_CSTRING actual_engine = engine;
++  const bool is_system_thd = pc->thd->is_system_thread();
++  const bool use_smartengine = (engine.length == strlen(SMARTENGINE_NAME)) &&
++      (0 == strncasecmp(engine.str, SMARTENGINE_NAME, engine.length));
++  if (opt_serverless && !is_system_thd && !is_temp_table && !use_smartengine) {
++    actual_engine.str = SMARTENGINE_NAME;
++    actual_engine.length = strlen(SMARTENGINE_NAME);
++    push_warning_printf(pc->thd, Sql_condition::SL_WARNING, ER_FORCE_STORAGE_ENGINE_TO_SMARTENGINE,
++                        "Force change storage engine from %s to smartengine in serveless mode", engine.str);
++  }
++  return resolve_engine(pc->thd, actual_engine, is_temp_table, false,
++                        &pc->create_info->db_type);
++#else
+   return resolve_engine(pc->thd, engine, is_temp_table, false,
+                         &pc->create_info->db_type);
++#endif // WITH_SMARTENGINE
+ }
+ 
+ bool PT_create_table_secondary_engine_option::contextualize(
+diff --git a/sql/range_optimizer/range_optimizer.cc b/sql/range_optimizer/range_optimizer.cc
+index af6c1b3e..1d1545ec 100644
+--- a/sql/range_optimizer/range_optimizer.cc
++++ b/sql/range_optimizer/range_optimizer.cc
+@@ -607,6 +607,22 @@ int test_quick_select(THD *thd, MEM_ROOT *return_mem_root,
+       index_merge_allowed &&
+       thd->optimizer_switch_flag(OPTIMIZER_SWITCH_INDEX_MERGE_INTERSECT);
+ 
++#ifdef WITH_SMARTENGINE
++  /**In order to fix the issue of non-optimal covered indexes preventing range
++   * scan selection.If the best cost comes from the cost of a covered index, and
++   * that covered index cannot actually be used by the current query, then this
++   * cost will prevent the range scan plan from being selected (see function
++   * get_key_scans_params()).
++   *
++   * The original cost is retained here. If later, during the evaluation of the
++   * index range scan logic(get_key_scans_params()), the best cost comes from
++   * a covered index, then the read cost will be set to original cost to avoid
++   * discarding a better range scan plan mistakenly.
++   *
++   * The above logic only applies to tables using the smartengine storage engine.*/
++  double covering_index_cost = 0;
++  double base_cost = cost_est.total_cost();
++#endif
+   /* Calculate cost of full index read for the shortest covering index */
+   if (!table->covering_keys.is_clear_all()) {
+     int key_for_use = find_shortest_key(table, &table->covering_keys);
+@@ -618,6 +634,9 @@ int test_quick_select(THD *thd, MEM_ROOT *return_mem_root,
+     key_read_time.add_cpu(
+         cost_model->row_evaluate_cost(static_cast<double>(records)));
+ 
++#ifdef WITH_SMARTENGINE
++    covering_index_cost = key_read_time.total_cost();
++#endif
+     bool chosen = false;
+     if (key_read_time < cost_est) {
+       cost_est = key_read_time;
+@@ -730,9 +749,23 @@ int test_quick_select(THD *thd, MEM_ROOT *return_mem_root,
+       */
+       Opt_trace_object trace_range_alt(trace, "analyzing_range_alternatives",
+                                        Opt_trace_context::RANGE_OPTIMIZER);
++#ifdef WITH_SMARTENGINE
++      double read_cost = best_cost;
++      /**As stated above, if the conditions are met, the read cost will be set
++       * to the original cost. if this covered index is availablem it will still
++       * be selected in get_key_scans_params.*/
++      if ((DB_TYPE_SMARTENGINE == table->file->ht->db_type)
++          && (covering_index_cost == best_cost)) {
++          read_cost = base_cost;
++      }
++      AccessPath *range_path = get_key_scans_params(
++          thd, &param, tree, false, true, interesting_order,
++          skip_records_in_range, read_cost, /*ror_only=*/false, needed_reg);
++#else
+       AccessPath *range_path = get_key_scans_params(
+           thd, &param, tree, false, true, interesting_order,
+           skip_records_in_range, best_cost, /*ror_only=*/false, needed_reg);
++#endif
+ 
+       /* Get best 'range' plan and prepare data for making other plans */
+       if (range_path) {
+diff --git a/sql/rpl_commit_stage_manager.cc b/sql/rpl_commit_stage_manager.cc
+index c0240636..3754bfb4 100644
+--- a/sql/rpl_commit_stage_manager.cc
++++ b/sql/rpl_commit_stage_manager.cc
+@@ -325,7 +325,7 @@ bool Commit_stage_manager::enroll_for(StageID stage, THD *thd,
+     case COMMIT_STAGE:
+       DEBUG_SYNC(thd, "bgc_after_enrolling_for_commit_stage");
+       CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("after_writing_to_tc_log");
+-      break;
++    break;
+     case AFTER_COMMIT_STAGE:
+       DEBUG_SYNC(thd, "bgc_after_enrolling_for_after_commit_stage");
+       CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP(
+diff --git a/sql/rpl_context.h b/sql/rpl_context.h
+index baa085a8..9662d654 100644
+--- a/sql/rpl_context.h
++++ b/sql/rpl_context.h
+@@ -50,7 +50,8 @@ enum enum_rpl_channel_type {
+   NO_CHANNEL_INFO = 0,       // No information exists about the channel
+   RPL_STANDARD_CHANNEL = 1,  // It is a standard replication channel
+   GR_APPLIER_CHANNEL = 2,    // It is a GR applier channel
+-  GR_RECOVERY_CHANNEL = 3    // It is a GR recovery channel
++  GR_RECOVERY_CHANNEL = 3,   // It is a GR recovery channel
++  CR_APPLIER_CHANNEL = 4     // It is a CR applier channel
+ };
+ 
+ /**
+diff --git a/sql/rpl_gtid_state.cc b/sql/rpl_gtid_state.cc
+index 20c260db..233d2d46 100644
+--- a/sql/rpl_gtid_state.cc
++++ b/sql/rpl_gtid_state.cc
+@@ -883,7 +883,8 @@ void Gtid_state::update_gtids_impl_own_gtid(THD *thd, bool is_commit) {
+     CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_gtid_externalization");
+     executed_gtids._add_gtid(thd->owned_gtid);
+     thd->rpl_thd_ctx.session_gtids_ctx().notify_after_gtid_executed_update(thd);
+-    if (thd->slave_thread && opt_bin_log && !opt_log_replica_updates) {
++    if (thd->slave_thread &&
++        opt_bin_log && !opt_log_replica_updates) {
+       lost_gtids._add_gtid(thd->owned_gtid);
+       gtids_only_in_table._add_gtid(thd->owned_gtid);
+     }
+diff --git a/sql/rpl_replica.cc b/sql/rpl_replica.cc
+index 8ad1e5f7..8acfc5ae 100644
+--- a/sql/rpl_replica.cc
++++ b/sql/rpl_replica.cc
+@@ -3990,7 +3990,8 @@ void set_slave_thread_options(THD *thd) {
+      only for client threads.
+   */
+   ulonglong options = thd->variables.option_bits | OPTION_BIG_SELECTS;
+-  if (opt_log_replica_updates)
++  if (opt_log_replica_updates
++  )
+     options |= OPTION_BIN_LOG;
+   else
+     options &= ~OPTION_BIN_LOG;
+@@ -8269,6 +8270,385 @@ end:
+   return res;
+ }
+ 
++/**
++ * @brief Store an event from the object store into the relay log.
++ *
++ * @param mi
++ * @param buf
++ * @param event_len
++ * @param do_flush_mi
++ * @param event_pos Mark that this event with "event_pos=0", so the slave should
++ not increment master's binlog position (mi->master_log_pos)
++ * @return QUEUE_EVENT_RESULT
++ */
++QUEUE_EVENT_RESULT queue_event_from_objstore(Master_info *mi, const char *buf,
++                                             ulong event_len,
++                                             bool do_flush_mi) {
++  QUEUE_EVENT_RESULT res = QUEUE_EVENT_OK;
++  ulong inc_pos = 0;
++  Relay_log_info *rli = mi->rli;
++  mysql_mutex_t *log_lock = rli->relay_log.get_log_lock();
++  ulong s_id;
++  int lock_count = 0;
++  enum_binlog_checksum_alg checksum_alg =
++      mi->checksum_alg_before_fd != binary_log::BINLOG_CHECKSUM_ALG_UNDEF
++          ? mi->checksum_alg_before_fd
++          : mi->rli->relay_log.relay_log_checksum_alg;
++  const char *save_buf =
++      nullptr;  // needed for checksumming the fake Rotate event
++  char rot_buf[LOG_EVENT_HEADER_LEN + Binary_log_event::ROTATE_HEADER_LEN +
++               FN_REFLEN];
++  Gtid gtid = {0, 0};
++  ulonglong immediate_commit_timestamp = 0;
++  ulonglong original_commit_timestamp = 0;
++  bool info_error{false};
++  binary_log::Log_event_basic_info log_event_info;
++  ulonglong compressed_transaction_bytes = 0;
++  ulonglong uncompressed_transaction_bytes = 0;
++  auto compression_type = binary_log::transaction::compression::type::NONE;
++  Log_event_type event_type = (Log_event_type)buf[EVENT_TYPE_OFFSET];
++  assert(checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_OFF ||
++         checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_UNDEF ||
++         checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_CRC32);
++  DBUG_TRACE;
++  /*
++    Pause the binlog archive replica relay thread execution and wait for
++    'continue_queuing_event' signal to continue IO thread execution.
++  */
++  DBUG_SIGNAL_WAIT_FOR(current_thd, "pause_on_queuing_event_from_objstore",
++                       "reached_pause_on_queue_event_from_objstore",
++                       "continue_queuing_event_from_objstore");
++  if (event_type == binary_log::FORMAT_DESCRIPTION_EVENT) {
++    checksum_alg = Log_event_footer::get_checksum_alg(buf, event_len);
++  }
++  assert(mi->rli->relay_log.relay_log_checksum_alg !=
++         binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
++  binary_log_debug::debug_checksum_test =
++      DBUG_EVALUATE_IF("simulate_checksum_test_failure", true, false);
++  if (Log_event_footer::event_checksum_test(
++          const_cast<uchar *>(pointer_cast<const uchar *>(buf)), event_len,
++          checksum_alg)) {
++    mi->report(ERROR_LEVEL, ER_NETWORK_READ_EVENT_CHECKSUM_FAILURE, "%s",
++               ER_THD(current_thd, ER_NETWORK_READ_EVENT_CHECKSUM_FAILURE));
++    goto err;
++  }
++  /*
++    From now, and up to finishing queuing the event, no other thread is allowed
++    to write to the relay log, or to rotate it.
++  */
++  mysql_mutex_lock(log_lock);
++  assert(lock_count == 0);
++  lock_count = 1;
++  if (mi->get_mi_description_event() == nullptr) {
++    LogErr(ERROR_LEVEL, ER_RPL_REPLICA_QUEUE_EVENT_FAILED_INVALID_CONFIGURATION,
++           mi->get_channel());
++    goto err;
++  }
++  std::tie(info_error, log_event_info) = extract_log_event_basic_info(
++      buf, event_len, mi->get_mi_description_event());
++  if (info_error || mi->transaction_parser.feed_event(log_event_info, true)) {
++    LogErr(WARNING_LEVEL,
++           ER_RPL_REPLICA_IO_THREAD_DETECTED_UNEXPECTED_EVENT_SEQUENCE,
++           mi->get_master_log_name(), mi->get_master_log_pos());
++  }
++  switch (event_type) {
++    case binary_log::STOP_EVENT:
++      do_flush_mi = false;
++      goto end;
++    case binary_log::ROTATE_EVENT: {
++      Format_description_log_event *fde = mi->get_mi_description_event();
++      enum_binlog_checksum_alg fde_checksum_alg = fde->footer()->checksum_alg;
++      if (fde_checksum_alg != checksum_alg)
++        fde->footer()->checksum_alg = checksum_alg;
++      Rotate_log_event rev(buf, fde);
++      fde->footer()->checksum_alg = fde_checksum_alg;
++      if (unlikely(process_io_rotate(mi, &rev))) {
++        // This error will be reported later at handle_slave_io().
++        goto err;
++      }
++      /*
++         Checksum special cases for the fake Rotate (R_f) event caused by the
++         protocol of events generation and serialization in RL where Rotate of
++         master is queued right next to FD of slave. Since it's only FD that
++         carries the alg desc of FD_s has to apply to R_m. Two special rules
++         apply only to the first R_f which comes in before any FD_m. The 2nd R_f
++         should be compatible with the FD_s that must have taken over the last
++         seen FD_m's (A).
++         RSC_1: If OM \and fake Rotate \and slave is configured to
++                to compute checksum for its first FD event for RL
++                the fake Rotate gets checksummed here.
++      */
++      if (uint4korr(&buf[0]) == 0 &&
++          checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_OFF &&
++          mi->rli->relay_log.relay_log_checksum_alg !=
++              binary_log::BINLOG_CHECKSUM_ALG_OFF) {
++        ha_checksum rot_crc = checksum_crc32(0L, nullptr, 0);
++        event_len += BINLOG_CHECKSUM_LEN;
++        memcpy(rot_buf, buf, event_len - BINLOG_CHECKSUM_LEN);
++        int4store(&rot_buf[EVENT_LEN_OFFSET],
++                  uint4korr(rot_buf + EVENT_LEN_OFFSET) + BINLOG_CHECKSUM_LEN);
++        rot_crc = checksum_crc32(rot_crc, (const uchar *)rot_buf,
++                                 event_len - BINLOG_CHECKSUM_LEN);
++        int4store(&rot_buf[event_len - BINLOG_CHECKSUM_LEN], rot_crc);
++        assert(event_len == uint4korr(&rot_buf[EVENT_LEN_OFFSET]));
++        assert(mi->get_mi_description_event()->common_footer->checksum_alg ==
++               mi->rli->relay_log.relay_log_checksum_alg);
++        /* the first one */
++        assert(mi->checksum_alg_before_fd !=
++               binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
++        save_buf = buf;
++        buf = rot_buf;
++      } else
++          /*
++            RSC_2: If NM \and fake Rotate \and slave does not compute checksum
++            the fake Rotate's checksum is stripped off before relay-logging.
++          */
++          if (uint4korr(&buf[0]) == 0 &&
++              checksum_alg != binary_log::BINLOG_CHECKSUM_ALG_OFF &&
++              mi->rli->relay_log.relay_log_checksum_alg ==
++                  binary_log::BINLOG_CHECKSUM_ALG_OFF) {
++        event_len -= BINLOG_CHECKSUM_LEN;
++        memcpy(rot_buf, buf, event_len);
++        int4store(&rot_buf[EVENT_LEN_OFFSET],
++                  uint4korr(rot_buf + EVENT_LEN_OFFSET) - BINLOG_CHECKSUM_LEN);
++        assert(event_len == uint4korr(&rot_buf[EVENT_LEN_OFFSET]));
++        assert(mi->get_mi_description_event()->common_footer->checksum_alg ==
++               mi->rli->relay_log.relay_log_checksum_alg);
++        /* the first one */
++        assert(mi->checksum_alg_before_fd !=
++               binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
++        save_buf = buf;
++        buf = rot_buf;
++      }
++      inc_pos = 0;
++      break;
++    }
++    case binary_log::FORMAT_DESCRIPTION_EVENT: {
++      /*
++        Create an event, and save it (when we rotate the relay log, we will have
++        to write this event again).
++      */
++      mi->checksum_alg_before_fd = binary_log::BINLOG_CHECKSUM_ALG_UNDEF;
++      Format_description_log_event *new_fdle;
++      Log_event *ev = nullptr;
++      if (binlog_event_deserialize(reinterpret_cast<const unsigned char *>(buf),
++                                   event_len, mi->get_mi_description_event(),
++                                   true, &ev) != Binlog_read_error::SUCCESS) {
++        // This error will be reported later at handle_slave_io().
++        goto err;
++      }
++      new_fdle = dynamic_cast<Format_description_log_event *>(ev);
++      if (new_fdle->common_footer->checksum_alg ==
++          binary_log::BINLOG_CHECKSUM_ALG_UNDEF)
++        new_fdle->common_footer->checksum_alg =
++            binary_log::BINLOG_CHECKSUM_ALG_OFF;
++      mi->set_mi_description_event(new_fdle);
++      /* installing new value of checksum Alg for relay log */
++      mi->rli->relay_log.relay_log_checksum_alg =
++          new_fdle->common_footer->checksum_alg;
++      /*
++         Though this does some conversion to the slave's format, this will
++         preserve the master's binlog format version, and number of event types.
++      */
++      /*
++         If the event was not requested by the slave (the slave did not ask for
++         it), i.e. has end_log_pos=0, we do not increment
++         mi->get_master_log_pos()
++      */
++           /*
++         If the event was not requested by the slave (the slave did not ask for
++         it), i.e. has end_log_pos=0, we do not increment
++         mi->get_master_log_pos()
++      */
++      inc_pos = uint4korr(buf + LOG_POS_OFFSET) ? event_len : 0;
++    } break;
++    case binary_log::HEARTBEAT_LOG_EVENT:
++    case binary_log::HEARTBEAT_LOG_EVENT_V2: {
++      assert(false);
++    } break;
++    case binary_log::PREVIOUS_GTIDS_LOG_EVENT: {
++      /*
++        This event does not have any meaning for the slave and
++        was just sent to show the slave the master is making
++        progress and avoid possible deadlocks.
++        So at this point, the event is replaced by a rotate
++        event what will make the slave to update what it knows
++        about the master's coordinates.
++      */
++      inc_pos = 0;
++      mysql_mutex_lock(&mi->data_lock);
++      mi->set_master_log_pos(mi->get_master_log_pos() + event_len);
++      mysql_mutex_unlock(&mi->data_lock);
++      if (write_rotate_to_master_pos_into_relay_log(
++              mi->info_thd, mi, true /* force_flush_mi_info */))
++        goto err;
++      do_flush_mi = false; /* write_rotate_... above flushed master info */
++      goto end;
++    } break;
++    case binary_log::TRANSACTION_PAYLOAD_EVENT: {
++      binary_log::Transaction_payload_event tpe(buf,
++                                                mi->get_mi_description_event());
++      compression_type = tpe.get_compression_type();
++      compressed_transaction_bytes = tpe.get_payload_size();
++      uncompressed_transaction_bytes = tpe.get_uncompressed_size();
++      auto gtid_monitoring_info = mi->get_gtid_monitoring_info();
++      gtid_monitoring_info->update(compression_type,
++                                   compressed_transaction_bytes,
++                                   uncompressed_transaction_bytes);
++      inc_pos = event_len;
++      break;
++    }
++    case binary_log::GTID_LOG_EVENT: {
++      /*
++        This can happen if the master uses GTID_MODE=OFF_PERMISSIVE, and
++        sends GTID events to the slave. A possible scenario is that user
++        does not follow the upgrade procedure for GTIDs, and creates a
++        topology like A->B->C, where A uses GTID_MODE=ON_PERMISSIVE, B
++        uses GTID_MODE=OFF_PERMISSIVE, and C uses GTID_MODE=OFF.  Each
++        connection is allowed, but the master A will generate GTID
++        transactions which will be sent through B to C.  Then C will hit
++        this error.
++      */
++      if (global_gtid_mode.get() == Gtid_mode::OFF) {
++        mi->report(
++            ERROR_LEVEL, ER_CANT_REPLICATE_GTID_WITH_GTID_MODE_OFF,
++            ER_THD(current_thd, ER_CANT_REPLICATE_GTID_WITH_GTID_MODE_OFF),
++            mi->get_master_log_name(), mi->get_master_log_pos());
++        goto err;
++      }
++      Gtid_log_event gtid_ev(buf, mi->get_mi_description_event());
++      if (!gtid_ev.is_valid()) goto err;
++      rli->get_sid_lock()->rdlock();
++      gtid.sidno = gtid_ev.get_sidno(rli->get_gtid_set()->get_sid_map());
++      rli->get_sid_lock()->unlock();
++      if (gtid.sidno < 0) goto err;
++      gtid.gno = gtid_ev.get_gno();
++      original_commit_timestamp = gtid_ev.original_commit_timestamp;
++      immediate_commit_timestamp = gtid_ev.immediate_commit_timestamp;
++      compressed_transaction_bytes = uncompressed_transaction_bytes =
++          gtid_ev.transaction_length - gtid_ev.get_event_length();
++      inc_pos = event_len;
++    } break;
++    case binary_log::ANONYMOUS_GTID_LOG_EVENT: {
++      if (mi->rli->m_assign_gtids_to_anonymous_transactions_info
++                   .get_type() == Assign_gtids_to_anonymous_transactions_info::
++                                      enum_type::AGAT_OFF) {
++        if (global_gtid_mode.get() == Gtid_mode::ON) {
++          mi->report(ERROR_LEVEL, ER_CANT_REPLICATE_ANONYMOUS_WITH_GTID_MODE_ON,
++                     ER_THD(current_thd,
++                            ER_CANT_REPLICATE_ANONYMOUS_WITH_GTID_MODE_ON),
++                     mi->get_master_log_name(), mi->get_master_log_pos());
++          goto err;
++        }
++      }
++      /*
++       save the original_commit_timestamp and the immediate_commit_timestamp to
++       be later used for monitoring
++      */
++      Gtid_log_event anon_gtid_ev(buf, mi->get_mi_description_event());
++      original_commit_timestamp = anon_gtid_ev.original_commit_timestamp;
++      immediate_commit_timestamp = anon_gtid_ev.immediate_commit_timestamp;
++      compressed_transaction_bytes = uncompressed_transaction_bytes =
++          anon_gtid_ev.transaction_length - anon_gtid_ev.get_event_length();
++    }
++      [[fallthrough]];
++    default:
++      inc_pos = event_len;
++      break;
++  }
++  s_id = uint4korr(buf + SERVER_ID_OFFSET);
++  /*
++    If server_id_bits option is set we need to mask out irrelevant bits
++    when checking server_id, but we still put the full unmasked server_id
++    into the Relay log so that it can be accessed when applying the event
++  */
++  s_id &= opt_server_id_mask;
++  if ((s_id == ::server_id && !mi->rli->replicate_same_server_id) ||
++      (mi->ignore_server_ids->dynamic_ids.size() > 0 &&
++       mi->shall_ignore_server_id(s_id) &&
++       /* everything is filtered out from non-master */
++       (s_id != mi->master_id ||
++        /* for the master meta information is necessary */
++        (event_type != binary_log::FORMAT_DESCRIPTION_EVENT &&
++         event_type != binary_log::ROTATE_EVENT)))) {
++    if (!(s_id == ::server_id && !mi->rli->replicate_same_server_id) ||
++        (event_type != binary_log::FORMAT_DESCRIPTION_EVENT &&
++         event_type != binary_log::ROTATE_EVENT &&
++         event_type != binary_log::STOP_EVENT)) {
++      rli->relay_log.lock_binlog_end_pos();
++      mi->set_master_log_pos(mi->get_master_log_pos() + inc_pos);
++      memcpy(rli->ign_master_log_name_end, mi->get_master_log_name(),
++             FN_REFLEN);
++      assert(rli->ign_master_log_name_end[0]);
++      rli->ign_master_log_pos_end = mi->get_master_log_pos();
++      // the slave SQL thread needs to re-check
++      rli->relay_log.update_binlog_end_pos(false /*need_lock*/);
++      rli->relay_log.unlock_binlog_end_pos();
++    }
++    DBUG_PRINT(
++        "info",
++        ("source_log_pos: %lu, event originating from %u server, ignored",
++         (ulong)mi->get_master_log_pos(), uint4korr(buf + SERVER_ID_OFFSET)));
++  } else {
++    bool is_error = false;
++    /* write the event to the relay log */
++    if (likely(rli->relay_log.write_buffer(buf, event_len, mi) == 0)) {
++      DBUG_SIGNAL_WAIT_FOR(
++          current_thd, "pause_on_queue_event_from_objstore_after_write_buffer",
++          "receiver_reached_pause_on_queue_event_from_objstore",
++          "receiver_continue_queuing_event_from_objstore");
++      mysql_mutex_lock(&mi->data_lock);
++      lock_count = 2;
++      mi->set_master_log_pos(mi->get_master_log_pos() + inc_pos);
++      DBUG_PRINT("info",
++                 ("source_log_pos: %lu", (ulong)mi->get_master_log_pos()));
++      if (event_type == binary_log::GTID_LOG_EVENT ||
++          event_type == binary_log::ANONYMOUS_GTID_LOG_EVENT) {
++        // set the timestamp for the start time of queueing this transaction
++        mi->started_queueing(gtid, original_commit_timestamp,
++                             immediate_commit_timestamp);
++        auto gtid_monitoring_info = mi->get_gtid_monitoring_info();
++        gtid_monitoring_info->update(
++            binary_log::transaction::compression::type::NONE,
++            compressed_transaction_bytes, uncompressed_transaction_bytes);
++      }
++    } else {
++      mi->transaction_parser.rollback();
++      is_error = true;
++    }
++    if (save_buf != nullptr) buf = save_buf;
++    if (is_error) {
++      // This error will be reported later at handle_slave_io().
++      goto err;
++    }
++  }
++  goto end;
++err:
++  res = QUEUE_EVENT_ERROR_QUEUING;
++end:
++  if (res == QUEUE_EVENT_OK && do_flush_mi) {
++    /*
++      Take a ride in the already locked LOCK_log to flush master info.
++      JAG: TODO: Notice that we could only flush master info if we are
++                 not in the middle of a transaction. Having a proper
++                 relay log recovery can allow us to do this.
++    */
++    if (lock_count == 1) {
++      mysql_mutex_lock(&mi->data_lock);
++      lock_count = 2;
++    }
++    if (flush_master_info(mi, false /*force*/, lock_count == 0 /*need_lock*/,
++                          false /*flush_relay_log*/, mi->is_gtid_only_mode()))
++      res = QUEUE_EVENT_ERROR_FLUSHING_INFO;
++    if (mi->is_gtid_only_mode()) {
++      mi->update_flushed_relay_log_info();
++    }
++  }
++  if (lock_count >= 2) mysql_mutex_unlock(&mi->data_lock);
++  if (lock_count >= 1) mysql_mutex_unlock(log_lock);
++  DBUG_PRINT("info", ("queue result: %d", res));
++  return res;
++}
+ /**
+   Hook to detach the active VIO before closing a connection handle.
+ 
+diff --git a/sql/rpl_replica.h b/sql/rpl_replica.h
+index 3dbf9d26..1ab67b2c 100644
+--- a/sql/rpl_replica.h
++++ b/sql/rpl_replica.h
+@@ -611,6 +611,9 @@ typedef enum {
+ } QUEUE_EVENT_RESULT;
+ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
+                                ulong event_len, bool flush_mi = true);
++QUEUE_EVENT_RESULT queue_event_from_objstore(Master_info *mi, const char *buf,
++                                             ulong event_len,
++                                             bool do_flush_mi = true);
+ 
+ int heartbeat_queue_event(bool is_valid, Master_info *&mi,
+                           std::string binlog_name, uint64_t position,
+diff --git a/sql/sp.cc b/sql/sp.cc
+index 97747ead..6ad1a1ac 100644
+--- a/sql/sp.cc
++++ b/sql/sp.cc
+@@ -99,6 +99,9 @@
+ #include "sql/transaction_info.h"
+ #include "sql_string.h"
+ #include "template_utils.h"
++#ifdef WESQL
++#include "sql/package/package_interface.h"
++#endif
+ 
+ class sp_rcontext;
+ 
+@@ -618,7 +621,15 @@ static bool check_routine_already_exists(THD *thd, sp_head *sp,
+     // Error is reported by DD API framework.
+     return true;
+   }
++#ifdef WESQL
++  bool exists = false;
++  if (sp->m_type != enum_sp_type::FUNCTION) {
++    exists = im::exist_native_proc(sp->m_db.str, sp->m_name.str);
++  }
++  if (sr == nullptr && !exists) {
++#else
+   if (sr == nullptr) {
++#endif
+     // Routine with same name does not exist.
+     return false;
+   }
+diff --git a/sql/sql_class.cc b/sql/sql_class.cc
+index f044c519..956b7690 100644
+--- a/sql/sql_class.cc
++++ b/sql/sql_class.cc
+@@ -3005,7 +3005,7 @@ bool THD::is_current_stmt_binlog_disabled() const {
+ }
+ 
+ bool THD::is_current_stmt_binlog_log_replica_updates_disabled() const {
+-  return ((!opt_bin_log || (slave_thread && !opt_log_replica_updates)) ||
++  return (!opt_bin_log || (slave_thread && !opt_log_replica_updates) ||
+           !mysql_bin_log.is_open());
+ }
+ 
+diff --git a/sql/sql_class.h b/sql/sql_class.h
+index 9d5642cc..045672c3 100644
+--- a/sql/sql_class.h
++++ b/sql/sql_class.h
+@@ -114,6 +114,8 @@
+ #include "template_utils.h"
+ #include "thr_lock.h"
+ #include "violite.h"
++#ifdef WESQL
++#endif
+ 
+ enum enum_check_fields : int;
+ enum enum_tx_isolation : int;
+diff --git a/sql/sql_db.cc b/sql/sql_db.cc
+index 0fe184e8..a6998741 100644
+--- a/sql/sql_db.cc
++++ b/sql/sql_db.cc
+@@ -295,13 +295,45 @@ static bool write_db_cmd_to_binlog(THD *thd, const char *db, bool trx_cache) {
+ 
+ static void set_db_default_charset(const THD *thd,
+                                    HA_CREATE_INFO *create_info) {
++#ifdef WITH_SMARTENGINE
++  bool is_smartengine = false;
++  if (default_storage_engine) {
++    size_t default_engine_len = strlen(default_storage_engine);
++    is_smartengine = (default_engine_len == strlen(SMARTENGINE_NAME)) &&
++      (!strncasecmp(default_storage_engine, SMARTENGINE_NAME, default_engine_len));
++  }
++  bool is_system_thd = (thd->is_dd_system_thread() ||
++                        thd->is_initialize_system_thread() ||
++                        thd->is_server_upgrade_thread());
++  /**smartengine support my_charset_utf8mb4_0900_ai_ci incomplete, include index scan.
++  So, smartengine change collation from my_charset_utf8mb4_0900_ai_ci to
++  my_charset_utf8mb4_general_ci, if ddl query has not an explicit collation clause.*/
++#endif
+   if (create_info->default_table_charset == nullptr) {
+     create_info->default_table_charset = thd->variables.collation_server;
++#ifdef WITH_SMARTENGINE
++    if (!is_system_thd && is_smartengine &&
++        create_info->default_table_charset == &my_charset_utf8mb4_0900_ai_ci) {
++      create_info->default_table_charset = &my_charset_utf8mb4_general_ci;
++    }
++#endif
+   } else {
++#ifdef WITH_SMARTENGINE
++    if (!(create_info->used_fields & HA_CREATE_USED_DEFAULT_COLLATE) &&
++        create_info->default_table_charset == &my_charset_utf8mb4_0900_ai_ci) {
++      create_info->default_table_charset =
++          thd->variables.default_collation_for_utf8mb4;
++      if (!is_system_thd && is_smartengine &&
++          create_info->default_table_charset == &my_charset_utf8mb4_0900_ai_ci) {
++        create_info->default_table_charset = &my_charset_utf8mb4_general_ci;
++      }
++    }
++#else
+     if (!(create_info->used_fields & HA_CREATE_USED_DEFAULT_COLLATE) &&
+-        create_info->default_table_charset == &my_charset_utf8mb4_0900_ai_ci)
++        create_info->default_table_charset == &my_charset_utf8mb4_0900_ai_ci) {
+       create_info->default_table_charset =
+           thd->variables.default_collation_for_utf8mb4;
++#endif
+   }
+ }
+ 
+diff --git a/sql/sql_parse.cc b/sql/sql_parse.cc
+index 21f36216..8db72930 100644
+--- a/sql/sql_parse.cc
++++ b/sql/sql_parse.cc
+@@ -183,6 +183,9 @@
+ #ifdef WITH_LOCK_ORDER
+ #include "sql/debug_lock_order.h"
+ #endif /* WITH_LOCK_ORDER */
++#ifdef WITH_SMARTENGINE
++#include "storage/smartengine/core/monitoring/query_perf_context.h"
++#endif
+ 
+ namespace resourcegroups {
+ class Resource_group;
+@@ -1159,6 +1162,10 @@ void init_sql_command_flags() {
+   sql_command_flags[SQLCOM_RENAME_USER] |= CF_REQUIRE_ACL_CACHE;
+   sql_command_flags[SQLCOM_SHOW_GRANTS] |= CF_REQUIRE_ACL_CACHE;
+   sql_command_flags[SQLCOM_SET_PASSWORD] |= CF_REQUIRE_ACL_CACHE;
++#ifdef WESQL
++  /* Native package proc flags */
++  sql_command_flags[SQLCOM_ADMIN_PROC] = CF_AUTO_COMMIT_TRANS;
++#endif
+ }
+ 
+ bool sqlcom_can_generate_row_events(enum enum_sql_command command) {
+@@ -1700,6 +1707,10 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
+   DBUG_TRACE;
+   DBUG_PRINT("info", ("command: %d", command));
+ 
++#ifdef WITH_SMARTENGINE
++  QUERY_TRACE_RESET();
++  QUERY_TRACE_BEGIN(smartengine::monitor::TracePoint::SERVER_OPERATION);
++#endif
+   Sql_cmd_clone *clone_cmd = nullptr;
+ 
+   /* SHOW PROFILE instrumentation, begin */
+@@ -2089,6 +2100,12 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
+         size_t length =
+             static_cast<size_t>(packet_end - beginning_of_next_stmt);
+ 
++#ifdef WITH_SMARTENGINE
++        QUERY_TRACE_END(); // end SERVER_OPERATION trace
++        if (thd) {
++          QUERY_TRACE_FINISH(thd->query().str, thd->query().length);
++        }
++#endif
+         log_slow_statement(thd);
+ 
+         thd->reset_copy_status_var();
+@@ -2116,6 +2133,10 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
+         thd->profiling->set_query_source(beginning_of_next_stmt, length);
+ #endif
+ 
++#ifdef WITH_SMARTENGINE
++        QUERY_TRACE_RESET();
++        QUERY_TRACE_BEGIN(smartengine::monitor::TracePoint::SERVER_OPERATION);
++#endif
+         mysql_thread_set_secondary_engine(false);
+ 
+         /* PSI begin */
+@@ -2446,6 +2467,12 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
+   }
+ 
+ done:
++#ifdef WITH_SMARTENGINE
++  QUERY_TRACE_END(); // end SERVER_OPERATION trace
++  if (thd) {
++    QUERY_TRACE_FINISH(thd->query().str, thd->query().length);
++  }
++#endif
+   assert(thd->open_tables == nullptr ||
+          (thd->locked_tables_mode == LTM_LOCK_TABLES));
+ 
+@@ -4717,6 +4744,10 @@ int mysql_execute_command(THD *thd, bool first_level) {
+     case SQLCOM_ALTER_TABLESPACE:
+     case SQLCOM_EXPLAIN_OTHER:
+     case SQLCOM_RESTART_SERVER:
++#ifdef WESQL
++    case SQLCOM_ADMIN_PROC:
++    case SQLCOM_TRANS_PROC:
++#endif
+     case SQLCOM_CREATE_SRS:
+     case SQLCOM_DROP_SRS: {
+       assert(lex->m_sql_cmd != nullptr);
+diff --git a/sql/sql_prepare.cc b/sql/sql_prepare.cc
+index 06864124..72ae693c 100644
+--- a/sql/sql_prepare.cc
++++ b/sql/sql_prepare.cc
+@@ -1413,6 +1413,10 @@ bool Prepared_statement::prepare_query(THD *thd) {
+     case SQLCOM_SHOW_TRIGGERS:
+     case SQLCOM_SHOW_VARIABLES:
+     case SQLCOM_SET_RESOURCE_GROUP:
++#ifdef WESQL
++    case SQLCOM_ADMIN_PROC:
++    case SQLCOM_TRANS_PROC:
++#endif
+     case SQLCOM_SHOW_WARNS:
+       res = m_lex->m_sql_cmd->prepare(thd);
+       break;
+diff --git a/sql/sql_show.cc b/sql/sql_show.cc
+index b6cb7d17..8a620467 100644
+--- a/sql/sql_show.cc
++++ b/sql/sql_show.cc
+@@ -73,6 +73,8 @@
+ #include "sql/auth/auth_acls.h"  // DB_ACLS
+ #include "sql/auth/auth_common.h"
+ #include "sql/auth/sql_security_ctx.h"
++#include "sql/binlog_archive.h"
++#include "sql/consistent_archive.h"
+ #include "sql/dd/cache/dictionary_client.h"  // dd::cache::Dictionary_client
+ #include "sql/dd/dd_schema.h"                // dd::Schema_MDL_locker
+ #include "sql/dd/dd_table.h"                 // is_encrypted
+@@ -4988,6 +4990,468 @@ static int hton_fill_schema_table(THD *thd, Table_ref *tables, Item *cond) {
+   return 0;
+ }
+ 
++static int fill_binlog_persistent_task_info(THD *thd, Table_ref *tables, Item *) {
++  DBUG_TRACE;
++  TABLE *table = tables->table;
++  CHARSET_INFO *cs = system_charset_info;
++  Binlog_archive *binlog_archive = Binlog_archive::get_instance();
++  mysql_mutex_t *binlog_archive_lock = binlog_archive->get_binlog_archive_lock();
++  mysql_mutex_lock(binlog_archive_lock);
++  if (!binlog_archive->is_thread_running()) {
++    mysql_mutex_unlock(binlog_archive_lock);
++    LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_LOG, "binlog archive is not running");
++    return 0;
++  }
++  mysql_mutex_unlock(binlog_archive_lock);
++  // New variables for additional information
++  uint64_t persisting_consensus_index;
++  uint64_t consensus_term;
++  std::string persisting_mysql_binlog;
++  my_off_t persisting_mysql_binlog_pos;
++  my_off_t persisting_mysql_binlog_write_pos;
++  std::string persisting_binlog;
++  my_off_t persisting_binlog_pos;
++  my_off_t persisting_binlog_write_pos;
++  std::string persisted_binlog;
++  my_off_t persisted_binlog_pos;
++  uint64_t persisted_consensus_index;
++  std::string persisted_mysql_binlog;
++  my_off_t persisted_mysql_binlog_pos;
++  if (binlog_archive->show_binlog_archive_task_info(
++          persisting_consensus_index, consensus_term,
++          persisting_mysql_binlog, persisting_mysql_binlog_pos,
++          persisting_mysql_binlog_write_pos,
++          persisting_binlog, persisting_binlog_pos,
++          persisting_binlog_write_pos,
++          persisted_binlog, persisted_binlog_pos,
++          persisted_consensus_index,
++          persisted_mysql_binlog, persisted_mysql_binlog_pos)) {
++    return 1;
++  }
++  restore_record(table, s->default_values);
++  // Store all values in the table fields
++  table->field[0]->store(consensus_term, true);
++  table->field[1]->store(persisted_consensus_index, true);
++  table->field[2]->store(persisted_binlog.c_str(), persisted_binlog.length(), cs);
++  table->field[3]->store(persisted_binlog_pos, true);
++  table->field[4]->store(persisted_mysql_binlog.c_str(), persisted_mysql_binlog.length(), cs);
++  table->field[5]->store(persisted_mysql_binlog_pos, true);
++  table->field[6]->store(persisting_consensus_index, true);
++  table->field[7]->store(persisting_mysql_binlog.c_str(), persisting_mysql_binlog.length(), cs);
++  table->field[8]->store(persisting_mysql_binlog_pos, true);
++  table->field[9]->store(persisting_mysql_binlog_write_pos, true);
++  table->field[10]->store(persisting_binlog.c_str(), persisting_binlog.length(), cs);
++  table->field[11]->store(persisting_binlog_pos, true);
++  table->field[12]->store(persisting_binlog_write_pos, true);
++  if (schema_table_store_record(thd, table)) return 1;
++  return 0;
++}
++static int fill_binlog_persistent_index_file(THD *thd, Table_ref *tables, Item *) {
++  DBUG_TRACE;
++  IO_CACHE *index_file;
++  TABLE *table = tables->table;
++  CHARSET_INFO *cs = system_charset_info;
++  char log_name_with_path[FN_REFLEN];
++  size_t log_name_len_with_path;
++  Binlog_archive *binlog_archive = Binlog_archive::get_instance();
++  mysql_mutex_t *binlog_archive_lock = binlog_archive->get_binlog_archive_lock();
++  mysql_mutex_lock(binlog_archive_lock);
++  if (!binlog_archive->is_thread_running()) {
++    mysql_mutex_unlock(binlog_archive_lock);
++    LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_LOG, "binlog archive is not running");
++    return 0;
++  }
++  mysql_mutex_unlock(binlog_archive_lock);
++  binlog_archive->lock_binlog_index();
++  index_file = binlog_archive->get_index_file();
++  if (!index_file || !my_b_inited(index_file)) {
++    LogErr(INFORMATION_LEVEL, ER_BINLOG_ARCHIVE_LOG, "binlog archive binlog index is not open");
++    binlog_archive->unlock_binlog_index();
++    return 0;
++  }
++  if (reinit_io_cache(index_file, READ_CACHE, (my_off_t)0, false, false)) {
++    my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++    goto err;
++  }
++  while ((log_name_len_with_path = my_b_gets(index_file, log_name_with_path,
++                                             sizeof(log_name_with_path))) > 1) {
++    restore_record(table, s->default_values);
++    log_name_with_path[--log_name_len_with_path] = '\0';  // remove the newline
++    std::string in_str;
++    in_str.assign(log_name_with_path);
++    size_t idx = in_str.find("|");
++    std::string found_log_slice_name = in_str.substr(0, idx);
++    std::string left_string = in_str.substr(idx + 1);
++    idx = left_string.find("|");
++    std::string found_end_consensus_index = left_string.substr(0, idx);
++    uint64_t slice_end_consensus_index = std::stoull(found_end_consensus_index);
++    std::string found_previous_consensus_index = left_string.substr(idx + 1);
++    uint64_t log_previous_consensus_index = std::stoull(found_previous_consensus_index);
++    size_t first_dot = found_log_slice_name.find('.');
++    if (first_dot == std::string::npos) {
++      my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++      goto err;
++    }
++    size_t second_dot = found_log_slice_name.find('.', first_dot + 1);
++    if (second_dot == std::string::npos) {
++      my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++      goto err;
++    }
++    std::string log_name = found_log_slice_name.substr(0, second_dot);
++    left_string = found_log_slice_name.substr(second_dot + 1);
++    size_t third_dot = left_string.find('.');
++    if (third_dot == std::string::npos) {
++      my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++      goto err;
++    }
++    std::string term = left_string.substr(0, third_dot);
++    std::string end_pos = left_string.substr(third_dot + 1);
++    uint64_t slice_consensus_term = std::stoull(term);
++    my_off_t slice_end_pos = std::stoull(end_pos);
++    table->field[0]->store(found_log_slice_name.c_str(), found_log_slice_name.length(), cs);
++    table->field[1]->store(log_name.c_str(), log_name.length(), cs);
++    table->field[2]->store(slice_consensus_term, true);
++    table->field[3]->store(slice_end_pos, true);
++    table->field[4]->store(slice_end_consensus_index, true);
++    table->field[5]->store(log_previous_consensus_index, true);
++    if (schema_table_store_record(thd, table)) goto err;
++  }
++  if (index_file->error == -1) {
++    my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++    goto err;
++  }
++  binlog_archive->unlock_binlog_index();
++  return 0;
++err:
++  binlog_archive->unlock_binlog_index();
++  return 1;
++}
++static int fill_binlog_persistent_slices(THD *thd, Table_ref *tables,
++                                           Item *) {
++  DBUG_TRACE;
++  TABLE *table = tables->table;
++  CHARSET_INFO *cs = system_charset_info;
++  std::vector<objstore::ObjectMeta> binlog_objects;
++  Binlog_archive *binlog_archive = Binlog_archive::get_instance();
++  mysql_mutex_t *binlog_archive_lock = binlog_archive->get_binlog_archive_lock();
++  mysql_mutex_lock(binlog_archive_lock);
++  if (!binlog_archive->is_thread_running()) {
++    mysql_mutex_unlock(binlog_archive_lock);
++    return 0;
++  }
++  mysql_mutex_unlock(binlog_archive_lock);
++  if (!binlog_archive->show_binlog_persistent_files(binlog_objects)) {
++    for (const auto &object : binlog_objects) {
++      restore_record(table, s->default_values);
++      table->field[0]->store(object.key.c_str(), object.key.size(), cs);
++      MYSQL_TIME timestamp;
++      // timestamp with thread time_zone
++      thd->variables.time_zone->gmt_sec_to_TIME(&timestamp,
++                                                object.last_modified / 1000);
++      table->field[1]->store_time(&timestamp);
++      // Byte
++      table->field[2]->store(object.size, true);
++      if (schema_table_store_record(thd, table)) return 1;
++    }
++  }
++  return 0;
++}
++static int fill_mysql_innodb_persistent_index_file(THD *thd, Table_ref *tables,
++                                                   Item *) {
++  DBUG_TRACE;
++  IO_CACHE *index_file = nullptr;
++  TABLE *table = tables->table;
++  CHARSET_INFO *cs = system_charset_info;
++  char file_name[FN_REFLEN];
++  size_t file_name_len;
++  Consistent_archive *consistent_snapshot_archive =
++      Consistent_archive::get_instance();
++  mysql_mutex_t *Consistent_archive_lock =
++      consistent_snapshot_archive->get_consistent_archive_lock();
++  mysql_mutex_lock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->is_thread_running()) {
++    mysql_mutex_unlock(Consistent_archive_lock);
++    return 0;
++  }
++  mysql_mutex_unlock(Consistent_archive_lock);
++  consistent_snapshot_archive->lock_mysql_clone_index();
++  index_file = consistent_snapshot_archive->get_mysql_clone_index_file();
++  if (!index_file || !my_b_inited(index_file)) {
++    consistent_snapshot_archive->unlock_mysql_clone_index();
++    return 0;
++  }
++  if (reinit_io_cache(index_file, READ_CACHE, (my_off_t)0, false, false)) {
++    my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++    goto err;
++  }
++  while ((file_name_len = my_b_gets(index_file, file_name, sizeof(file_name))) >
++         1) {
++    restore_record(table, s->default_values);
++    file_name[--file_name_len] = '\0';  // remove the newline
++    table->field[0]->store(file_name, strlen(file_name), cs);
++    if (schema_table_store_record(thd, table)) goto err;
++  }
++  if (index_file->error == -1) {
++    my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++    goto err;
++  }
++  consistent_snapshot_archive->unlock_mysql_clone_index();
++  return 0;
++err:
++  consistent_snapshot_archive->unlock_mysql_clone_index();
++  return 1;
++}
++static int fill_mysql_innodb_persistent_files(THD *thd, Table_ref *tables,
++                                           Item *) {
++  DBUG_TRACE;
++  TABLE *table = tables->table;
++  CHARSET_INFO *cs = system_charset_info;
++  std::vector<objstore::ObjectMeta> innodb_objects;
++  Consistent_archive *consistent_snapshot_archive =
++      Consistent_archive::get_instance();
++  mysql_mutex_t *Consistent_archive_lock =
++      consistent_snapshot_archive->get_consistent_archive_lock();
++  mysql_mutex_lock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->is_thread_running()) {
++    mysql_mutex_unlock(Consistent_archive_lock);
++    return 0;
++  }
++  mysql_mutex_unlock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->show_innodb_persistent_files(innodb_objects)) {
++    for (const auto &object : innodb_objects) {
++      restore_record(table, s->default_values);
++      table->field[0]->store(object.key.c_str(), object.key.size(), cs);
++      MYSQL_TIME timestamp;
++      // timestamp with thread time_zone
++      thd->variables.time_zone->gmt_sec_to_TIME(&timestamp,
++                                                object.last_modified / 1000);
++      table->field[1]->store_time(&timestamp);
++      // Byte
++      table->field[2]->store(object.size, true);
++      if (schema_table_store_record(thd, table)) return 1;
++    }
++  }
++  return 0;
++}
++static int fill_se_backup_persistent_index_file(THD *thd, Table_ref *tables,
++                                           Item *) {
++  DBUG_TRACE;
++  IO_CACHE *index_file = nullptr;
++  TABLE *table = tables->table;
++  CHARSET_INFO *cs = system_charset_info;
++  char file_name[FN_REFLEN];
++  size_t file_name_len;
++  Consistent_archive *consistent_snapshot_archive =
++      Consistent_archive::get_instance();
++  mysql_mutex_t *Consistent_archive_lock =
++      consistent_snapshot_archive->get_consistent_archive_lock();
++  mysql_mutex_lock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->is_thread_running()) {
++    mysql_mutex_unlock(Consistent_archive_lock);
++    return 0;
++  }
++  mysql_mutex_unlock(Consistent_archive_lock);
++  consistent_snapshot_archive->lock_se_backup_index();
++  index_file = consistent_snapshot_archive->get_se_backup_index_file();
++  if (!index_file || !my_b_inited(index_file)) {
++    consistent_snapshot_archive->unlock_se_backup_index();
++    return 0;
++  }
++  if (reinit_io_cache(index_file, READ_CACHE, (my_off_t)0, false, false)) {
++    my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++    goto err;
++  }
++  while ((file_name_len = my_b_gets(index_file, file_name, sizeof(file_name))) >
++         1) {
++    restore_record(table, s->default_values);
++    file_name[--file_name_len] = '\0';  // remove the newline
++    table->field[0]->store(file_name, strlen(file_name), cs);
++    if (schema_table_store_record(thd, table)) goto err;
++  }
++  if (index_file->error == -1) {
++    my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++    goto err;
++  }
++  consistent_snapshot_archive->unlock_se_backup_index();
++  return 0;
++err:
++  consistent_snapshot_archive->unlock_se_backup_index();
++  return 1;
++}
++static int fill_se_backup_persistent_files(THD *thd, Table_ref *tables,
++                                           Item *) {
++  DBUG_TRACE;
++  TABLE *table = tables->table;
++  CHARSET_INFO *cs = system_charset_info;
++  std::vector<objstore::ObjectMeta> se_objects;
++  Consistent_archive *consistent_snapshot_archive =
++      Consistent_archive::get_instance();
++  mysql_mutex_t *Consistent_archive_lock =
++      consistent_snapshot_archive->get_consistent_archive_lock();
++  mysql_mutex_lock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->is_thread_running()) {
++    mysql_mutex_unlock(Consistent_archive_lock);
++    return 0;
++  }
++  mysql_mutex_unlock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->show_se_persistent_files(se_objects)) {
++    for (const auto &object : se_objects) {
++      restore_record(table, s->default_values);
++      table->field[0]->store(object.key.c_str(), object.key.size(), cs);
++      MYSQL_TIME timestamp;
++      // timestamp with thread time_zone
++      thd->variables.time_zone->gmt_sec_to_TIME(&timestamp,
++                                                object.last_modified / 1000);
++      table->field[1]->store_time(&timestamp);
++      // Byte
++      table->field[2]->store(object.size, true);
++      if (schema_table_store_record(thd, table)) return 1;
++    }
++  }
++  return 0;
++}
++static int fill_se_extent_snapshot(THD *thd, Table_ref *tables,
++                                           Item *) {
++  DBUG_TRACE;
++  TABLE *table = tables->table;
++  std::vector<uint64_t> se_snapshot;
++  Consistent_archive *consistent_snapshot_archive =
++      Consistent_archive::get_instance();
++  mysql_mutex_t *Consistent_archive_lock =
++      consistent_snapshot_archive->get_consistent_archive_lock();
++  mysql_mutex_lock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->is_thread_running()) {
++    mysql_mutex_unlock(Consistent_archive_lock);
++    return 0;
++  }
++  mysql_mutex_unlock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->show_se_backup_snapshot(thd, se_snapshot)) {
++    for (const auto &snapshot_id : se_snapshot) {
++      restore_record(table, s->default_values);
++      table->field[0]->store(snapshot_id, true);
++      if (schema_table_store_record(thd, table)) return 1;
++    }
++  }
++  return 0;
++}
++static int fill_consistent_snapshot_persistent_index_file(THD *thd, Table_ref *tables,
++                                           Item *) {
++  DBUG_TRACE;
++  IO_CACHE *index_file = nullptr;
++  TABLE *table = tables->table;
++  CHARSET_INFO *cs = system_charset_info;
++  char snapshot_info[4 * FN_REFLEN];
++  size_t snapshot_info_len;
++  Consistent_archive *consistent_snapshot_archive =
++      Consistent_archive::get_instance();
++  mysql_mutex_t *Consistent_archive_lock =
++      consistent_snapshot_archive->get_consistent_archive_lock();
++  mysql_mutex_lock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->is_thread_running()) {
++    mysql_mutex_unlock(Consistent_archive_lock);
++    return 0;
++  }
++  mysql_mutex_unlock(Consistent_archive_lock);
++  consistent_snapshot_archive->lock_consistent_snapshot_index();
++  index_file = consistent_snapshot_archive->get_consistent_snapshot_index_file();
++  if (!index_file || !my_b_inited(index_file)) {
++    consistent_snapshot_archive->unlock_consistent_snapshot_index();
++    return 0;
++  }
++  if (reinit_io_cache(index_file, READ_CACHE, (my_off_t)0, false, false)) {
++    my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++    goto err;
++  }
++  while ((snapshot_info_len = my_b_gets(index_file, snapshot_info, sizeof(snapshot_info))) >
++         1) {
++    snapshot_info[--snapshot_info_len] = '\0';  // remove the newline
++    std::string in_str;
++    in_str.assign(snapshot_info);
++    size_t idx = in_str.find("|");
++    std::string ts = in_str.substr(0, idx);
++    std::string left_string = in_str.substr(idx+1);
++    idx = left_string.find("|");
++    std::string innodb_name = left_string.substr(0, idx);
++    left_string = left_string.substr(idx+1);
++    idx = left_string.find("|");
++    std::string se_name = left_string.substr(0, idx);
++    left_string = left_string.substr(idx+1);
++    idx = left_string.find("|");
++    std::string binlog_name = left_string.substr(0, idx);
++    left_string = left_string.substr(idx+1);
++    idx = left_string.find("|");
++    std::string binlog_pos = left_string.substr(0, idx);
++    left_string = left_string.substr(idx+1);
++    idx = left_string.find("|");
++    std::string consensus_index = left_string.substr(0, idx);
++    std::string se_snapshot = left_string.substr(idx+1);
++    restore_record(table, s->default_values);
++    table->field[0]->store(ts.c_str(), ts.length(), cs);
++    table->field[1]->store(innodb_name.c_str(), innodb_name.length(), cs);
++    table->field[2]->store(se_name.c_str(), se_name.length(), cs);
++    table->field[3]->store(binlog_name.c_str(), binlog_name.length(), cs);
++    table->field[4]->store((longlong)std::stoll(binlog_pos), true);
++    table->field[5]->store((longlong)std::stoll(consensus_index), true);
++    table->field[6]->store((longlong)std::stoll(se_snapshot), true);
++    if (schema_table_store_record(thd, table)) goto err;
++  }
++  if (index_file->error == -1) {
++    my_error(ER_IO_ERR_LOG_INDEX_READ, MYF(0));
++    goto err;
++  }
++  consistent_snapshot_archive->unlock_consistent_snapshot_index();
++  return 0;
++err:
++  consistent_snapshot_archive->unlock_consistent_snapshot_index();
++  return 1;
++}
++static int fill_consistent_snapshot_persistent_task_info(THD *thd,
++                                                         Table_ref *tables,
++                                                         Item *) {
++  DBUG_TRACE;
++  TABLE *table = tables->table;
++  CHARSET_INFO *cs = system_charset_info;
++  Consistent_archive *consistent_snapshot_archive =
++      Consistent_archive::get_instance();
++  mysql_mutex_t *Consistent_archive_lock =
++      consistent_snapshot_archive->get_consistent_archive_lock();
++  mysql_mutex_lock(Consistent_archive_lock);
++  if (!consistent_snapshot_archive->is_thread_running()) {
++    mysql_mutex_unlock(Consistent_archive_lock);
++    return 0;
++  }
++  mysql_mutex_unlock(Consistent_archive_lock);
++  Consistent_snapshot_task_info task_info{};
++  consistent_snapshot_archive->show_consistent_snapshot_task_info(task_info);
++  restore_record(table, s->default_values);
++  table->field[0]->store(task_info.archive_progress,
++                         strlen(task_info.archive_progress), cs);
++  table->field[1]->store(task_info.consensus_term, true);
++  table->field[2]->store(task_info.consistent_snapshot_archive_start_ts,
++                         strlen(task_info.consistent_snapshot_archive_start_ts),
++                         cs);
++  table->field[3]->store(task_info.consistent_snapshot_archive_end_ts,
++                         strlen(task_info.consistent_snapshot_archive_end_ts),
++                         cs);
++  table->field[4]->store(task_info.mysql_clone_name,
++                         strlen(task_info.mysql_clone_name), cs);
++  table->field[5]->store(task_info.innodb_clone_duration, true);
++  table->field[6]->store(task_info.innodb_archive_duration, true);
++  table->field[7]->store(task_info.se_backup_name,
++                         strlen(task_info.se_backup_name), cs);
++  table->field[8]->store(task_info.se_snapshot_id, true);
++  table->field[9]->store(task_info.se_backup_duration, true);
++  table->field[10]->store(task_info.se_archive_duration, true);
++  table->field[11]->store(task_info.mysql_binlog_file,
++                          strlen(task_info.mysql_binlog_file), cs);
++  table->field[12]->store(task_info.mysql_binlog_pos, true);
++  table->field[13]->store(task_info.binlog_file, strlen(task_info.binlog_file),
++                          cs);
++  table->field[14]->store(task_info.consensus_index, true);
++  table->field[15]->store(task_info.wait_binlog_archive_duration, true);
++  if (schema_table_store_record(thd, table)) return 1;
++  return 0;
++}
+ ST_FIELD_INFO engines_fields_info[] = {
+     {"ENGINE", 64, MYSQL_TYPE_STRING, 0, 0, "Engine", 0},
+     {"SUPPORT", 8, MYSQL_TYPE_STRING, 0, 0, "Support", 0},
+@@ -5128,6 +5592,80 @@ ST_FIELD_INFO tmp_table_columns_fields_info[] = {
+      MYSQL_TYPE_STRING, 0, 0, "Generation expression", 0},
+     {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
+ 
++ST_FIELD_INFO binlog_persistent_task_info_fields_info[] = {
++    {"LAST_RAFT_TERM", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"LAST_PERSISTED_RAFT_INDEX", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"LAST_PERSISTED_BINLOG", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"LAST_PERSISTED_BINLOG_POS", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"LAST_PERSISTED_MYSQL_BINLOG", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"LAST_PERSISTED_MYSQL_BINLOG_POS", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"LAST_PERSISTING_RAFT_INDEX", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"LAST_PERSISTING_MYSQL_BINLOG", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"LAST_PERSISTING_MYSQL_BINLOG_PERSISTENT_POS", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"LAST_PERSISTING_MYSQL_BINLOG_READ_POS", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"LAST_PERSISTING_BINLOG", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"LAST_PERSISTING_BINLOG_POS", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"LAST_PERSISTING_BINLOG_WRITE_POS", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
++ST_FIELD_INFO binlog_persistent_index_slice_fields_info[] = {
++    {"LOG_SLICE_NAME", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"LOG_NAME", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"RAFT_TERM", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"SLICE_END_POS", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"SLICE_END_RAFT_INDEX", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"LOG_PREVIOUS_RAFT_INDEX", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
++ST_FIELD_INFO binlog_persistent_slice_fields_info[] = {
++    {"LOG_SLICE_KEY", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"LAST_MODIFIED", FN_REFLEN, MYSQL_TYPE_TIMESTAMP, 0, 0, "Null", 0},
++    {"SIZE", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
++ST_FIELD_INFO innodb_persistent_snapshot_index_fields_info[] = {
++    {"INNODB_SNAPSHOT_NAME", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
++ST_FIELD_INFO innodb_persistent_snapshot_fields_info[] = {
++    {"INNODB_SNAPSHOT_KEY", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"LAST_MODIFIED", FN_REFLEN, MYSQL_TYPE_TIMESTAMP, 0, 0, "Null", 0},
++    {"SIZE", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
++ST_FIELD_INFO se_persistent_snapshot_index_fields_info[] = {
++    {"SMARTENGINE_SNAPSHOT_NAME", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
++ST_FIELD_INFO se_persistent_snapshot_fields_info[] = {
++    {"SMARTENGINE_SNAPSHOT_KEY", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"LAST_MODIFIED", FN_REFLEN, MYSQL_TYPE_TIMESTAMP, 0, 0, "Null", 0},
++    {"SIZE", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
++ST_FIELD_INFO consisent_persistent_snapshot_index_fields_info[] = {
++    {"CREATED_TS", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"MYSQL_INNODB_SNAPSHOT_NAME", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"SMARTENGINE_SNAPSHOT_NAME", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"BINLOG_NAME", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"BINLOG_POS", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"RAFT_INDEX", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"SMARTENGINE_SNAPSHOT", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
++ST_FIELD_INFO consisent_persistent_snapshot_task_info[] = {
++    {"PERSISTENT_PROGRESS", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"RAFT_TERM", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"START_TIMESTAMP", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"END_TIMESTAMP", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"INNODB_SNAPSHOT_NAME", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"INNODB_SNAPSHOT_DURATION", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"INNODB_SNAPSHOT_PERSISTENT_DURATION", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"SMARTENGINE_SNAPSHOT_NAME", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"SMARTENGINE_SNAPSHOT_ID", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"SMARTENGINE_SNAPSHOT_DURATION", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"SMARTENGINE_SNAPSHOT_PERSISTENT_DURATION", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"MYSQL_BINLOG_FILE", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"MYSQL_BINLOG_OFFSET", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"PERSISTENT_BINLOG_FILE", FN_REFLEN, MYSQL_TYPE_STRING, 0, 0, "Null", 0},
++    {"RAFT_INDEX", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {"WAIT_BINLOG_PERSISTENT_DURATION", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
++ST_FIELD_INFO se_extent_snapshot_fields_info[] = {
++    {"SMARTENGINE_SNAPSHOT", 21, MYSQL_TYPE_LONGLONG, 0, 0, "Null", 0},
++    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
+ /** For creating fields of information_schema.OPTIMIZER_TRACE */
+ extern ST_FIELD_INFO optimizer_trace_info[];
+ 
+@@ -5166,6 +5704,29 @@ ST_SCHEMA_TABLE schema_tables[] = {
+      make_tmp_table_columns_format, get_schema_tmp_table_columns_record, true},
+     {"TMP_TABLE_KEYS", tmp_table_keys_fields_info, show_temporary_tables,
+      make_old_format, get_schema_tmp_table_keys_record, true},
++    {"BINLOG_PERSISTENT_TASK_INFO", binlog_persistent_task_info_fields_info,
++     fill_binlog_persistent_task_info, nullptr, nullptr, false},
++    {"BINLOG_PERSISTENT_SLICE_INDEX", binlog_persistent_index_slice_fields_info,
++     fill_binlog_persistent_index_file, nullptr, nullptr, false},
++    {"BINLOG_PERSISTENT_SLICES", binlog_persistent_slice_fields_info,
++     fill_binlog_persistent_slices, nullptr, nullptr, false},
++    {"SNAPSHOT_INNODB_PERSISTENT_SNAPSHOT_INDEX", innodb_persistent_snapshot_index_fields_info,
++     fill_mysql_innodb_persistent_index_file, nullptr, nullptr, false},
++    {"SNAPSHOT_INNODB_PERSISTENT_SNAPSHOTS", innodb_persistent_snapshot_fields_info,
++     fill_mysql_innodb_persistent_files, nullptr, nullptr, false},
++    {"SNAPSHOT_SMARTENGINE_PERSISTENT_SNAPSHOT_INDEX", se_persistent_snapshot_index_fields_info,
++     fill_se_backup_persistent_index_file, nullptr, nullptr, false},
++    {"SNAPSHOT_SMARTENGINE_PERSISTENT_SNAPSHOTS", se_persistent_snapshot_fields_info,
++     fill_se_backup_persistent_files, nullptr, nullptr, false},
++    {"SNAPSHOT_PERSISTENT_SNAPSHOT_INDEX",
++     consisent_persistent_snapshot_index_fields_info,
++     fill_consistent_snapshot_persistent_index_file, nullptr, nullptr, false},
++    {"SNAPSHOT_PERSISTENT_TASK_INFO",
++     consisent_persistent_snapshot_task_info,
++     fill_consistent_snapshot_persistent_task_info, nullptr, nullptr, false},
++    {"SNAPSHOT_SMARTENGINE_EXTENT_SNAPSHOTS",
++     se_extent_snapshot_fields_info,
++     fill_se_extent_snapshot, nullptr, nullptr, false},
+     {nullptr, nullptr, nullptr, nullptr, nullptr, false}};
+ 
+ int initialize_schema_table(st_plugin_int *plugin) {
+diff --git a/sql/sql_table.cc b/sql/sql_table.cc
+index 5269d211..d9f342d7 100644
+--- a/sql/sql_table.cc
++++ b/sql/sql_table.cc
+@@ -8447,6 +8447,9 @@ bool validate_comment_length(THD *thd, const char *comment_str,
+ 
+ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
+                                       const dd::Schema &schema) {
++#ifdef WITH_SMARTENGINE
++  bool is_smartengine = (create_info->db_type->db_type == DB_TYPE_SMARTENGINE);
++#endif
+   /*
+     If the table character set was not given explicitly,
+     let's fetch the database default character set and
+@@ -8455,6 +8458,12 @@ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
+   if (create_info->default_table_charset == nullptr) {
+     if (get_default_db_collation(schema, &create_info->default_table_charset))
+       return true;
++#ifdef WITH_SMARTENGINE
++    /** for smartengine, if collation is 0900_ai_ci, we replace it by general_ci */
++    if (is_smartengine && create_info->default_table_charset == &my_charset_utf8mb4_0900_ai_ci) {
++      create_info->default_table_charset = &my_charset_utf8mb4_general_ci;
++    }
++#endif
+   } else {
+     assert((create_info->used_fields & HA_CREATE_USED_CHARSET) == 0 ||
+            (create_info->used_fields & HA_CREATE_USED_DEFAULT_CHARSET) ||
+@@ -8465,6 +8474,11 @@ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
+         create_info->default_table_charset == &my_charset_utf8mb4_0900_ai_ci) {
+       create_info->default_table_charset =
+           thd->variables.default_collation_for_utf8mb4;
++#ifdef WITH_SMARTENGINE
++      if (is_smartengine) {
++        create_info->default_table_charset = &my_charset_utf8mb4_general_ci;
++      }
++#endif
+ 
+       // ALTER TABLE ... CONVERT TO CHARACTER SET ...
+       if (create_info->used_fields & HA_CREATE_USED_CHARSET) {
+@@ -8473,8 +8487,17 @@ static bool set_table_default_charset(THD *thd, HA_CREATE_INFO *create_info,
+     }
+   }
+ 
++#ifdef WITH_SMARTENGINE
++  if (create_info->default_table_charset == nullptr) {
++    create_info->default_table_charset = thd->collation();
++    if (is_smartengine && create_info->default_table_charset == &my_charset_utf8mb4_0900_ai_ci) {
++      create_info->default_table_charset = &my_charset_utf8mb4_general_ci;
++    }
++  }
++#else
+   if (create_info->default_table_charset == nullptr)
+     create_info->default_table_charset = thd->collation();
++#endif
+ 
+   return false;
+ }
+diff --git a/sql/sql_yacc.yy b/sql/sql_yacc.yy
+index 2cd68bb4..d5e1f567 100644
+--- a/sql/sql_yacc.yy
++++ b/sql/sql_yacc.yy
+@@ -169,6 +169,9 @@ Note: YYTHD is passed as an argument to yyparse(), and subsequently to yylex().
+ #include "sql_string.h"
+ #include "thr_lock.h"
+ #include "violite.h"
++#ifdef WESQL
++#include "sql/package/package_interface.h"  // find_native_proc_and_evoke
++#endif
+ 
+ /* this is to get the bison compilation windows warnings out */
+ #ifdef _MSC_VER
+@@ -3981,7 +3984,14 @@ sp_suid:
+ call_stmt:
+           CALL_SYM sp_name opt_paren_expr_list
+           {
++#ifdef WESQL
++            if (($$ = im::find_native_proc_and_evoke(YYTHD, $2, $3))) {
++            } else {
++              $$ = NEW_PTN PT_call($2, $3);
++            }
++#else
+             $$= NEW_PTN PT_call($2, $3);
++#endif
+           }
+         ;
+ 
+diff --git a/sql/sys_vars.cc b/sql/sys_vars.cc
+index a9a53ef6..40d16f9b 100644
+--- a/sql/sys_vars.cc
++++ b/sql/sys_vars.cc
+@@ -94,11 +94,13 @@
+ #include "sql/auth/auth_acls.h"
+ #include "sql/auth/auth_common.h"  // validate_user_plugins
+ #include "sql/binlog.h"            // mysql_bin_log
++#include "sql/binlog_archive.h"    // Binlog_archive
+ #include "sql/changestreams/apply/replication_thread_status.h"
+ #include "sql/clone_handler.h"
+ #include "sql/conn_handler/connection_handler_impl.h"  // Per_thread_connection_handler
+ #include "sql/conn_handler/connection_handler_manager.h"  // Connection_handler_manager
+ #include "sql/conn_handler/socket_connection.h"  // MY_BIND_ALL_ADDRESSES
++#include "sql/consistent_archive.h" // Consistent_archive
+ #include "sql/derror.h"                          // read_texts
+ #include "sql/discrete_interval.h"
+ #include "sql/events.h"          // Events
+@@ -153,6 +155,9 @@
+ #include "storage/perfschema/terminology_use_previous.h"
+ #endif /* WITH_PERFSCHEMA_STORAGE_ENGINE */
+ 
++#ifdef WITH_SMARTENGINE
++#include "storage/smartengine/util/se_logger.h"
++#endif
+ static constexpr const unsigned long DEFAULT_ERROR_COUNT{1024};
+ static constexpr const unsigned long DEFAULT_SORT_MEMORY{256UL * 1024UL};
+ static constexpr const unsigned HOST_CACHE_SIZE{128};
+@@ -2788,6 +2793,9 @@ static Sys_var_ulong Sys_log_throttle_queries_not_using_indexes(
+     ON_UPDATE(update_log_throttle_queries_not_using_indexes));
+ 
+ static bool update_log_error_verbosity(sys_var *, THD *, enum_var_type) {
++#ifdef WITH_SMARTENGINE
++  mysql_set_se_info_log_level(log_error_verbosity);
++#endif
+   return (log_builtins_filter_update_verbosity(log_error_verbosity) < 0);
+ }
+ 
+@@ -7543,6 +7551,13 @@ static Sys_var_charptr Sys_protocol_compression_algorithms(
+     DEFAULT(const_cast<char *>(PROTOCOL_COMPRESSION_DEFAULT_VALUE)),
+     NO_MUTEX_GUARD, NOT_IN_BINLOG,
+     ON_CHECK(check_set_protocol_compression_algorithms), ON_UPDATE(nullptr));
++#ifdef WESQL
++static char *wesql_version_ptr = NULL;
++static Sys_var_charptr Sys_wesql_version(
++    "wesql_version", "Version of the WeSQL",
++    READ_ONLY GLOBAL_VAR(wesql_version_ptr), NO_CMD_LINE, IN_SYSTEM_CHARSET,
++    DEFAULT(WESQL_VERSION));
++#endif
+ 
+ static bool check_set_require_row_format(sys_var *, THD *thd, set_var *var) {
+   /*
+@@ -7729,3 +7744,268 @@ static Sys_var_enum Sys_explain_format(
+     SESSION_VAR(explain_format), CMD_LINE(OPT_ARG), explain_format_names,
+     DEFAULT(static_cast<ulong>(Explain_format_type::TRADITIONAL)),
+     NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(nullptr));
++static Sys_var_bool Sys_binlog_archive(
++    "binlog_archive", "Indicate if binlog archive enable.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive), CMD_LINE(OPT_ARG),
++    DEFAULT(true));
++static Sys_var_charptr Sys_binlog_archive_dir(
++    "binlog_archive_dir",
++    "The location path for binlog archive",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive_dir),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(nullptr));
++static Sys_var_bool Sys_binlog_archive_using_consensus_index(
++    "binlog_archive_using_consensus_index",
++    "Indicates whether to use the consensus index as the starting position"
++    " for resuming archive.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive_using_consensus_index),
++    CMD_LINE(OPT_ARG), DEFAULT(true));
++static Sys_var_bool Sys_binlog_archive_expire_auto_purge(
++    "binlog_archive_expire_auto_purge",
++    "Controls whether the server shall automatically purge persistent binary "
++    "log files or not. If this variable is set to FALSE then the server will "
++    "not purge persistent binary log files automatically.",
++    GLOBAL_VAR(opt_binlog_archive_expire_auto_purge), CMD_LINE(OPT_ARG),
++    DEFAULT(true));
++static Sys_var_ulong Sys_binlog_archive_expire_seconds(
++    "binlog_archive_expire_seconds",
++    "If non-zero, persistent binlog will be purged after "
++    "binlog_archive_expire_seconds"
++    " seconds. If zero, all binlog will be retained.",
++    GLOBAL_VAR(opt_binlog_archive_expire_seconds), CMD_LINE(REQUIRED_ARG),
++    VALID_RANGE(0, 0xFFFFFFFF), DEFAULT(2592000), BLOCK_SIZE(1));
++static Sys_var_ulong Sys_binlog_archive_slice_max_size(
++    "binlog_archive_slice_max_size",
++    "Binary log events will be persistent archived automatically "
++    "when the size exceeds this value.",
++    GLOBAL_VAR(opt_binlog_archive_slice_max_size), CMD_LINE(REQUIRED_ARG),
++    VALID_RANGE(IO_SIZE, 1024 * 1024L * 1024L), DEFAULT(4 * 1024L * 1024L),
++    BLOCK_SIZE(IO_SIZE));
++static Sys_var_ulong Sys_binlog_archive_period(
++    "binlog_archive_period",
++    "binlog persist to object store at the given period milliseconds",
++    GLOBAL_VAR(opt_binlog_archive_period), CMD_LINE(REQUIRED_ARG),
++    VALID_RANGE(10, ULONG_MAX), DEFAULT(1000), BLOCK_SIZE(1));
++static Sys_var_ulong Sys_binlog_archive_parallel_workers(
++    "binlog_archive_parallel_workers",
++    "Number of worker threads for uploading binlog slice to "
++    "object store in parallel",
++    PERSIST_AS_READONLY GLOBAL_VAR(opt_binlog_archive_parallel_workers),
++    CMD_LINE(REQUIRED_ARG), VALID_RANGE(1, MTS_MAX_WORKERS), DEFAULT(4),
++    BLOCK_SIZE(1));
++static Sys_var_bool Sys_binlog_archive_replica(
++    "binlog_archive_replica", "Indicate if binlog archive replica enable.",
++    PERSIST_AS_READONLY GLOBAL_VAR(opt_binlog_archive_replica), CMD_LINE(OPT_ARG),
++    DEFAULT(false));
++static Sys_var_ulong Sys_binlog_archive_replica_flush_period(
++    "binlog_archive_replica_flush_period",
++    "The time period for binlog archive replica thread flushing incremental "
++    "binlogs from the source binlog object storage",
++    GLOBAL_VAR(opt_binlog_archive_replica_flush_period), CMD_LINE(REQUIRED_ARG),
++    VALID_RANGE(1, ULONG_MAX), DEFAULT(1), BLOCK_SIZE(1));
++static Sys_var_charptr Sys_binlog_archive_replica_source_log_file(
++    "binlog_archive_replica_source_log_file",
++    "The start source binlog file for binlog archive replica",
++    GLOBAL_VAR(opt_binlog_archive_replica_source_log_file),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(nullptr));
++static Sys_var_ulong Sys_binlog_archive_replica_source_log_pos(
++    "binlog_archive_replica_source_log_pos",
++    "The start source binlog file position for snapshot archive replica",
++    GLOBAL_VAR(opt_binlog_archive_replica_source_log_pos),
++    CMD_LINE(REQUIRED_ARG), VALID_RANGE(1, ULONG_MAX), DEFAULT(4),
++    BLOCK_SIZE(1));
++static Sys_var_bool Sys_snapshot_archive(
++    "snapshot_archive",
++    "Indicate if snapshot archive enable.",
++    NON_PERSIST GLOBAL_VAR(opt_consistent_snapshot_archive),
++    CMD_LINE(OPT_ARG), DEFAULT(true));
++static Sys_var_charptr Sys_snapshot_archive_dir(
++    "snapshot_archive_dir",
++    "The location path for snapshot archive",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_consistent_snapshot_archive_dir),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(nullptr));
++static Sys_var_bool Sys_snapshot_archive_on_objectstore(
++    "snapshot_archive_on_objectstore",
++    "Use object store to persist snapshot.",
++    READ_ONLY NON_PERSIST
++        GLOBAL_VAR(opt_consistent_snapshot_persistent_on_objstore),
++    CMD_LINE(OPT_ARG), DEFAULT(true));
++static Sys_var_ulong Sys_snapshot_archive_period(
++    "snapshot_archive_period",
++    "A snapshot is created to archive at the given period",
++    GLOBAL_VAR(opt_consistent_snapshot_archive_period), CMD_LINE(REQUIRED_ARG),
++    VALID_RANGE(2, LONG_TIMEOUT), DEFAULT(300), BLOCK_SIZE(1));
++static Sys_var_bool Sys_snapshot_archive_expire_auto_purge(
++    "snapshot_archive_expire_auto_purge",
++    "Controls whether the server shall automatically purge snapshot "
++    "or not. If this variable is set to FALSE then the server will "
++    "not purge persistent snapshot automatically.",
++    GLOBAL_VAR(opt_consistent_snapshot_expire_auto_purge), CMD_LINE(OPT_ARG),
++    DEFAULT(true));
++static Sys_var_ulong Sys_snapshot_archive_expire_seconds(
++    "snapshot_archive_expire_seconds",
++    "If non-zero, snapshot will be purged after "
++    "snapshot_archive_expire_seconds"
++    " seconds. If zero, only the latest snapshot will be retained.",
++    GLOBAL_VAR(opt_consistent_snapshot_expire_seconds), CMD_LINE(REQUIRED_ARG),
++    VALID_RANGE(0, 0xFFFFFFFF), DEFAULT(0), BLOCK_SIZE(1));
++static const char *consistent_snapshot_tar_names[] = {"OFF", "TAR",
++                                                  "TAR_AND_COMPRESS", NullS};
++static Sys_var_enum Sys_snapshot_archive_innodb_tar_mode(
++    "snapshot_archive_innodb_tar_mode",
++    "Indicates if innodb clone data of snapshots is in tar or "
++    "compressed mode.",
++    GLOBAL_VAR(opt_consistent_snapshot_innodb_tar_mode), CMD_LINE(REQUIRED_ARG),
++    consistent_snapshot_tar_names, DEFAULT(CONSISTENT_SNAPSHOT_NO_TAR));
++static Sys_var_enum Sys_snapshot_archive_smartengine_tar_mode(
++    "snapshot_archive_smartengine_tar_mode",
++    "Indicates if smartengine backup data of snapshots is in tar or "
++    "compressed mode.",
++    GLOBAL_VAR(opt_consistent_snapshot_se_tar_mode), CMD_LINE(OPT_ARG),
++    consistent_snapshot_tar_names, DEFAULT(CONSISTENT_SNAPSHOT_NO_TAR));
++static Sys_var_bool Sys_snapshot_archive_smartengine_backup_checkpoint(
++    "snapshot_archive_smartengine_backup_checkpoint",
++    "Indicate if to do a checkpoint before executing a "
++    "smartengine backup.",
++    GLOBAL_VAR(opt_consistent_snapshot_smartengine_backup_checkpoint),
++    CMD_LINE(OPT_ARG), DEFAULT(false));
++static Sys_var_bool Sys_recovery_snapshot_from_objstore(
++    "recovery_snapshot_from_objectstore",
++    "Recovery binlog and snapshot from object store.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_recovery_from_objstore),
++    CMD_LINE(OPT_ARG), DEFAULT(true));
++static Sys_var_charptr Sys_recovery_snapshot_tmpdir(
++    "recovery_snapshot_tmpdir",
++    "The location temp path for snapshot recovery from object store.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_recovery_consistent_snapshot_tmpdir),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("recovery_tmp"));
++static Sys_var_bool Sys_recovery_snapshot_only(
++    "recovery_snapshot_only",
++    "Indicate whether to recover only snapshot without binlog archive recovery.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_recovery_consistent_snapshot_only),
++    CMD_LINE(OPT_ARG), DEFAULT(false));
++static Sys_var_charptr Sys_recovery_snapshot_timestamp(
++    "recovery_snapshot_timestamp",
++    "Snapshot timestamp from object store used as the source of "
++    "recovery during instance.",
++    READ_ONLY NON_PERSIST
++        GLOBAL_VAR(opt_recovery_consistent_snapshot_timestamp),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(nullptr));
++static Sys_var_bool Sys_initialize_from_objstore(
++    "initialize_from_source_objectstore",
++    "Initialzie instance using binlog and snapshot from source object "
++    "store.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_initialize_from_source_objectstore),
++    CMD_LINE(OPT_ARG), DEFAULT(false));
++static Sys_var_charptr Sys_initialize_objstore_provider(
++    "source_objectstore_provider",
++    "The provider of object store as the source of data during instance.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_provider),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("local"));
++static Sys_var_charptr Sys_initialize_objstore_region(
++    "source_objectstore_region",
++    "The region of object store as the source of data during instance "
++    "initialization.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_region),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(".local_objectstore_region_1"));
++static Sys_var_charptr Sys_initialize_objstore_endpoint(
++    "source_objectstore_endpoint",
++    "The endpoint of object store as the source of data during instance "
++    "initialization. "
++    "Ususally it's need to provide on non-AWS environment.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_endpoint),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(nullptr));
++static Sys_var_bool Sys_initialize_objstore_use_https(
++    "source_objectstore_use_https",
++    "Whether using https to connect to objstore or not "
++    "as the source of data during instance initialization",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_use_https),
++    CMD_LINE(OPT_ARG), DEFAULT(false));
++static Sys_var_charptr Sys_initialize_objstore_bucket(
++    "source_objectstore_bucket",
++    "The object store bucket to store record as the source of data during "
++    "instance initialization. ",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_bucket),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("objectstore_bucket_1"));
++static Sys_var_charptr Sys_initialize_repo_objstore_id(
++    "source_objectstore_repo_id",
++    "The repo identifier for data directory of source cluster in object store. ",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_repo_id),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("wesql_serverless_repo"));
++static Sys_var_charptr Sys_initialize_branch_objstore_id(
++    "source_objectstore_branch_id",
++    "The branch identifier for data directory of source cluster in object store.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_source_objectstore_branch_id),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("main"));
++static Sys_var_bool Sys_source_objectstore_smartengine_data(
++    "source_objectstore_smartengine_data",
++    "Whether initialize smartengine "
++    "object store data from source cluster object store.",
++    READ_ONLY NON_PERSIST
++        GLOBAL_VAR(opt_source_objectstore_smartengine_data),
++    CMD_LINE(OPT_ARG), DEFAULT(false));
++static Sys_var_bool Sys_enable_serverless(
++    "serverless", "Enable the serverless",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_serverless),
++    CMD_LINE(OPT_ARG), DEFAULT(true));
++static Sys_var_bool Sys_table_on_objstore(
++    "table_on_objectstore", "Use object store to store data in SmartEngine",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_table_on_objstore), CMD_LINE(OPT_ARG),
++    DEFAULT(true));
++static Sys_var_uint Sys_objstore_lease_lock_timeout(
++    "objectstore_lease_lock_timeout",
++    "The timeout in seconds for the lease lock on object store."
++    "if 0, lease lock is disabled.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_objstore_lease_lock_timeout),
++    CMD_LINE(OPT_ARG), VALID_RANGE(0, 30), DEFAULT(8), BLOCK_SIZE(1));
++static Sys_var_charptr Sys_objstore_provider(
++    "objectstore_provider",
++    "The provider of object store. "
++    "If serverless is enabled, objectstore_provider must not be empty.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_objstore_provider), CMD_LINE(REQUIRED_ARG),
++    IN_FS_CHARSET, DEFAULT("local"));
++static Sys_var_charptr Sys_objstore_region(
++    "objectstore_region",
++    "The region of object store. "
++    "If serverless is enabled, objectstore_region must not be empty.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_objstore_region),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET,
++    DEFAULT(".local_objectstore_region"));
++static Sys_var_charptr Sys_objstore_endpoint(
++    "objectstore_endpoint",
++    "The endpoint of object store. "
++    "If need, user can specify the endpoint of object store. "
++    "Ususally it's need to provide on non-AWS environment.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_objstore_endpoint), CMD_LINE(REQUIRED_ARG),
++    IN_FS_CHARSET, DEFAULT(nullptr));
++static Sys_var_bool Sys_objstore_use_https(
++    "objectstore_use_https",
++    "Whether using https to connect to object store or not.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_objstore_use_https), CMD_LINE(OPT_ARG),
++    DEFAULT(false));
++static Sys_var_charptr Sys_objstore_bucket(
++    "objectstore_bucket",
++    "The object store bucket to store record. "
++    "If serverless is enabled, objectstore_bucket must not be empty.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_objstore_bucket), CMD_LINE(REQUIRED_ARG),
++    IN_FS_CHARSET, DEFAULT("objectstore_bucket"));
++static Sys_var_charptr Sys_repo_objstore_id(
++    "repo_objectstore_id",
++    "The repository identifier for cluster data directory in object store. To "
++    "ensure data consistency by accessing the object using the key with the "
++    "prefix that includes this id. If serverless is enabled, it must not be "
++    "empty.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_repo_objstore_id),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("wesql_serverless_repo"));
++static Sys_var_charptr Sys_cluster_branch_objstore_id(
++    "branch_objectstore_id",
++    "The branch identifier for cluster data directory in object store. To "
++    "ensure data consistency by accessing the object using the key with the "
++    "prefix that includes this id.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_branch_objstore_id),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT("main"));
++static Sys_var_charptr Sys_server_id_on_objstore(
++    "server_id_on_objectstore",
++    "The identifier for the meta directory of the current server on object "
++    "store.",
++    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_server_id_on_objstore),
++    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(""));
+diff --git a/sql/sys_vars.h b/sql/sys_vars.h
+index 4d3dbcc1..8f1fd0b4 100644
+--- a/sql/sys_vars.h
++++ b/sql/sys_vars.h
+@@ -1751,9 +1751,26 @@ class Sys_var_plugin : public sys_var {
+     plugin_ref plugin;
+ 
+     // special code for storage engines (e.g. to handle historical aliases)
+-    if (plugin_type == MYSQL_STORAGE_ENGINE_PLUGIN)
++    if (plugin_type == MYSQL_STORAGE_ENGINE_PLUGIN) {
++#ifdef WITH_SMARTENGINE
++      // In serverless mode, it's not allowed to set default_storage_engine to
++      // other storage engine except smartengine.First, check if the variable
++      // being set is 'default_storage_engine', then verify that the value being
++      // set is not 'smartengine'.
++      if (!opt_initialize && opt_serverless &&
++          (strlen("default_storage_engine") == name.length &&
++           0 == strncasecmp(name.str, "default_storage_engine", name.length))) {
++        if ((strlen(SMARTENGINE_NAME) != pname_cstr.length) ||
++            (0 != strncasecmp(SMARTENGINE_NAME, pname_cstr.str, pname_cstr.length))) {
++          pname_cstr.str = SMARTENGINE_NAME;
++          pname_cstr.length = strlen(SMARTENGINE_NAME);
++          push_warning_printf(thd, Sql_condition::SL_WARNING, ER_FORCE_STORAGE_ENGINE_TO_SMARTENGINE,
++                              "Force change default storage engine from %s to smartengine in serveless mode", res->lex_cstring().str);
++        }
++      }
++#endif // WITH_SMARTENGINE
+       plugin = ha_resolve_by_name(thd, &pname_cstr, false);
+-    else {
++    } else {
+       plugin = my_plugin_lock_by_name(thd, pname_cstr, plugin_type);
+     }
+ 
+diff --git a/sql/udf_service_impl.cc b/sql/udf_service_impl.cc
+index 91a65c30..bbc76c98 100644
+--- a/sql/udf_service_impl.cc
++++ b/sql/udf_service_impl.cc
+@@ -30,6 +30,9 @@
+ #include "sql/sql_class.h"
+ #include "sql/udf_service_impl.h"
+ 
++#include "sql/binlog_archive_command.h"
++#include "sql/consistent_snapshot_force_command.h"
++#include "sql/consistent_snapshot_purge_command.h"
+ #include "sql/rpl_async_conn_failover_add_managed_udf.h"
+ #include "sql/rpl_async_conn_failover_add_source_udf.h"
+ #include "sql/rpl_async_conn_failover_delete_managed_udf.h"
+@@ -127,6 +130,9 @@ void Udf_load_service::register_udf() {
+   add<Rpl_async_conn_failover_add_managed>();
+   add<Rpl_async_conn_failover_delete_managed>();
+   add<Rpl_async_conn_failover_reset>();
++  add<Binlog_archive_command>();
++  add<Consistent_archive_force_command>();
++  add<Consistent_archive_purge_command>();
+ }
+ 
+ void Udf_load_service::unregister_udf() {
+diff --git a/strings/ctype-simple.cc b/strings/ctype-simple.cc
+index 7dfb15bd..ae167170 100644
+--- a/strings/ctype-simple.cc
++++ b/strings/ctype-simple.cc
+@@ -1511,7 +1511,11 @@ uint my_strxfrm_flag_normalize(uint flags) {
+ 
+ size_t my_strxfrm_pad(const CHARSET_INFO *cs, uchar *str, uchar *frmend,
+                       uchar *strend, uint nweights, uint flags) {
++#ifdef WITH_SMARTENGINE
++  if (nweights && frmend < strend && !(flags & MY_STRXFRM_NOPAD_WITH_SPACE)) {
++#else
+   if (nweights && frmend < strend) {
++#endif
+     // PAD SPACE behavior.
+     uint fill_length = std::min<uint>(strend - frmend, nweights * cs->mbminlen);
+     cs->cset->fill(cs, (char *)frmend, fill_length, cs->pad_char);
+diff --git a/strings/ctype-uca.cc b/strings/ctype-uca.cc
+index 50d6ffce..1e3a1a50 100644
+--- a/strings/ctype-uca.cc
++++ b/strings/ctype-uca.cc
+@@ -2073,7 +2073,11 @@ static size_t my_strnxfrm_uca(const CHARSET_INFO *cs, Mb_wc mb_wc, uchar *dst,
+     if (dst < de) *dst++ = s_res & 0xFF;
+   }
+ 
++#ifdef WITH_SMARTENGINE
++  if (dst < de && !(flags & MY_STRXFRM_NOPAD_WITH_SPACE)) {
++#else
+   if (dst < de) {
++#endif
+     /*
+       PAD SPACE behavior.
+ 
+diff --git a/strings/ctype-utf8.cc b/strings/ctype-utf8.cc
+index 012a0b6d..2fdf666b 100644
+--- a/strings/ctype-utf8.cc
++++ b/strings/ctype-utf8.cc
+@@ -5084,7 +5084,11 @@ static inline size_t my_strnxfrm_unicode_tmpl(const CHARSET_INFO *cs,
+   }
+ 
+ pad:
++#ifdef WITH_SMARTENGINE
++  if (dst < de && nweights && !(flags & MY_STRXFRM_NOPAD_WITH_SPACE))
++#else
+   if (dst < de && nweights)  // PAD SPACE behavior.
++#endif
+     dst += my_strxfrm_pad_nweights_unicode(dst, de, nweights);
+ 
+   if ((flags & MY_STRXFRM_PAD_TO_MAXLEN) && dst < de)
+@@ -5154,7 +5158,11 @@ size_t my_strnxfrm_unicode_full_bin(const CHARSET_INFO *cs, uchar *dst,
+         if (dst < de) *dst++ = 0x20;
+       }
+     }
++#ifdef WITH_SMARTENGINE
++  } else if (!(flags & MY_STRXFRM_NOPAD_WITH_SPACE)) {
++#else
+   } else {
++#endif
+     // Regular PAD SPACE behavior.
+     for (; dst < de && nweights; nweights--) {
+       *dst++ = 0x00;
+diff --git a/strings/int2str.cc b/strings/int2str.cc
+index 6ed50858..b8e6c707 100644
+--- a/strings/int2str.cc
++++ b/strings/int2str.cc
+@@ -40,6 +40,70 @@
+ const char _dig_vec_upper[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+ const char _dig_vec_lower[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+ 
++#ifdef WESQL
++/*
++  Convert integer to its string representation in given scale of notation.
++  SYNOPSIS
++    int2str()
++      val     - value to convert
++      dst     - points to buffer where string representation should be stored
++      radix   - radix of scale of notation
++      upcase  - set to 1 if we should use upper-case digits
++  DESCRIPTION
++    Converts the (long) integer value to its character form and moves it to
++    the destination buffer followed by a terminating NUL.
++    If radix is -2..-36, val is taken to be SIGNED, if radix is  2..36, val is
++    taken to be UNSIGNED. That is, val is signed if and only if radix is.
++    All other radixes treated as bad and nothing will be changed in this case.
++    For conversion to decimal representation (radix is -10 or 10) one can use
++    optimized int10_to_str() function.
++  RETURN VALUE
++    Pointer to ending NUL character or NullS if radix is bad.
++*/
++char *int2str(long int val, char *dst, int radix, int upcase) {
++  char buffer[65];
++  char *p;
++  long int new_val;
++  const char *dig_vec = upcase ? _dig_vec_upper : _dig_vec_lower;
++  ulong uval = (ulong)val;
++  if (radix < 0) {
++    if (radix < -36 || radix > -2) return NullS;
++    if (val < 0) {
++      *dst++ = '-';
++      /* Avoid integer overflow in (-val) for LLONG_MIN (BUG#31799). */
++      uval = (ulong)0 - uval;
++    }
++    radix = -radix;
++  } else if (radix > 36 || radix < 2)
++    return NullS;
++  /*
++    The slightly contorted code which follows is due to the fact that
++    few machines directly support unsigned long / and %.  Certainly
++    the VAX C compiler generates a subroutine call.  In the interests
++    of efficiency (hollow laugh) I let this happen for the first digit
++    only; after that "val" will be in range so that signed integer
++    division will do.  Sorry 'bout that.  CHECK THE CODE PRODUCED BY
++    YOUR C COMPILER.  The first % and / should be unsigned, the second
++    % and / signed, but C compilers tend to be extraordinarily
++    sensitive to minor details of style.  This works on a VAX, that's
++    all I claim for it.
++  */
++  p = &buffer[sizeof(buffer) - 1];
++  *p = '\0';
++  new_val = uval / (ulong)radix;
++  *--p = dig_vec[(uchar)(uval - (ulong)new_val * (ulong)radix)];
++  val = new_val;
++  while (val != 0) {
++    ldiv_t res;
++    res = ldiv(val, radix);
++    *--p = dig_vec[res.rem];
++    val = res.quot;
++  }
++  while ((*dst++ = *p++) != 0)
++    ;
++  return dst - 1;
++}
++#endif
+ /**
+   Converts a 64-bit integer value to its character form and moves it to the
+   destination buffer followed by a terminating NUL. If radix is -2..-36, val is
