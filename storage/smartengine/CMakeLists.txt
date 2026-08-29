@@ -349,7 +349,7 @@ if (WITH_TBB)
 endif()
 
 MYSQL_ADD_PLUGIN(smartengine ${SE_SOURCES} STORAGE_ENGINE DEFAULT STATIC_ONLY
-  LINK_LIBRARIES ${smartengine_static_libs} extra::rapidjson
+  LINK_LIBRARIES ${smartengine_static_libs} extra::rapidjson extra::unordered_dense
   #  DEPENDENCIES libis_all tbb
 )
 

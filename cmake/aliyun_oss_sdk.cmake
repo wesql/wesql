@@ -46,6 +46,11 @@ MACRO(PREPARE_OJBSTORE_ALIYUN_OSS)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
   
   add_subdirectory(${LOCAL_ALIYUN_OSS_SDK_DIR})
+  # Vendor SDK enables -Werror. Host curl deprecates CURLOPT_PROGRESSFUNCTION
+  # / CURLINFO_CONTENT_LENGTH_DOWNLOAD (seen on Ubuntu 24.04).
+  IF(TARGET cpp-sdk)
+    TARGET_COMPILE_OPTIONS(cpp-sdk PRIVATE -Wno-error=deprecated-declarations)
+  ENDIF()
 ENDMACRO()
 
 MACRO(MYSQL_CHECK_OBJSTORE_ALIYUN_OSS)
