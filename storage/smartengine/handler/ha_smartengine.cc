@@ -263,12 +263,10 @@ int ha_smartengine::create(const char *const name,
     }
   }
 
-  if (contains_foreign_key(thd)) {
-    my_printf_error(ER_NOT_SUPPORTED_YET, "SE currently doesn't support "
-                                          "foreign key constraints",
-                    MYF(0));
-    DBUG_RETURN(HA_ERR_INTERNAL_ERROR);
-  }
+  /*
+    FOREIGN KEY is stripped in sql/wesql_ddl_compat.cc before create().
+    Do not scan the original query text here: it still contains the clause.
+  */
 
   bool write_err = false;
   //const std::unique_ptr<db::WriteBatch> wb = dict_manager.begin();

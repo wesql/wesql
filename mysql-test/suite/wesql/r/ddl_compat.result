@@ -1,0 +1,84 @@
+# 9.7 SmartEngine CREATE TABLE compatibility (design docs/mysql-9.7-ddl-compat-design.md)
+SET default_storage_engine=SMARTENGINE;
+# 3.1 Prisma-style unique on unicode_ci
+CREATE TABLE `User` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `email` VARCHAR(191) NOT NULL,
+    `name` VARCHAR(191) NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `User_email_key` (`email`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci ENGINE=SMARTENGINE;
+Warnings:
+Warning	7502	WeSQL DDL compat: remapped collation of indexed column 'email' from utf8mb4_unicode_ci to utf8mb4_0900_ai_ci. Comparison rules changed.
+SHOW WARNINGS;
+Level	Code	Message
+Warning	7502	WeSQL DDL compat: remapped collation of indexed column 'email' from utf8mb4_unicode_ci to utf8mb4_0900_ai_ci. Comparison rules changed.
+SHOW CREATE TABLE `User`;
+Table	Create Table
+User	CREATE TABLE `User` (\n  `id` int NOT NULL AUTO_INCREMENT,\n  `email` varchar(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,\n  `name` varchar(191) DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  UNIQUE KEY `User_email_key` (`email`)\n) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# Prisma-style: table first, then unique index
+CREATE TABLE `User2` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `email` VARCHAR(191) NOT NULL,
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci ENGINE=SMARTENGINE;
+CREATE UNIQUE INDEX `User2_email_key` ON `User2`(`email`);
+Warnings:
+Warning	7502	WeSQL DDL compat: remapped collation of indexed column 'email' from utf8mb4_unicode_ci to utf8mb4_0900_ai_ci. Comparison rules changed.
+SHOW WARNINGS;
+Level	Code	Message
+Warning	7502	WeSQL DDL compat: remapped collation of indexed column 'email' from utf8mb4_unicode_ci to utf8mb4_0900_ai_ci. Comparison rules changed.
+SHOW CREATE TABLE `User2`;
+Table	Create Table
+User2	CREATE TABLE `User2` (\n  `id` int NOT NULL AUTO_INCREMENT,\n  `email` varchar(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,\n  PRIMARY KEY (`id`),\n  UNIQUE KEY `User2_email_key` (`email`)\n) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# 3.2 Rails-style FK + CASCADE
+CREATE TABLE users (
+  id bigint NOT NULL AUTO_INCREMENT,
+  PRIMARY KEY (id)
+) ENGINE=SMARTENGINE;
+CREATE TABLE posts (
+  id bigint NOT NULL AUTO_INCREMENT,
+  user_id bigint NOT NULL,
+  PRIMARY KEY (id),
+  CONSTRAINT fk_rails_posts_user
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=SMARTENGINE;
+Warnings:
+Warning	7503	WeSQL DDL compat: removed foreign key 'fk_rails_posts_user'. Parent/child checks and ON DELETE CASCADE are not enforced. The application must handle related deletes.
+SHOW WARNINGS;
+Level	Code	Message
+Warning	7503	WeSQL DDL compat: removed foreign key 'fk_rails_posts_user'. Parent/child checks and ON DELETE CASCADE are not enforced. The application must handle related deletes.
+SHOW CREATE TABLE posts;
+Table	Create Table
+posts	CREATE TABLE `posts` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `user_id` bigint NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# 3.3 InnoDB FK kept
+CREATE TABLE t_innodb_parent (
+  id INT PRIMARY KEY
+) ENGINE=InnoDB;
+CREATE TABLE t_innodb (
+  id INT PRIMARY KEY,
+  parent_id INT,
+  FOREIGN KEY (parent_id) REFERENCES t_innodb_parent(id)
+) ENGINE=InnoDB;
+SHOW CREATE TABLE t_innodb;
+Table	Create Table
+t_innodb	CREATE TABLE `t_innodb` (\n  `id` int NOT NULL,\n  `parent_id` int DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `parent_id` (`parent_id`),\n  CONSTRAINT `t_innodb_ibfk_1` FOREIGN KEY (`parent_id`) REFERENCES `t_innodb_parent` (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# 3.4 already on allowlist: no rewrite
+CREATE TABLE t_ok (
+  id INT NOT NULL PRIMARY KEY,
+  email VARCHAR(191) NOT NULL,
+  UNIQUE KEY email (email)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+SHOW WARNINGS;
+SHOW CREATE TABLE t_ok;
+Table	Create Table
+t_ok	CREATE TABLE `t_ok` (\n  `id` int NOT NULL,\n  `email` varchar(191) NOT NULL,\n  PRIMARY KEY (`id`),\n  UNIQUE KEY `email` (`email`)\n) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+INSERT INTO `User` (email, name) VALUES ('a@example.com', 'n');
+SELECT email FROM `User`;
+email
+a@example.com
+INSERT INTO posts (user_id) VALUES (1);
+SELECT user_id FROM posts;
+user_id
+1
+DROP TABLE posts, users, `User`, `User2`, t_ok, t_innodb, t_innodb_parent;

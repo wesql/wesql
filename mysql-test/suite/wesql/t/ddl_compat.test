@@ -1,0 +1,66 @@
+--echo # 9.7 SmartEngine CREATE TABLE compatibility (design docs/mysql-9.7-ddl-compat-design.md)
+
+SET default_storage_engine=SMARTENGINE;
+
+--echo # 3.1 Prisma-style unique on unicode_ci
+CREATE TABLE `User` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `email` VARCHAR(191) NOT NULL,
+    `name` VARCHAR(191) NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `User_email_key` (`email`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci ENGINE=SMARTENGINE;
+SHOW WARNINGS;
+SHOW CREATE TABLE `User`;
+
+--echo # Prisma-style: table first, then unique index
+CREATE TABLE `User2` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `email` VARCHAR(191) NOT NULL,
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci ENGINE=SMARTENGINE;
+CREATE UNIQUE INDEX `User2_email_key` ON `User2`(`email`);
+SHOW WARNINGS;
+SHOW CREATE TABLE `User2`;
+
+--echo # 3.2 Rails-style FK + CASCADE
+CREATE TABLE users (
+  id bigint NOT NULL AUTO_INCREMENT,
+  PRIMARY KEY (id)
+) ENGINE=SMARTENGINE;
+CREATE TABLE posts (
+  id bigint NOT NULL AUTO_INCREMENT,
+  user_id bigint NOT NULL,
+  PRIMARY KEY (id),
+  CONSTRAINT fk_rails_posts_user
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=SMARTENGINE;
+SHOW WARNINGS;
+SHOW CREATE TABLE posts;
+
+--echo # 3.3 InnoDB FK kept
+CREATE TABLE t_innodb_parent (
+  id INT PRIMARY KEY
+) ENGINE=InnoDB;
+CREATE TABLE t_innodb (
+  id INT PRIMARY KEY,
+  parent_id INT,
+  FOREIGN KEY (parent_id) REFERENCES t_innodb_parent(id)
+) ENGINE=InnoDB;
+SHOW CREATE TABLE t_innodb;
+
+--echo # 3.4 already on allowlist: no rewrite
+CREATE TABLE t_ok (
+  id INT NOT NULL PRIMARY KEY,
+  email VARCHAR(191) NOT NULL,
+  UNIQUE KEY email (email)
+) ENGINE=SMARTENGINE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+SHOW WARNINGS;
+SHOW CREATE TABLE t_ok;
+
+INSERT INTO `User` (email, name) VALUES ('a@example.com', 'n');
+SELECT email FROM `User`;
+INSERT INTO posts (user_id) VALUES (1);
+SELECT user_id FROM posts;
+
+DROP TABLE posts, users, `User`, `User2`, t_ok, t_innodb, t_innodb_parent;
