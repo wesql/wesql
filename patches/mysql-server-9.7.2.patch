@@ -241,10 +241,10 @@ index 6108ab48..0482781d 100644
  
  void build_version(const std::string &progname, std::string *destination) {
 diff --git a/share/messages_to_clients.txt b/share/messages_to_clients.txt
-index 03d40b84..906d19a6 100644
+index 03d40b84..d29c7fac 100644
 --- a/share/messages_to_clients.txt
 +++ b/share/messages_to_clients.txt
-@@ -10998,6 +10998,16 @@ ER_JDV_UNEXPECTED_INVALID_VALUE
+@@ -10998,6 +10998,20 @@ ER_JDV_UNEXPECTED_INVALID_VALUE
  #  End of 9.x error messages (server-to-client).
  #
  
@@ -257,6 +257,10 @@ index 03d40b84..906d19a6 100644
 +  eng "file %s was not purged because binlog archive is not running."
 +ER_WARN_PURGE_LOG_NOT_PERSISTED
 +  eng "file %s was not purged because it has not been persisted."
++ER_WESQL_DDL_COLLATION_REWRITTEN
++  eng "WeSQL DDL compat: remapped collation of indexed column '%-.64s' from %-.64s to %-.64s. Comparison rules changed."
++ER_WESQL_DDL_FK_STRIPPED
++  eng "WeSQL DDL compat: removed foreign key '%-.64s'. Parent/child checks and ON DELETE CASCADE are not enforced. The application must handle related deletes."
 +
  ################################################################################
  # DO NOT add messages for the error-log to this file;
@@ -338,10 +342,10 @@ index 8c249fb9..ec952b6a 100644
  # Error numbers 50000 to 51999 are reserved. Please do not use them for
  # other error messages.
 diff --git a/sql/CMakeLists.txt b/sql/CMakeLists.txt
-index fd78ea12..4a2a0889 100644
+index fd78ea12..ffa9df18 100644
 --- a/sql/CMakeLists.txt
 +++ b/sql/CMakeLists.txt
-@@ -667,6 +667,17 @@ SET(SQL_SHARED_SOURCES
+@@ -667,6 +667,18 @@ SET(SQL_SHARED_SOURCES
    command_mapping.cc
  )
  
@@ -353,13 +357,14 @@ index fd78ea12..4a2a0889 100644
 +    consistent_snapshot_force_command.cc
 +    consistent_snapshot_purge_command.cc
 +    sys_vars_wesql.cc
++    wesql_ddl_compat.cc
 +  )
 +ENDIF()
 +
  IF(BUILD_IS_SINGLE_CONFIG)
    GET_PROPERTY(CWD_DEFINITIONS DIRECTORY PROPERTY COMPILE_DEFINITIONS)
    IF(NOT CMAKE_CXX_FLAGS MATCHES "DENABLED_DEBUG_SYNC" AND
-@@ -1062,9 +1073,15 @@ SET(BINLOG_SOURCE
+@@ -1062,9 +1074,15 @@ SET(BINLOG_SOURCE
    rpl_utility.cc
    sql_binlog.cc
    )
@@ -375,7 +380,7 @@ index fd78ea12..4a2a0889 100644
  
  SET (RPL_SOURCE rpl_handler.cc rpl_tblmap.cc rpl_context.cc)
  ADD_DEPENDENCIES(binlog GenError)
-@@ -1125,10 +1142,17 @@ SET (RPL_REPLICA_SRCS
+@@ -1125,10 +1143,17 @@ SET (RPL_REPLICA_SRCS
    udf_service_impl.cc
    udf_service_util.cc
    )
@@ -1003,6 +1008,56 @@ index 1a0d22d3..f21a2532 100644
  /*
    Server mutex locks and condition variables.
   */
+diff --git a/sql/sql_table.cc b/sql/sql_table.cc
+index fe603cd8..01ecb803 100644
+--- a/sql/sql_table.cc
++++ b/sql/sql_table.cc
+@@ -161,6 +161,9 @@
+ #include "sql/rpl_rli.h"  // rli_slave etc
+ #include "sql/session_tracker.h"
+ #include "sql/sql_alter.h"
++#ifdef WESQL
++#include "sql/wesql_ddl_compat.h"
++#endif
+ #include "sql/sql_backup_lock.h"  // acquire_shared_backup_lock
+ #include "sql/sql_base.h"         // lock_table_names
+ #include "sql/sql_bitmap.h"
+@@ -9668,6 +9671,11 @@ static bool create_table_impl(
+ 
+   if (set_table_default_charset(thd, create_info, schema)) return true;
+ 
++#ifdef WESQL
++  if (wesql_ddl_compat_rewrite_create(thd, create_info, alter_info))
++    return true;
++#endif
++
+   const char *alias = table_case_name(create_info, table_name);
+ 
+   partition_info *part_info = thd->work_part_info;
+@@ -17666,6 +17674,11 @@ bool mysql_alter_table(THD *thd, const char *new_db, const char *new_name,
+   if (check_engine(alter_ctx.new_db, alter_ctx.new_name, create_info))
+     return true;
+ 
++#ifdef WESQL
++  if (wesql_ddl_compat_rewrite_alter_fk(thd, create_info, alter_info))
++    return true;
++#endif
++
+   /*
+     Do not allow change of storage engine if table participates in a foreign
+     key. Even in cases when both source and target storage engines support
+@@ -17984,6 +17997,11 @@ bool mysql_alter_table(THD *thd, const char *new_db, const char *new_name,
+ 
+   if (set_table_default_charset(thd, create_info, *schema)) return true;
+ 
++#ifdef WESQL
++  if (wesql_ddl_compat_rewrite_alter_collation(thd, create_info, alter_info))
++    return true;
++#endif
++
+   /*
+     Use copy algorithm if:
+     - old_alter_table system variable is set without in-place requested using
 diff --git a/strings/ctype-simple.cc b/strings/ctype-simple.cc
 index 77b6c09f..4675aaf2 100644
 --- a/strings/ctype-simple.cc
