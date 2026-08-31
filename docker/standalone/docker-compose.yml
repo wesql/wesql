@@ -1,0 +1,95 @@
+# WeSQL single-node developer trial.
+# Does not start or advertise a 3-node cluster.
+# Pinned images: see IMAGE.md in this directory.
+
+name: wesql-standalone
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-wesqlminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-wesqlminio123}
+      # Pinned WeSQL image uses AWS SDK virtual-hosted addressing, so it
+      # looks up ${bucket}.minio instead of path-style minio/${bucket}.
+      MINIO_DOMAIN: minio
+    networks:
+      default:
+        aliases:
+          - ${WESQL_OBJECTSTORE_BUCKET:-wesql-storage}.minio
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  minio-init:
+    # Docker Hub has no mc tag matching the 2024-12-18 server. Use a real
+    # tag from quay.io so Docker Hub / DaoCloud 403s do not block startup.
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-wesqlminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-wesqlminio123}
+      WESQL_OBJECTSTORE_BUCKET: ${WESQL_OBJECTSTORE_BUCKET:-wesql-storage}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb -p "local/$$WESQL_OBJECTSTORE_BUCKET"
+        mc anonymous set none "local/$$WESQL_OBJECTSTORE_BUCKET"
+        echo "bucket ready: $$WESQL_OBJECTSTORE_BUCKET"
+
+  wesql:
+    image: apecloud/wesql-server:8.0.35-0.1.0_beta5.40
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - wesql-data:/data/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-passwd}
+      WESQL_DATA_DIR: /data/mysql/data
+      WESQL_LOG_DIR: /data/mysql/log
+      # Single member only. Raft listen port stays inside the container.
+      WESQL_CLUSTER_MEMBER: 127.0.0.1:13306
+      WESQL_OBJECTSTORE_ACCESS_KEY: ${MINIO_ROOT_USER:-wesqlminio}
+      WESQL_OBJECTSTORE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-wesqlminio123}
+      MYSQL_CUSTOM_CONFIG: |
+        [mysqld]
+        port=3306
+        log-bin=binlog
+        gtid_mode=ON
+        enforce_gtid_consistency=ON
+        log_slave_updates=ON
+        binlog_format=ROW
+        objectstore_provider=minio
+        objectstore_region=us-east-1
+        objectstore_endpoint=http://minio:9000
+        objectstore_use_https=false
+        objectstore_bucket=${WESQL_OBJECTSTORE_BUCKET:-wesql-storage}
+        repo_objectstore_id=${WESQL_REPO_ID:-tutorial}
+        branch_objectstore_id=${WESQL_BRANCH_ID:-main}
+        smartengine_persistent_cache_size=${WESQL_CACHE_SIZE:-512M}
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 40s
+
+volumes:
+  minio-data:
+  wesql-data:
