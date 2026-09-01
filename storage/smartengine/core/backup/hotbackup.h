@@ -35,7 +35,9 @@ class BackupSnapshot
 {
 public:
   // Get a backup snapshot instance
-  static BackupSnapshot *get_instance();
+  // static BackupSnapshot *get_instance();
+  static BackupSnapshot *get_file_instance();
+  static BackupSnapshot *get_objstore_instance();
   // Check backup job and do init
   virtual int init(db::DB *db, const char *backup_tmp_dir_path = nullptr);
   // Create backup tmp dir
@@ -49,22 +51,18 @@ public:
   virtual int lock_one_step();
   virtual int unlock_one_step();
   virtual int check_lock_status();
-  // Get backup status
-  virtual int get_backup_status(const char *&status);
-  // Set backup status
-  virtual int set_backup_status(const char *status);
   // Do a manual checkpoint and flush memtable
   virtual int do_checkpoint(db::DB *db, const char *backup_tmp_dir_path = nullptr);
   // Acquire an backup snapshot and hard-link/copy manifest files
   virtual int accquire_backup_snapshot(db::DB *db, BackupSnapshotId *backup_id, db::BinlogPosition &binlog_pos);
   // Parse incremental manifest files and record the modified extent ids
   virtual int record_incremental_extent_ids(db::DB *db);
-  // Release an old backup snapshot
-  virtual int release_old_backup_snapshot(db::DB *db, BackupSnapshotId backup_id);
+  // Release the current backup snapshot, for file mode only
+  virtual int release_current_backup_snapshot(db::DB *db);
+  // Release a backup snapshot, for objstore mode only
+  virtual int release_objstore_backup_snapshot(db::DB *db, BackupSnapshotId backup_id);
   // List all backup snapshots and return the backup ids
   virtual int list_backup_snapshots(std::vector<BackupSnapshotId> &backup_ids);
-  // Release the current backup snapshot
-  virtual int release_current_backup_snapshot(db::DB *db);
   // Get temporary current backup id of the backup instance
   virtual BackupSnapshotId current_backup_id();
 

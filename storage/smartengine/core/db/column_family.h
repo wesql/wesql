@@ -217,14 +217,14 @@ public:
   // *) delete all memory associated with that column family
   // *) delete all the files associated with that column family
   void SetDropped();
-  bool IsDropped() const { return dropped_; }
+  bool IsDropped() const { return dropped_.load(); }
   // stop all the background flush, compaction and recyle
   void set_bg_stopped(bool val) {
     bg_stopped_.store(val);
     set_cancel_task_type(ALL_TASK_VALUE_FOR_CANCEL);
   }
   std::atomic<bool>* bg_stopped() { return &bg_stopped_; }
-  bool is_bg_stopped() { return bg_stopped_ && bg_stopped_.load(); }
+  bool is_bg_stopped() { return bg_stopped_.load(); }
   bool can_gc()
   {
     return IsDropped() && is_bg_stopped()
@@ -386,6 +386,8 @@ public:
 
   int recover_m0_to_l0();
 
+  int write_objstore_meta_snapshot();
+
   int apply_change_info(storage::ChangeInfo &change_info,
                         bool write_log,
                         bool is_replay = false,
@@ -462,7 +464,7 @@ public:
   uint32_t id_;
   std::string name_;
   std::atomic<int> refs_; // outstanding references to ColumnFamilyData
-  bool dropped_;          // true if client dropped it
+  std::atomic<bool> dropped_;          // true if client dropped it
   // true if client stopped all the BackGround flush, compaction and recyle
   std::atomic<bool> bg_stopped_;
   const InternalKeyComparator internal_comparator_;

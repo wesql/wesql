@@ -273,6 +273,9 @@ class DBImpl : public DB {
   virtual common::Status EnableFileDeletions(bool force) override;
   virtual int IsFileDeletionsEnabled() const;
 
+  virtual bool IsObjectStoreMode() const override;
+  virtual bool IsFileMode() const override;
+
   virtual int create_backup_snapshot(BackupSnapshotId backup_id,
                                      MetaSnapshotSet &meta_snapshots,
                                      int64_t &last_manifest_file_num,

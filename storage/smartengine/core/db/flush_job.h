@@ -68,7 +68,7 @@ class BaseFlush {
   virtual int run(MiniTables& mtables) = 0;
   virtual int prepare_flush_task(MiniTables &mtables) = 0;
   virtual void pick_memtable() = 0;
-  int after_run_flush(MiniTables &mtables, int ret);
+  int after_run_flush(MiniTables &mtables, int ret, monitor::InstrumentedMutex *mutex);
   void cancel();
   // for test
   void set_memtables(util::autovector<MemTable*> &mems) {

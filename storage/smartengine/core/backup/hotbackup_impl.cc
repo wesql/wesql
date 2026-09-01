@@ -16,6 +16,7 @@
 
 #include "backup/hotbackup_impl.h"
 #include "memory/thread_local_store.h"
+#include "objstore/objstore_snapshot.h"
 #include "storage/storage_logger.h"
 #include "storage/storage_manager.h"
 #include "util/file_util.h"
@@ -30,13 +31,79 @@ using namespace storage;
 namespace util
 {
 
-char se_backup_status[][16] = {"checkpoint",
-                               "acquire",
-                               "incremental",
-                               "release",
-                               ""};
+int BackupSnapshotInfo::serialize(char *buffer, int64_t bufsiz, int64_t &pos) const
+{
+  int ret = Status::kOk;
+  int64_t size = get_serialize_size();
+  if (IS_NULL(buffer) || bufsiz < 0 || pos + size > bufsiz) {
+    ret = Status::kInvalidArgument;
+    SE_LOG(WARN, "invalid argument", K(ret), KP(buffer), K(bufsiz), K(pos), K(size));
+  } else {
+    *((int64_t *)(buffer + pos)) = size;
+    pos += sizeof(size);
+    *((int64_t *)(buffer + pos)) = BACKUP_SNAPSHOT_INFO_VERSION;
+    pos += sizeof(BACKUP_SNAPSHOT_INFO_VERSION);
+    if (FAILED(util::serialize(buffer, bufsiz, pos, backup_id_))) {
+      SE_LOG(WARN, "failed to serialize backup_id_", K(ret), K(backup_id_));
+    } else if (FAILED(util::serialize(buffer, bufsiz, pos, last_manifest_file_num_))) {
+      SE_LOG(WARN, "failed to serialize last_manifest_file_num_", K(ret), K(last_manifest_file_num_));
+    } else if (FAILED(util::serialize(buffer, bufsiz, pos, last_manifest_file_size_))) {
+      SE_LOG(WARN, "failed to serialize last_manifest_file_size_", K(ret), K(last_manifest_file_size_));
+    } else if (FAILED(util::serialize(buffer, bufsiz, pos, last_wal_file_num_))) {
+      SE_LOG(WARN, "failed to serialize last_wal_file_num_", K(ret), K(last_wal_file_num_));
+    } else if (FAILED(util::serialize_v(buffer, bufsiz, pos, meta_snapshot_ids_))) {
+      SE_LOG(WARN, "failed to serialize meta_snapshot_ids_", K(ret), K(meta_snapshot_ids_.size()));
+    }
+  }
+  return ret;
+}
 
-BackupSnapshot *BackupSnapshot::get_instance() { return BackupSnapshotImpl::get_instance(); }
+int64_t BackupSnapshotInfo::get_serialize_size() const
+{
+  int64_t size = 0;
+  size += 2 * sizeof(int64_t); // size and version
+  size += util::get_serialize_size(backup_id_);
+  size += util::get_serialize_size(last_manifest_file_num_);
+  size += util::get_serialize_size(last_manifest_file_size_);
+  size += util::get_serialize_size(last_wal_file_num_);
+  size += util::get_serialize_v_size(meta_snapshot_ids_);
+  return size;
+}
+
+int BackupSnapshotInfo::deserialize(const char *buffer, int64_t bufsiz, int64_t &pos)
+{
+  int ret = Status::kOk;
+  int64_t size = 0;
+  int64_t version = 0;
+
+  if (IS_NULL(buffer) || bufsiz < 0 || pos >= bufsiz) {
+    ret = Status::kInvalidArgument;
+    SE_LOG(WARN, "invalid argument", K(ret), KP(buffer), K(bufsiz), K(pos));
+  } else {
+    size = *((int64_t *)(buffer + pos));
+    pos += sizeof(size);
+    version = *((int64_t *)(buffer + pos));
+    pos += sizeof(version);
+    if (FAILED(util::deserialize(buffer, bufsiz, pos, backup_id_))) {
+      SE_LOG(WARN, "failed to deserialize backup_id_", K(ret), K(backup_id_));
+    } else if (FAILED(util::deserialize(buffer, bufsiz, pos, last_manifest_file_num_))) {
+      SE_LOG(WARN, "failed to deserialize last_manifest_file_num_", K(ret), K(last_manifest_file_num_));
+    } else if (FAILED(util::deserialize(buffer, bufsiz, pos, last_manifest_file_size_))) {
+      SE_LOG(WARN, "failed to deserialize last_manifest_file_size_", K(ret), K(last_manifest_file_size_));
+    } else if (FAILED(util::deserialize(buffer, bufsiz, pos, last_wal_file_num_))) {
+      SE_LOG(WARN, "failed to deserialize last_wal_file_num_", K(ret), K(last_wal_file_num_));
+    } else if (FAILED(util::deserialize_v(buffer, bufsiz, pos, meta_snapshot_ids_))) {
+      SE_LOG(WARN, "failed to deserialize meta_snapshot_ids_", K(ret), K(meta_snapshot_ids_.size()));
+    }
+  }
+  return ret;
+}
+
+DEFINE_TO_STRING(BackupSnapshotInfo, K_(backup_id));
+
+BackupSnapshot *BackupSnapshot::get_file_instance() { return BackupSnapshotFileImpl::get_instance(); }
+
+BackupSnapshot *BackupSnapshot::get_objstore_instance() { return BackupSnapshotObjStoreImpl::get_instance(); }
 
 int BackupSnapshot::init(DB *db, const char *backup_tmp_dir_path)
 {
@@ -57,14 +124,6 @@ int BackupSnapshot::unlock_one_step() { return Status::kNotSupported; }
 
 int BackupSnapshot::check_lock_status() { return Status::kNotSupported; }
 
-int BackupSnapshot::get_backup_status(const char*& status) {
-  return Status::kNotSupported;
-}
-
-int BackupSnapshot::set_backup_status(const char* status) {
-  return Status::kNotSupported;
-}
-
 int BackupSnapshot::do_checkpoint(DB *db, const char *backup_tmp_dir_path) { return Status::kNotSupported; }
 
 int BackupSnapshot::accquire_backup_snapshot(DB *db, BackupSnapshotId *backup_id, db::BinlogPosition &binlog_pos)
@@ -74,14 +133,13 @@ int BackupSnapshot::accquire_backup_snapshot(DB *db, BackupSnapshotId *backup_id
 
 int BackupSnapshot::record_incremental_extent_ids(DB *db) { return Status::kNotSupported; }
 
-int BackupSnapshot::release_old_backup_snapshot(DB *db, BackupSnapshotId backup_id)
-{
-  return Status::kNotSupported;
-}
-
 int BackupSnapshot::list_backup_snapshots(std::vector<BackupSnapshotId> &backup_ids) { return Status::kNotSupported; }
 
 int BackupSnapshot::release_current_backup_snapshot(DB *db) { return Status::kNotSupported; }
+
+int BackupSnapshot::release_objstore_backup_snapshot(DB *db, BackupSnapshotId backup_id) {
+  return Status::kNotSupported; 
+}
 
 BackupSnapshotId BackupSnapshot::current_backup_id() {
   return 0;
@@ -96,19 +154,7 @@ BackupSnapshotImpl::BackupSnapshotImpl()
       last_backup_id_(0),
       cur_backup_id_(0) {}
 
-BackupSnapshotImpl::~BackupSnapshotImpl() {
-  destroy();
-}
-
-void BackupSnapshotImpl::destroy() {
-  // we can only clear this map when smartengine exit
-  backup_snapshot_map_.clear();
-}
-
-BackupSnapshotImpl *BackupSnapshotImpl::get_instance() {
-  static BackupSnapshotImpl instance;
-  return &instance;
-}
+BackupSnapshotImpl::~BackupSnapshotImpl() {}
 
 int BackupSnapshotImpl::try_exclusive_lock() {
   int ret = Status::kOk;
@@ -174,7 +220,6 @@ int BackupSnapshotImpl::init(DB *db, const char *backup_tmp_dir_path) {
     backup_tmp_dir_path_ = (nullptr == backup_tmp_dir_path) ?
         db->GetName() + BACKUP_TMP_DIR : backup_tmp_dir_path;
     do_cleanup(db);
-    backup_status_ = se_backup_status[4];
   }
   return ret;
 }
@@ -187,20 +232,9 @@ void BackupSnapshotImpl::reset() {
   cur_backup_id_ = 0;
   backup_tmp_dir_path_.clear();
   cur_meta_snapshots_.clear();
-  backup_status_ = se_backup_status[4];
   if (instance_locked_) {
     unlock_instance();
   }
-}
-
-int BackupSnapshotImpl::get_backup_status(const char *&status) {
-  status = backup_status_;  
-  return Status::kOk;
-}
-
-int BackupSnapshotImpl::set_backup_status(const char *status) {
-  backup_status_ = status;
-  return Status::kOk;
 }
 
 BackupSnapshotId BackupSnapshotImpl::current_backup_id()
@@ -214,7 +248,8 @@ BackupSnapshotId BackupSnapshotImpl::generate_backup_id()
   BackupSnapshotId snapshot_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 
   if (last_backup_id_ == 0) {
-    last_backup_id_ = backup_snapshot_map_.get_latest_backup_id();
+    // TODO(ljc): get last backup id from objstore
+    // last_backup_id_ = backup_snapshot_map_.get_latest_backup_id();
   }
 
   if (last_backup_id_ >= snapshot_time_ms) {
@@ -232,10 +267,6 @@ int BackupSnapshotImpl::do_checkpoint(DB *db, const char *backup_tmp_dir_path) {
     SE_LOG(WARN, "db is nullptr", K(ret));
   } else if (FAILED(check_lock_status())) {
     SE_LOG(WARN, "Failed to check lock status", K(ret));
-  } else if (backup_snapshot_map_.get_backup_snapshot_count() >= db::BackupSnapshotMap::kMaxBackupSnapshotNum) {
-    ret = Status::kOverLimit;
-    SE_LOG(WARN, "backup snapshot count reach the max limit, please release some old backup snapshots first", K(ret),
-           "max backup snapshot num", db::BackupSnapshotMap::kMaxBackupSnapshotNum);
   } else if (FAILED(init(db, backup_tmp_dir_path))) {
     SE_LOG(WARN, "Failed to init backup snapshot", K(ret));
   } else if (FAILED(db->do_manual_checkpoint(first_manifest_file_num_))) {
@@ -267,20 +298,18 @@ int BackupSnapshotImpl::accquire_backup_snapshot(DB *db, BackupSnapshotId *backu
     SE_LOG(WARN, "backup id is nullptr", K(ret));
   } else if (FAILED(check_lock_status())) {
     SE_LOG(WARN, "Failed to check lock status", K(ret));
-  } else if (backup_snapshot_map_.get_backup_snapshot_count() >= db::BackupSnapshotMap::kMaxBackupSnapshotNum) {
-    ret = Status::kOverLimit;
-    SE_LOG(WARN,
-           "backup snapshot count reach the max limit, please release some old backup snapshots first",
-           K(ret),
-           "max backup snapshot num",
-           db::BackupSnapshotMap::kMaxBackupSnapshotNum);
   } else {
     *backup_id = generate_backup_id();
     last_backup_id_ = *backup_id;
     cur_backup_id_ = *backup_id;
 
+    if (is_objstore_mode()) {
+      first_manifest_file_num_ = StorageLogger::get_instance().current_manifest_file_number();
+    }
+
     db->DisableFileDeletions();
 
+    // TODO(ljc): for objstore mode, we don't need to link current file
     CurrentFileChecker current_file_checker;
     if (FAILED(link_files(db, &current_file_checker, (DataDirFileChecker *)nullptr, (WalDirFileChecker *)nullptr))) {
       SE_LOG(WARN, "Failed to link current file", K(ret));
@@ -309,7 +338,47 @@ int BackupSnapshotImpl::accquire_backup_snapshot(DB *db, BackupSnapshotId *backu
                                  false).code())) { // clang-format on
         // copy last manifest file
         SE_LOG(WARN, "Failed to copy last manifest file", K(ret));
-      } else {
+      } else if (is_objstore_mode()) {
+        BackupSnapshotInfo backup_snapshot_info;
+        backup_snapshot_info.backup_id_ = cur_backup_id_;
+        backup_snapshot_info.last_manifest_file_num_ = last_manifest_file_num_;
+        backup_snapshot_info.last_manifest_file_size_ = last_manifest_file_size_;
+        backup_snapshot_info.last_wal_file_num_ = last_wal_file_num_;
+        for (auto *meta_snapshot : cur_meta_snapshots_) {
+          int64_t meta_snapshot_id = (dynamic_cast<SnapshotImpl *>(meta_snapshot))->meta_snapshot_id_;
+          int64_t index_id = (dynamic_cast<SnapshotImpl *>(meta_snapshot))->index_id_;
+          if (meta_snapshot_id < 0) {
+            ret = Status::kErrorUnexpected;
+            SE_LOG(WARN, "unexpected error, meta snapshot id must be positive", K(ret), K(meta_snapshot_id));
+            break;
+          } else {
+            backup_snapshot_info.meta_snapshot_ids_.emplace(index_id, meta_snapshot_id);
+          }
+        }
+
+        if (SUCCED(ret)) {
+          ::objstore::ObjectStore *object_store = nullptr;
+          const std::string &bucket = db->GetEnv()->GetObjectStoreBucket();
+          // TODO(ljc): use repo id directly
+          const std::string &cluster_id = db->GetEnv()->GetClusterObjstoreId();
+          const std::string &repo_id = cluster_id.substr(0, cluster_id.find('/'));
+          db->GetEnv()->GetObjectStore(object_store);
+          if (IS_NULL(object_store)) {
+            ret = Status::kErrorUnexpected;
+            SE_LOG(WARN, "unexpected error, object store must not be nullptr", K(ret));
+          } else {
+            int64_t snapshot_id = 0;
+            smartengine::objstore::ObjStoreSnapshotOperator snapshot_operator;
+            snapshot_operator.init(object_store, repo_id, bucket);
+            if (FAILED(db->GetEnv()->AllocSnapshotId(snapshot_id).code())) {
+              SE_LOG(WARN, "Failed to alloc snapshot id", K(ret));
+            } else if (FAILED(snapshot_operator.write_snapshot(snapshot_id, backup_snapshot_info))) {
+              SE_LOG(WARN, "Failed to write object store snapshot key", K(ret));
+            }
+          }
+        }
+      }
+      if (SUCCED(ret)) {
         SE_LOG(INFO,
                "Success to copy last manifest file and acquire snapshots",
                K(last_manifest_file_dest),
@@ -353,19 +422,19 @@ int BackupSnapshotImpl::record_incremental_extent_ids(DB *db)
   return ret;
 }
 
-int BackupSnapshotImpl::release_old_backup_snapshot(DB *db, BackupSnapshotId backup_id) {
-  int ret = Status::kOk;
-  if (IS_NULL(db)) {
-    ret = Status::kErrorUnexpected;
-    SE_LOG(WARN, "db is nullptr", K(ret));
-  } else if (FAILED(backup_snapshot_map_.release_backup_snapshot(backup_id))) {
-    SE_LOG(WARN, "Failed to release backup snapshot", K(ret), K(backup_id));
-  } else {
-    SE_LOG(INFO, "Success to release old backup snapshot", K(ret), K(backup_id));
-  }
-  return ret;
+int BackupSnapshotImpl::release_objstore_backup_snapshot(DB *db, BackupSnapshotId backup_id) {
+  // TODO(ljc): release backup snapshot
+
+  // if (FAILED(StorageManager::cleanup_backup_snapshot(backup_snapshot))) {
+  //   SE_LOG(WARN, "fail to cleanup backup snapshot", K(backup_id), K(ret));
+  // } else {
+  //   SE_LOG(INFO, "success to release the backup snapshot", K(backup_id), K(ret));
+  // }
+
+  return Status::kOk;
 }
 
+// for file mode only
 int BackupSnapshotImpl::release_current_backup_snapshot(DB *db)
 {
   int ret = Status::kOk;
@@ -374,8 +443,10 @@ int BackupSnapshotImpl::release_current_backup_snapshot(DB *db)
     SE_LOG(WARN, "db is nullptr", K(ret));
   } else if (FAILED(check_lock_status())) {
     SE_LOG(WARN, "Failed to check lock status", K(ret));
-  } else if (FAILED(backup_snapshot_map_.release_backup_snapshot(cur_backup_id_))) {
-    SE_LOG(WARN, "Failed to release backup snapshot", K(ret), K(cur_backup_id_));
+  // TODO(ljc): use StorageManager::cleanup_backup_snapshot 
+
+  // } else if (FAILED(backup_snapshot_map_.release_backup_snapshot(cur_backup_id_))) {
+  //   SE_LOG(WARN, "Failed to release backup snapshot", K(ret), K(cur_backup_id_));
   } else {
     SE_LOG(INFO, "Success to release current backup snapshot", K(ret), K(cur_backup_id_));
   }
@@ -389,15 +460,7 @@ int BackupSnapshotImpl::release_current_backup_snapshot(DB *db)
 
 int BackupSnapshotImpl::list_backup_snapshots(std::vector<BackupSnapshotId> &backup_ids) {
   int ret = Status::kOk;
-  BackupSnapshotId prev_backup_id = 0;
-  BackupSnapshotId backup_id = 0;
-  uint64_t auto_increment_id = 0;
-  MetaSnapshotSet *backup_snapshot = nullptr;
-
-  while (backup_snapshot_map_.get_next_backup_snapshot(prev_backup_id, backup_id, auto_increment_id, backup_snapshot)) {
-    backup_ids.push_back(backup_id);
-    prev_backup_id = backup_id;
-  }
+  // TODO(ljc): list backup snapshots
   return ret;
 }
 
@@ -472,6 +535,24 @@ int BackupSnapshotImpl::do_cleanup(DB *db)
     SE_LOG(DEBUG, "Success to cleanup tmp dir", K(ret));
   }
   return ret;
+}
+
+BackupSnapshotFileImpl::BackupSnapshotFileImpl() {}
+
+BackupSnapshotFileImpl::~BackupSnapshotFileImpl() {}
+
+BackupSnapshotFileImpl *BackupSnapshotFileImpl::get_instance() {
+  static BackupSnapshotFileImpl instance;
+  return &instance;
+}
+
+BackupSnapshotObjStoreImpl::BackupSnapshotObjStoreImpl() {}
+
+BackupSnapshotObjStoreImpl::~BackupSnapshotObjStoreImpl() {}
+
+BackupSnapshotObjStoreImpl *BackupSnapshotObjStoreImpl::get_instance() {
+  static BackupSnapshotObjStoreImpl instance;
+  return &instance;
 }
 
 } // namespace util

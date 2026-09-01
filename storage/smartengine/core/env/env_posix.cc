@@ -45,6 +45,10 @@
 #include "monitoring/iostats_context_imp.h"
 #include "monitoring/thread_status_updater.h"
 #include "objstore.h"
+#include "objstore/objstore_layout.h"
+#include "objstore/objstore_allocator.h"
+#include "objstore/objstore_snapshot.h"
+#include "backup/hotbackup_impl.h"
 #include "options/options.h"
 #include "util/random.h"
 #include "util/string_util.h"
@@ -577,13 +581,30 @@ class PosixEnv : public Env
   {
     Status result;
 
-    objstore::init_objstore_provider(provider);
+    // TODO(ljc): use repo_id instead of cluster_objstore_id
+    std::string repo_id = cluster_objstore_id.substr(0, cluster_objstore_id.find('/'));
+
+    ::objstore::init_objstore_provider(provider);
 
     std::string obj_err_msg;
-    obj_store_ = objstore::create_object_store(provider, region, endpoint, use_https, obj_err_msg);
+    obj_store_ = ::objstore::create_object_store(provider, region, endpoint, use_https, obj_err_msg);
     if (obj_store_ == nullptr) {
       result = common::Status::InvalidArgument(obj_err_msg);
+    } else if (Status::kOk != snapshot_id_allocator_.init(obj_store_, bucket.data(), util::make_latest_snapshot_key(repo_id), 1)) {
+      result = common::Status::ObjectStoreError("failed to init snapshot id allocator");
+    } else if (Status::kOk != metasnapshot_id_allocator_.init(obj_store_, bucket.data(), util::make_latest_metasnapshot_key(repo_id), 1000)) {
+      result = common::Status::ObjectStoreError("failed to init metasnapshot id allocator");
+    } else if (Status::kOk != extent_id_allocator_.init(obj_store_, bucket.data(), util::make_latest_extent_key(repo_id), 1000)) {
+      result = common::Status::ObjectStoreError("failed to init extent id allocator");
     } else {
+      snapshot_operator_.init(obj_store_, repo_id, bucket);
+      next_snapshot_id_ = 0;
+      snapshot_id_end_ = 0;
+      next_metasnapshot_id_ = 0;
+      metasnapshot_id_end_ = 0;
+      next_extent_id_ = 0;
+      extent_id_end_ = 0;
+
       obj_store_bucket_ = bucket;
       cluster_objstore_id_ = cluster_objstore_id;
       objstore_lease_lock_timeout_ = lease_lock_timeout;
@@ -594,9 +615,9 @@ class PosixEnv : public Env
   virtual common::Status DestroyObjectStore() override {
 
     if (obj_store_ != nullptr) {
-      objstore::cleanup_objstore_provider(obj_store_);
+      ::objstore::cleanup_objstore_provider(obj_store_);
 
-      objstore::destroy_object_store(obj_store_);
+      ::objstore::destroy_object_store(obj_store_);
       obj_store_ = nullptr;
     }
     return common::Status::OK();
@@ -607,7 +628,7 @@ class PosixEnv : public Env
   virtual bool IsObjectStoreInited() const override { return obj_store_ != nullptr; }
 
   virtual common::Status GetObjectStore(
-      objstore::ObjectStore*& object_store) override {
+      ::objstore::ObjectStore*& object_store) override {
     object_store = obj_store_;
     return object_store != nullptr ? common::Status::OK() : common::Status::NotInited();
   }
@@ -619,6 +640,110 @@ class PosixEnv : public Env
   virtual std::string &GetClusterObjstoreId() override { return cluster_objstore_id_; }
 
   virtual uint32_t GetObjstoreLeaseLockTimeout() override { return objstore_lease_lock_timeout_; }
+
+
+  virtual common::Status GetSnapshotOperator(objstore::ObjStoreSnapshotOperator*& snapshot_operator) override {
+    common::Status status = common::Status::OK();
+    if (IS_FALSE(IsObjectStoreInited())) {
+      status = common::Status::NotSupported("object store is not inited");
+    } else {
+      snapshot_operator = &snapshot_operator_;
+    }
+    return status;
+  }
+
+  virtual common::Status GetLatestSnapshotId(int64_t& snapshot_id) override {
+    common::Status status = common::Status::OK();
+    int64_t latest_snapshot_id = 0;
+    if (IS_FALSE(IsObjectStoreInited())) {
+      status = common::Status::NotSupported("object store is not inited");
+    } else if (Status::kOk != snapshot_id_allocator_.get_current_value(latest_snapshot_id)) {
+      status = common::Status::ObjectStoreError("failed to get current snapshot id");
+    } else {
+      util::BackupSnapshotInfo backup_snapshot_info;
+      int ret = snapshot_operator_.get_snapshot(latest_snapshot_id, backup_snapshot_info);
+      if (ret == Status::kNotFound) {
+        if (latest_snapshot_id > first_snapshot_id_) {
+          ret = snapshot_operator_.get_snapshot(latest_snapshot_id - 1, backup_snapshot_info);
+          if (ret == Status::kNotFound) {
+            status = common::Status::Unexpected("snapshot with latest snapshot id and its previous snapshot are both not found");
+          } else if (ret != Status::kOk) {
+            status = common::Status::ObjectStoreError("failed to get snapshot with the previous of latest snapshot id");
+          } else {
+            snapshot_id = latest_snapshot_id - 1;
+          }
+        }
+      } else if (ret != Status::kOk) {
+        status = common::Status::ObjectStoreError("failed to get snapshot with latest snapshot id");
+      } else {
+        snapshot_id = latest_snapshot_id;
+      }
+    }
+    return status;
+  }
+
+  virtual common::Status AllocSnapshotId(int64_t& snapshot_id) override {
+    common::Status status = common::Status::OK();
+    if (IS_FALSE(IsObjectStoreInited())) {
+      status = common::Status::NotSupported("object store is not inited");
+    } else if (next_snapshot_id_ >= snapshot_id_end_) {
+      int ret = snapshot_id_allocator_.alloc(next_snapshot_id_, snapshot_id_end_);
+      if (ret != Status::kOk) {
+        status = common::Status::ObjectStoreError("failed to alloc snapshot id");
+      } else if (next_snapshot_id_ >= snapshot_id_end_) {
+        status = common::Status::Unexpected("invalid snapshot id allocator status");
+      } else {
+        snapshot_id = next_snapshot_id_;
+        next_snapshot_id_++;
+      }
+    } else {
+      snapshot_id = next_snapshot_id_;
+      next_snapshot_id_++;
+    }
+    return status;
+  }
+
+  virtual common::Status AllocMetasnapshotId(int64_t& metasnapshot_id) override {
+    common::Status status = common::Status::OK();
+    if (IS_FALSE(IsObjectStoreInited())) {
+      status = common::Status::NotSupported("object store is not inited");
+    } else if (next_metasnapshot_id_ >= metasnapshot_id_end_) {
+      int ret = metasnapshot_id_allocator_.alloc(next_metasnapshot_id_, metasnapshot_id_end_);
+      if (ret != Status::kOk) {
+        status = common::Status::ObjectStoreError("failed to alloc metasnapshot id");
+      } else if (next_metasnapshot_id_ >= metasnapshot_id_end_) {
+        status = common::Status::Unexpected("invalid metasnapshot id allocator status");
+      } else {
+        metasnapshot_id = next_metasnapshot_id_;
+        next_metasnapshot_id_++;
+      }
+    } else {
+      metasnapshot_id = next_metasnapshot_id_;
+      next_metasnapshot_id_++;
+    }
+    return status;
+  }
+
+  virtual common::Status AllocExtentId(int64_t& extent_id) override {
+    common::Status status = common::Status::OK();
+    if (IS_FALSE(IsObjectStoreInited())) {
+      status = common::Status::NotSupported("object store is not inited");
+    } else if (next_extent_id_ >= extent_id_end_) {
+      int ret = extent_id_allocator_.alloc(next_extent_id_, extent_id_end_);
+      if (ret != Status::kOk) {
+        status = common::Status::ObjectStoreError("failed to alloc extent id");
+      } else if (next_extent_id_ >= extent_id_end_) {
+        status = common::Status::Unexpected("invalid extent id allocator status");
+      } else {
+        extent_id = next_extent_id_;
+        next_extent_id_++;
+      }
+    } else {
+      extent_id = next_extent_id_;
+      next_extent_id_++;
+    }
+    return status;
+  }
 
   virtual uint64_t NowMicros() override {
     struct timeval tv;
@@ -808,9 +933,24 @@ private:
   pthread_mutex_t mu_;
   std::vector<pthread_t> threads_to_join_;
 
-  objstore::ObjectStore* obj_store_;
+  ::objstore::ObjectStore* obj_store_;
+  smartengine::objstore::ObjStoreSnapshotOperator snapshot_operator_;
+  smartengine::objstore::ObjStoreIntAllocator snapshot_id_allocator_;
+  smartengine::objstore::ObjStoreIntAllocator metasnapshot_id_allocator_;
+  smartengine::objstore::ObjStoreIntAllocator extent_id_allocator_;
+  static const int64_t first_snapshot_id_ = 1;
+  int64_t next_snapshot_id_;
+  int64_t snapshot_id_end_;
+  static const int64_t first_metasnapshot_id_ = 1;
+  int64_t next_metasnapshot_id_;
+  int64_t metasnapshot_id_end_;
+  static const int64_t first_extent_id_ = 1;
+  int64_t next_extent_id_;
+  int64_t extent_id_end_;
+
   std::string obj_store_bucket_;
   std::string cluster_objstore_id_;
+  // TODO(ljc): add repo id and branch
   uint32_t objstore_lease_lock_timeout_;
 };
 

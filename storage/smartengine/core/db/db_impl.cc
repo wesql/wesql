@@ -11,6 +11,7 @@
 #include "db/db_impl.h"
 #include "memory/base_malloc.h"
 #include "memory/mod_info.h"
+#include "objstore/objstore_snapshot.h"
 
 #ifdef WITH_SMARTENGINE
 #include "se_status_vars.h"
@@ -83,227 +84,6 @@ using namespace table;
 using namespace util;
 
 namespace db {
-
-void BackupSnapshotMap::clear() {
-  std::unique_lock lock(mutex_);
-  backup_snapshots_.clear();
-  auto_increment_ids_.clear();
-}
-
-bool BackupSnapshotMap::find_backup_snapshot(BackupSnapshotId backup_id) {
-  std::unique_lock lock(mutex_);
-  return backup_snapshots_.find(backup_id) != backup_snapshots_.end();
-}
-
-bool BackupSnapshotMap::get_next_backup_snapshot(BackupSnapshotId prev_backup_id,
-                                                 BackupSnapshotId &backup_id,
-                                                 uint64_t &auto_increment_id,
-                                                 MetaSnapshotSet *&meta_snapshots)
-{
-  std::unique_lock lock(mutex_);
-  auto it = backup_snapshots_.upper_bound(prev_backup_id);
-  if (it == backup_snapshots_.end()) {
-    backup_id = 0;
-    return false;
-  }
-  backup_id = it->first;
-  auto_increment_id = auto_increment_ids_[backup_id];
-  meta_snapshots = &it->second;
-  return true;
-}
-
-bool BackupSnapshotMap::add_backup_snapshot(BackupSnapshotId backup_id,
-                                            uint64_t auto_increment_id,
-                                            MetaSnapshotSet &meta_snapshots)
-{
-  std::unique_lock lock(mutex_);
-  if (backup_snapshots_.find(backup_id) != backup_snapshots_.end()) {
-    // unexpected, backup snapshot already exists
-    return false;
-  } else if (backup_snapshots_.size() != auto_increment_ids_.size()) {
-    // unexpected, backup_snapshots_ and auto_increment_ids_ should be the same size.
-    return false;
-  } else {
-    backup_snapshots_[backup_id] = std::move(meta_snapshots);
-    auto_increment_ids_[backup_id] = auto_increment_id;
-    if (auto_increment_id > max_auto_increment_id_) {
-      max_auto_increment_id_ = auto_increment_id;
-    }
-    return true;
-  }
-}
-
-uint64_t BackupSnapshotMap::get_auto_increment_id(BackupSnapshotId backup_id)
-{
-  std::unique_lock lock(mutex_);
-  auto it = auto_increment_ids_.find(backup_id);
-  if (it == auto_increment_ids_.end()) {
-    return UINT64_MAX;
-  }
-  return it->second;
-}
-
-uint64_t BackupSnapshotMap::get_max_auto_increment_id()
-{
-  std::unique_lock lock(mutex_);
-  return max_auto_increment_id_;
-}
-
-void BackupSnapshotMap::save_auto_increment_id_for_recover(uint64_t auto_increment_id)
-{
-  std::unique_lock lock(mutex_);
-  auto_increment_id_for_recover_ = auto_increment_id;
-}
-
-uint64_t BackupSnapshotMap::get_auto_increment_id_for_recover()
-{
-  std::unique_lock lock(mutex_);
-  return auto_increment_id_for_recover_;
-}
-
-bool BackupSnapshotMap::remove_backup_snapshot(BackupSnapshotId backup_id, MetaSnapshotSet &to_clean, bool &existed)
-{
-  std::unique_lock lock(mutex_);
-  if (backup_snapshots_.find(backup_id) == backup_snapshots_.end()) {
-    existed = false;
-    return true;
-  }
-  existed = true;
-  if (in_use_) {
-    pending_release_backups_.push_back(backup_id);
-  } else {
-    to_clean = std::move(backup_snapshots_[backup_id]);
-    backup_snapshots_.erase(backup_id);
-    auto_increment_ids_.erase(backup_id);
-  }
-  return !in_use_;
-}
-
-int BackupSnapshotMap::release_backup_snapshot(BackupSnapshotId backup_id)
-{
-  int ret = Status::kOk;
-  ReleaseBackupSnapshotLogEntry log_entry(backup_id);
-  MetaSnapshotSet backup_snapshot;
-  bool existed = false;
-  int64_t commit_seq = 0;
-
-  BackupSnapshotMap &backup_snapshot_map = BackupSnapshotImpl::get_instance()->get_backup_snapshot_map();
-  uint64_t auto_increment_id = 0;
-
-  if (backup_id == 0) {
-    ret = Status::kInvalidArgument;
-    SE_LOG(WARN, "Invalid backup id", K(backup_id), K(ret));
-  } else if (IS_FALSE(backup_snapshot_map.find_backup_snapshot(backup_id))) {
-    ret = Status::kInvalidArgument;
-    SE_LOG(WARN, "backup snapshot id not found", K(backup_id), K(ret));
-  } else if (UINT64_MAX == (auto_increment_id = backup_snapshot_map.get_auto_increment_id(backup_id))) {
-    ret = Status::kErrorUnexpected;
-    SE_LOG(WARN, "unexpected error, auto_increment_id not found", K(backup_id), K(ret));
-  } else if (GlobalContext::env_->IsObjectStoreInited()) {
-    objstore::ObjectStore *objstore = nullptr;
-    std::string_view objstore_bucket = GlobalContext::env_->GetObjectStoreBucket();
-    const std::string &cluster_objstore_id = GlobalContext::env_->GetClusterObjstoreId();
-    std::string err_msg;
-    uint64_t auto_increment_id_for_recover = backup_snapshot_map.get_auto_increment_id_for_recover();
-    if (FAILED(GlobalContext::env_->GetObjectStore(objstore).code())) {
-      SE_LOG(WARN, "fail to get object store", K(ret));
-    } else if (auto_increment_id == auto_increment_id_for_recover &&
-               FAILED(objstore::updateBackupStautsToReleasing(auto_increment_id,
-                                                              objstore,
-                                                              objstore_bucket,
-                                                              cluster_objstore_id,
-                                                              err_msg))) {
-      SE_LOG(WARN,
-             "fail to update backup status lock file of the snapshot used for recovery",
-             K(backup_id),
-             K(auto_increment_id_for_recover),
-             K(ret),
-             K(err_msg));
-    } else if (auto_increment_id != auto_increment_id_for_recover &&
-               FAILED(objstore::tryBackupReleasingLock(auto_increment_id,
-                                                       objstore,
-                                                       objstore_bucket,
-                                                       cluster_objstore_id,
-                                                       err_msg))) {
-      SE_LOG(WARN,
-             "fail to get backup releasing lock",
-             K(backup_id),
-             K(auto_increment_id),
-             K(auto_increment_id_for_recover),
-             K(ret),
-             K(err_msg));
-    } else {
-      SE_LOG(INFO, "success to get backup releasing lock", K(backup_id), K(auto_increment_id));
-    }
-  }
-
-  if (SUCCED(ret)) {
-    if (FAILED(StorageLogger::get_instance().begin(storage::SeEvent::RELEASE_BACKUP_SNAPSHOT))) {
-      SE_LOG(WARN, "fail to begin release backup snapshot log", K(backup_id), K(ret));
-    } else if (FAILED(StorageLogger::get_instance().write_log(storage::REDO_LOG_RELEASE_BACKUP_SNAPSHOT, log_entry))) {
-      SE_LOG(WARN, "fail to write release backup snapshot log", K(backup_id), K(ret));
-    } else if (FAILED(StorageLogger::get_instance().commit(commit_seq))) {
-      SE_LOG(WARN, "fail to commit release backup snapshot log", K(backup_id), K(ret));
-    } else if (IS_FALSE(remove_backup_snapshot(backup_id, backup_snapshot, existed)) && existed) {
-      // normal case, maybe background checkpoint thread is using the backup snapshot
-      SE_LOG(INFO, "Backup snapshot is in use, will be deleted later", K(ret), K(backup_id));
-    } else if (IS_FALSE(existed)) {
-      ret = Status::kInvalidArgument;
-      SE_LOG(WARN, "backup snapshot id not found", K(ret), K(backup_id));
-    } else if (FAILED(StorageManager::cleanup_backup_snapshot(backup_snapshot))) {
-      SE_LOG(WARN, "fail to cleanup backup snapshot", K(backup_id), K(ret));
-    } else {
-      SE_LOG(INFO, "success to release the backup snapshot", K(backup_id), K(ret));
-    }
-  }
-
-  return ret;
-}
-
-int BackupSnapshotMap::do_pending_release()
-{
-  int ret = Status::kOk;
-  std::vector<BackupSnapshotId> to_release;
-  {
-    std::unique_lock lock(mutex_);
-    if (in_use_) {
-      ret = Status::kErrorUnexpected;
-    } else {
-      to_release = std::move(pending_release_backups_);
-    }
-  }
-  if (FAILED(ret)) {
-    SE_LOG(WARN, "unexpected, backup snapshot map is in use", K(ret));
-  } else {
-    for (auto backup_id : to_release) {
-      if (FAILED(release_backup_snapshot(backup_id))) {
-        SE_LOG(WARN, "failed to release backup snapshot", K(backup_id));
-        break;
-      } else {
-        SE_LOG(INFO, "success to release backup snapshot", K(backup_id));
-      }
-    }
-  }
-  return ret;
-}
-
-void BackupSnapshotMap::set_in_use(bool in_use) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  in_use_ = in_use;
-}
-
-BackupSnapshotId BackupSnapshotMap::get_latest_backup_id() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (backup_snapshots_.empty()) {
-    return 0;
-  }
-  return backup_snapshots_.rbegin()->first;
-}
-
-size_t BackupSnapshotMap::get_backup_snapshot_count() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return backup_snapshots_.size();
-}
 
 #ifdef WITH_STRESS_CHECK
 thread_local std::unordered_map<std::string, std::string> *STRESS_CHECK_RECORDS =
@@ -697,7 +477,6 @@ DBImpl::~DBImpl() {
   StorageLogger::get_instance().destroy();
   ExtentMetaManager::get_instance().destroy();
   ExtentSpaceManager::get_instance().destroy();
-  BackupSnapshotImpl::get_instance()->destroy();
   WriteExtentJobScheduler::get_instance().stop();
   if (nullptr != global_ctx) {
     MOD_DELETE_OBJECT(GlobalContext, global_ctx);
@@ -2279,6 +2058,7 @@ int DBImpl::get_latest_seq_for_uk(ColumnFamilyHandle *column_family,
 }
 
 
+
 Status DBImpl::InstallSstExternal(ColumnFamilyHandle* column_family,
                                   MiniTables* mtables) {
   ColumnFamilyData* cfd;
@@ -2412,13 +2192,20 @@ int DBImpl::do_manual_checkpoint(int64_t &start_manifest_file_num)
   return ret;
 }
 
+bool DBImpl::IsObjectStoreMode() const {
+  return GlobalContext::get_env()->IsObjectStoreInited();
+}
+
+bool DBImpl::IsFileMode() const {
+  return !IsObjectStoreMode();
+}
+
 int DBImpl::create_backup_snapshot(BackupSnapshotId backup_id,
                                    MetaSnapshotSet &meta_snapshots,
                                    int64_t &last_manifest_file_num,
                                    uint64_t &last_manifest_file_size,
                                    uint64_t &last_wal_file_num,
-                                   BinlogPosition &last_binlog_pos)
-{
+                                   BinlogPosition &last_binlog_pos) {
   int ret = Status::kOk;
   // keep create snapshot and do checkpoint atomic,
   // exclusive from apply_change_info in flush/compaction
@@ -2438,46 +2225,26 @@ int DBImpl::create_backup_snapshot(BackupSnapshotId backup_id,
     WriteContext context;
     context.all_sub_table_ = global_ctx->all_sub_table_;
 
-    db::BackupSnapshotMap &backup_snapshot_map = BackupSnapshotImpl::get_instance()->get_backup_snapshot_map();
-
-    if (backup_snapshot_map.find_backup_snapshot(backup_id)) {
-      ret = Status::kErrorUnexpected;
-      SE_LOG(WARN, "backup snapshot id already exists", K(backup_id), K(ret));
-    } else if (FAILED(versions_->create_backup_snapshot(meta_snapshots))) {
+    if (FAILED(versions_->create_backup_snapshot(meta_snapshots))) {
       SE_LOG(WARN, "Failed to create the backup snapshot", K(backup_id), K(ret));
     } else {
       if (FAILED(switch_memtable(sub_table, &context, true /* force create new wal file*/))) {
         SE_LOG(WARN, "Failed to switch memtable", K(backup_id), K(ret));
       } else {
-        int64_t commit_seq = 0;
-        uint64_t auto_increment_id = backup_snapshot_map.get_max_auto_increment_id() + 1;
-        AccquireBackupSnapshotLogEntry log_entry(backup_id, auto_increment_id);
-        if (FAILED(StorageLogger::get_instance().begin(storage::SeEvent::ACCQUIRE_BACKUP_SNAPSHOT))) {
-          SE_LOG(WARN, "fail to begin create backup snapshot log", K(backup_id), K(ret));
-        } else if (FAILED(StorageLogger::get_instance().write_log(storage::REDO_LOG_ACCQUIRE_BACKUP_SNAPSHOT,
-                                                                  log_entry))) {
-          SE_LOG(WARN, "fail to write create backup snapshot log", K(backup_id), K(ret));
-        } else if (FAILED(StorageLogger::get_instance().commit(commit_seq))) {
-          SE_LOG(WARN, "fail to commit create backup snapshot log", K(backup_id), K(ret));
-        } else if (IS_FALSE(backup_snapshot_map.add_backup_snapshot(backup_id, auto_increment_id, meta_snapshots))) {
-          ret = Status::kErrorUnexpected;
-          SE_LOG(WARN, "backup snapshot id already exists", K(ret), K(backup_id));
-        } else {
-          last_manifest_file_num = StorageLogger::get_instance().current_manifest_file_number();
-          last_manifest_file_size = StorageLogger::get_instance().current_manifest_file_size();
-          last_wal_file_num = logfile_number_;
-          last_binlog_pos = global_binlog_pos_;
+        last_manifest_file_num = StorageLogger::get_instance().current_manifest_file_number();
+        last_manifest_file_size = StorageLogger::get_instance().current_manifest_file_size();
+        last_wal_file_num = logfile_number_;
+        last_binlog_pos = global_binlog_pos_;
 
-          SE_LOG(INFO,
-                 "Create a backup snapshot",
-                 K(backup_id),
-                 K(ret),
-                 K(last_manifest_file_num),
-                 K(last_manifest_file_size),
-                 K(last_wal_file_num),
-                 K(last_binlog_pos.file_name_),
-                 K(last_binlog_pos.offset_));
-        }
+        SE_LOG(INFO,
+               "Create a backup snapshot",
+               K(backup_id),
+               K(ret),
+               K(last_manifest_file_num),
+               K(last_manifest_file_size),
+               K(last_wal_file_num),
+               K(last_binlog_pos.file_name_),
+               K(last_binlog_pos.offset_));
       }
 
       if (FAILED(ret)) {

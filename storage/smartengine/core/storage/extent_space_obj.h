@@ -39,6 +39,7 @@ class ObjectExtentSpace : public ExtentSpace {
   // extent relative function
   int allocate(const std::string prefix, ExtentIOInfo &io_info) override;
   int recycle(const std::string prefix, const ExtentId extent_id) override;
+  // TODO(ljc): Change back to the original implementation. see https://github.com/wesql/wesql-server/pull/101/files
   // mark the extent used, only used during recovery
   int reference_if_need(const std::string prefix,
                         const ExtentId extent_id,
@@ -88,8 +89,7 @@ private:
   // TODO(cnut): maintain the used extent count
   int64_t free_extent_count_;
   uint64_t last_alloc_ts_; // timestamp of last allocate extent
-  std::set<int32_t> inused_extent_set_;
-  int32_t last_allocated_extent_offset_;
+  std::set<int64_t> inused_extent_set_;
 };
 
 }  // namespace storage

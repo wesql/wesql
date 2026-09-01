@@ -39,6 +39,9 @@ class ObjectStore;
 }
 
 namespace smartengine {
+namespace objstore {
+class ObjStoreSnapshotOperator;
+}
 
 namespace common {
 struct ImmutableDBOptions;
@@ -432,6 +435,7 @@ class Env {
     return common::Status::NotSupported("Not supported.");
   }
 
+
   virtual const std::string &GetObjectStoreBucket() {
     static std::string kNotSupportedStr("Not supported.");
     return kNotSupportedStr;
@@ -444,6 +448,27 @@ class Env {
   }
 
   virtual uint32_t GetObjstoreLeaseLockTimeout() { return 0; }
+
+  virtual common::Status GetSnapshotOperator(smartengine::objstore::ObjStoreSnapshotOperator*& snapshot_operator) {
+    snapshot_operator = nullptr;
+    return common::Status::NotSupported("Not supported.");
+  }
+
+  virtual common::Status GetLatestSnapshotId(int64_t& snapshot_id) {
+    return common::Status::NotSupported("Not supported.");
+  }
+
+  virtual common::Status AllocSnapshotId(int64_t& snapshot_id) {
+    return common::Status::NotSupported("Not supported.");
+  }
+
+  virtual common::Status AllocMetasnapshotId(int64_t& metasnapshot_id) {
+    return common::Status::NotSupported("Not supported.");
+  }
+
+  virtual common::Status AllocExtentId(int64_t& extent_id) {
+    return common::Status::NotSupported("Not supported.");
+  }
 
  protected:
   // The pointer to an internal structure that will update the

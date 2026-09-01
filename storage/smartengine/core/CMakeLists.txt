@@ -529,6 +529,7 @@ set(SOURCES
         objstore/lease_lock.cc
         objstore/objstore_layout.cc
         objstore/objstore_allocator.cc
+        objstore/objstore_snapshot.cc
         objstore/snapshot_release_lock.cc
         compact/compaction.cc
         compact/compaction_job.cc

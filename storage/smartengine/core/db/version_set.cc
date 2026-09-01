@@ -23,6 +23,7 @@
 #include "memory/base_malloc.h"
 #include "memory/mod_info.h"
 #include "memtable/memtable.h"
+#include "objstore/objstore_snapshot.h"
 #include "schema/table_schema.h"
 #include "storage/extent_space_manager.h"
 #include "storage/storage_log_entry.h"
@@ -212,29 +213,29 @@ int VersionSet::recover_extent_space_manager()
     SE_LOG(ERROR, "fail to open all data file", K(ret));
   }
 
-  if (SUCCED(ret)) {
-    BackupSnapshotMap &backup_snapshots = BackupSnapshotImpl::get_instance()->get_backup_snapshot_map();
-    int64_t backup_snapshot_count = backup_snapshots.get_backup_snapshot_count();
-    BackupSnapshotId prev_backup_id = 0;
-    BackupSnapshotId backup_id = 0;
-    uint64_t auto_increment_id = 0;
-    MetaSnapshotSet *backup_snapshot = nullptr;
-    db::Snapshot *sn = nullptr;
+  // if (SUCCED(ret)) {
+  //   BackupSnapshotMap &backup_snapshots = BackupSnapshotImpl::get_instance()->get_backup_snapshot_map();
+  //   int64_t backup_snapshot_count = backup_snapshots.get_backup_snapshot_count();
+  //   BackupSnapshotId prev_backup_id = 0;
+  //   BackupSnapshotId backup_id = 0;
+  //   uint64_t auto_increment_id = 0;
+  //   MetaSnapshotSet *backup_snapshot = nullptr;
+  //   db::Snapshot *sn = nullptr;
 
-    while (SUCCED(ret) &&
-           backup_snapshots.get_next_backup_snapshot(prev_backup_id, backup_id, auto_increment_id, backup_snapshot)) {
-      for (auto iter = backup_snapshot->begin(); SUCCED(ret) && iter != backup_snapshot->end(); ++iter) {
-        if (IS_NULL(sn = *iter)) {
-          ret = Status::kCorruption;
-          SE_LOG(WARN, "meta snapshot must not nullptr", K(ret));
-        } else if (FAILED(sn->recover_extent_space())) {
-          SE_LOG(WARN, "fail to recover extent space", K(ret), "index_id", sn->GetSequenceNumber());
-        }
-      }
+  //   while (SUCCED(ret) &&
+  //          backup_snapshots.get_next_backup_snapshot(prev_backup_id, backup_id, auto_increment_id, backup_snapshot)) {
+  //     for (auto iter = backup_snapshot->begin(); SUCCED(ret) && iter != backup_snapshot->end(); ++iter) {
+  //       if (IS_NULL(sn = *iter)) {
+  //         ret = Status::kCorruption;
+  //         SE_LOG(WARN, "meta snapshot must not nullptr", K(ret));
+  //       } else if (FAILED(sn->recover_extent_space())) {
+  //         SE_LOG(WARN, "fail to recover extent space", K(ret), "index_id", sn->GetSequenceNumber());
+  //       }
+  //     }
 
-      prev_backup_id = backup_id;
-    }
-  }
+  //     prev_backup_id = backup_id;
+  //   }
+  // }
 
   if (SUCCED(ret)) {
     SubTable *sub_table = nullptr;
@@ -527,96 +528,6 @@ int VersionSet::write_subtable(util::WritableFile &checkpoint_writer,
                                 ObjType::kSubTable);
 }
 
-int VersionSet::write_meta_snapshot(util::WritableFile &checkpoint_writer, int64_t &meta_snapshot_meta_block_count,
-                                    CheckpointBlockHeader *block_header, char *buf, int64_t &offset,
-                                    SnapshotImpl *meta_snapshot) {
-  return write_checkpoint_block(checkpoint_writer,
-                                meta_snapshot_meta_block_count,
-                                block_header,
-                                buf,
-                                offset,
-                                meta_snapshot,
-                                ObjType::kMetaSnapshot);
-}
-
-int VersionSet::write_backup_snapshots(util::WritableFile &checkpoint_writer, CheckpointHeader &header, char *buf) {
-  int ret = Status::kOk;
-  BackupSnapshotId prev_backup_id = 0;
-  BackupSnapshotId backup_id = 0;
-  uint64_t auto_increment_id = 0;
-  MetaSnapshotSet *backup_snapshot = nullptr;
-  const int64_t buf_size = DEFAULT_BUFFER_SIZE;
-  int64_t size = 0;
-  SubTable *sub_table = nullptr;
-  const SnapshotImpl *meta_snapshot = nullptr;
-  CheckpointBlockHeader *block_header = nullptr;
-
-  BackupSnapshotMap *backup_snapshots = &BackupSnapshotImpl::get_instance()->get_backup_snapshot_map();
-
-  if (backup_snapshots != nullptr) {
-    backup_snapshots->set_in_use(true);
-
-    size_t backup_snapshots_count = backup_snapshots->get_backup_snapshot_count();
-    assert(backup_snapshots_count <= BackupSnapshotMap::kMaxBackupSnapshotNum);
-
-    header.backup_snapshots_count_ = backup_snapshots_count;
-
-    size_t backup_snapshot_idx = 0;
-    while (SUCCED(ret) &&
-           backup_snapshots->get_next_backup_snapshot(prev_backup_id, backup_id, auto_increment_id, backup_snapshot)) {
-      int64_t offset = 0;
-
-      if (FAILED(reserve_checkpoint_block_header(buf, buf_size, offset, block_header))) {
-        SE_LOG(WARN, "fail to reserve check block header", K(ret));
-      } else {
-        BackupSnapshotInfo &b_sn_info = header.backup_snapshot_info_[backup_snapshot_idx];
-
-        b_sn_info.backup_id_ = backup_id;
-        b_sn_info.auto_increment_id_ = auto_increment_id;
-        b_sn_info.meta_snapshot_count_ = backup_snapshot->size();
-        b_sn_info.meta_snapshot_meta_block_offset_ = checkpoint_writer.GetFileSize();
-        for (const auto *sn : *backup_snapshot) {
-          if (IS_NULL(meta_snapshot = dynamic_cast<const SnapshotImpl *>(sn))) {
-            ret = Status::kErrorUnexpected;
-            SE_LOG(WARN, "unexpected error, snapshot must not be nullptr", K(ret));
-            break;
-          } else if (FAILED(write_meta_snapshot(checkpoint_writer,
-                                                b_sn_info.meta_snapshot_meta_block_count_,
-                                                block_header,
-                                                buf,
-                                                offset,
-                                                const_cast<SnapshotImpl *>(meta_snapshot)))) {
-            SE_LOG(WARN, "fail to write meta snapshot", K(ret), "snapshot_id", meta_snapshot->GetSequenceNumber());
-            break;
-          }
-        } // end of for loop
-
-        if (SUCCED(ret) && block_header->entry_count_ > 0) {
-          block_header->data_size_ = offset - block_header->data_offset_;
-          if (FAILED(
-                  checkpoint_writer.PositionedAppend(Slice(buf, buf_size), checkpoint_writer.GetFileSize()).code())) {
-            SE_LOG(WARN, "fail to append buffer to checkpoint writer", K(ret));
-          } else {
-            SE_LOG(INFO, "success to write backup snapshot", K(ret), "backup_id", backup_id);
-            b_sn_info.meta_snapshot_meta_block_count_++;
-          }
-        }
-
-        backup_snapshot_idx++;
-      }
-
-      prev_backup_id = backup_id;
-    } // end of while loop
-
-    backup_snapshots->set_in_use(false);
-
-    if (SUCCED(ret) && FAILED(backup_snapshots->do_pending_release())) {
-      SE_LOG(WARN, "fail to do pending release", K(ret));
-    }
-  }
-  return ret;
-}
-
 int VersionSet::write_current_checkpoint(util::WritableFile &checkpoint_writer, CheckpointHeader &header, char *buf) {
   int ret = Status::kOk;
   ColumnFamilyData *sub_table = nullptr;
@@ -694,8 +605,6 @@ int VersionSet::do_checkpoint(util::WritableFile *checkpoint_writer, CheckpointH
     SE_LOG(WARN, "fail to allocate memory for buf", K(ret), K(buf_size));
   } else if (FAILED(write_current_checkpoint(*checkpoint_writer, *header, buf))) {
     SE_LOG(WARN, "fail to write current checkpoint", K(ret));
-  } else if (FAILED(write_backup_snapshots(*checkpoint_writer, *header, buf))) {
-    SE_LOG(WARN, "fail to write backup snapshots", K(ret));
   } else {
     SE_LOG(INFO, "success to do checkpoint", K(ret));
   }
@@ -773,134 +682,43 @@ int VersionSet::load_all_sub_table(util::RandomAccessFile &checkpoint_reader,
   return ret;
 }
 
-int VersionSet::read_big_meta_snapshot(util::RandomAccessFile &checkpoint_reader, int64_t block_size,
-                                       int64_t &file_offset, MetaSnapshotSet &backup_snapshot) {
+int VersionSet::load_latest_backup_snapshot() {
   int ret = Status::kOk;
-  char *buf = nullptr;
-  int64_t buf_size = block_size;
-  Slice result;
-  CheckpointBlockHeader *block_header = nullptr;
-  int64_t pos = 0;
-  SnapshotImpl *meta_snapshot = nullptr;
-
-  if (block_size <= 0 || file_offset <= 0) {
-    ret = Status::kInvalidArgument;
-    SE_LOG(WARN, "invalid argument", K(ret), KP(&checkpoint_reader), K(block_size), K(file_offset));
-  } else if (IS_NULL(buf = reinterpret_cast<char *>(
-                         memory::base_memalign(DIOHelper::DIO_ALIGN_SIZE, buf_size, memory::ModId::kVersionSet)))) {
-    ret = Status::kMemoryLimit;
-    SE_LOG(WARN, "fail to allocate memory for buf", K(ret), K(buf_size));
-  } else if (FAILED(checkpoint_reader.Read(file_offset, buf_size, &result, buf).code())) {
-    SE_LOG(WARN, "fail to read buf", K(ret));
+  GlobalContext *global_ctx = nullptr;
+  int64_t snapshot_id = 0;
+  objstore::ObjStoreSnapshotOperator *snapshot_operator = nullptr;
+  util::BackupSnapshotInfo backup_snapshot_info;
+  if (IS_NULL(global_ctx = get_global_ctx())) {
+    ret = Status::kErrorUnexpected;
+    SE_LOG(WARN, "unexpected error, global context must not nullptr", K(ret));
+  } else if (FAILED(env_->GetLatestSnapshotId(snapshot_id).code())) {
+    SE_LOG(WARN, "fail to get latest snapshot id", K(ret));
+  } else if (FAILED(env_->GetSnapshotOperator(snapshot_operator).code())) {
+    SE_LOG(WARN, "fail to get snapshot operator", K(ret));
+  } else if (IS_NULL(snapshot_operator)) {
+    ret = Status::kErrorUnexpected;
+    SE_LOG(WARN, "unexpected error, snapshot operator must not nullptr", K(ret));
+  } else if (FAILED(snapshot_operator->get_snapshot(snapshot_id, backup_snapshot_info))) {
+    SE_LOG(WARN, "fail to get snapshot", K(ret));
   } else {
-    block_header = reinterpret_cast<CheckpointBlockHeader *>(buf);
-    pos = block_header->data_offset_;
-    if (1 != block_header->entry_count_) {
-      ret = Status::kCorruption;
-      SE_LOG(WARN, "invalid entry count", K(ret), K(block_header->entry_count_));
-    } else if (IS_NULL(meta_snapshot = MOD_NEW_OBJECT(memory::ModId::kStorageMgr, db::SnapshotImpl))) {
-      ret = Status::kMemoryLimit;
-      SE_LOG(WARN, "fail to allocate memory for new current meta", K(ret));
-    } else if (FAILED(meta_snapshot->deserialize(buf, buf_size, pos, global_ctx_->options_.comparator))) {
-      SE_LOG(WARN, "fail to deserialize meta snapshot", K(ret));
-    } else {
-      backup_snapshot.emplace(meta_snapshot);
-      file_offset += buf_size;
-    }
-  }
-
-  if (nullptr != buf) {
-    memory::base_memalign_free(buf);
-    buf = nullptr;
-  }
-
-  return ret;
-}
-
-int VersionSet::load_backup_snapshots(util::RandomAccessFile &checkpoint_reader,
-                                      storage::CheckpointHeader &header,
-                                      char *buf,
-                                      int64_t buf_size) {
-  int ret = Status::kOk;
-  int64_t pos = 0;
-  int64_t backup_snapshot_index = 0;
-  Slice result;
-  SnapshotImpl *meta_snapshot = nullptr;
-  CheckpointBlockHeader *block_header = nullptr;
-
-  assert(buf);
-  assert(buf_size == DEFAULT_BUFFER_SIZE);
-
-  BackupSnapshotMap *backup_snapshots = &BackupSnapshotImpl::get_instance()->get_backup_snapshot_map();
-
-  int64_t backup_snapshot_count = header.backup_snapshots_count_;
-  SE_LOG(INFO, "begin to load all backup snapshots", K(backup_snapshot_count));
-
-  while (SUCCED(ret) && backup_snapshot_index < backup_snapshot_count) {
-    BackupSnapshotInfo &backup_snapshot_info = header.backup_snapshot_info_[backup_snapshot_index];
-    const int64_t backup_id = backup_snapshot_info.backup_id_;
-    const int64_t auto_increment_id = backup_snapshot_info.auto_increment_id_;
-    const int64_t meta_block_count = backup_snapshot_info.meta_snapshot_meta_block_count_;
-    const int64_t meta_snapshot_count = backup_snapshot_info.meta_snapshot_count_;
-    int64_t offset = backup_snapshot_info.meta_snapshot_meta_block_offset_;
-    int64_t block_index = 0;
-    MetaSnapshotSet backup_snapshot;
-
-    SE_LOG(INFO, "begin to load backup snapshot", K(backup_snapshot_index), K(backup_id), K(meta_block_count),
-           K(meta_snapshot_count), "start offset", offset);
-
-    while (SUCCED(ret) && block_index < meta_block_count) {
-      pos = 0;
-      if (FAILED(checkpoint_reader.Read(offset, buf_size, &result, buf).code())) {
-        SE_LOG(WARN, "fail to read buf", K(ret), K(buf_size));
+    for (const auto &it : backup_snapshot_info.meta_snapshot_ids_) {
+      int64_t meta_snapshot_id = it.second;
+      int64_t index_id = it.first;
+      std::string meta_snapshot_data;
+      db::SnapshotImpl *meta_snapshot = nullptr;
+      if (IS_NULL(meta_snapshot = MOD_NEW_OBJECT(memory::ModId::kStorageMgr, db::SnapshotImpl))) {
+        ret = Status::kMemoryLimit;
+        SE_LOG(WARN, "fail to allocate memory for new current meta", K(ret));
+        break;
+      // TODO: parallel load meta snapshot from objstore 
+      } else if (FAILED(snapshot_operator->get_meta_snapshot(meta_snapshot_id, *meta_snapshot, global_ctx->options_.comparator))) {
+        SE_LOG(WARN, "fail to get meta snapshot", K(ret));
+        break;
       } else {
-        block_header = reinterpret_cast<CheckpointBlockHeader *>(buf);
-        pos = block_header->data_offset_;
-        if (block_header->block_size_ > buf_size) {
-          if (FAILED(read_big_meta_snapshot(checkpoint_reader, block_header->block_size_, offset, backup_snapshot))) {
-            SE_LOG(WARN, "fail to read big meta snapshot", K(ret), K(*block_header));
-          }
-        } else {
-          for (int64_t i = 0; SUCCED(ret) && i < block_header->entry_count_; ++i) {
-            if (IS_NULL(meta_snapshot = MOD_NEW_OBJECT(memory::ModId::kStorageMgr, db::SnapshotImpl))) {
-              ret = Status::kMemoryLimit;
-              SE_LOG(WARN, "fail to allocate memory for new current meta", K(ret));
-            } else if (FAILED(meta_snapshot->deserialize(buf, buf_size, pos, global_ctx_->options_.comparator))) {
-              SE_LOG(WARN, "fail to deserialize meta snapshot", K(ret));
-            } else {
-              backup_snapshot.emplace(meta_snapshot);
-            }
-          }
-          offset += buf_size;
-        }
+        // todo
       }
-      ++block_index;
     }
-
-    SE_LOG(INFO, "end to load backup snapshot", K(backup_snapshot_index), K(backup_id), "real meta block count",
-           block_index, "real meta snapshot count", backup_snapshot.size(), "end offset", offset);
-
-    if (SUCCED(ret) && meta_block_count != block_index) {
-      ret = Status::kCorruption;
-      SE_LOG(WARN, "invalid meta block count", K(ret), K(meta_block_count), K(block_index));
-    }
-    if (SUCCED(ret) && backup_snapshot.size() != static_cast<size_t>(meta_snapshot_count)) {
-      ret = Status::kCorruption;
-      SE_LOG(WARN, "invalid meta snapshot count", K(ret), K(backup_snapshot.size()), K(meta_snapshot_count));
-    }
-    if (SUCCED(ret) && IS_FALSE(backup_snapshots->add_backup_snapshot(backup_id, auto_increment_id, backup_snapshot))) {
-      ret = Status::kErrorUnexpected;
-      SE_LOG(WARN, "backup snapshot id already exist", K(ret), K(backup_id));
-    }
-    if (SUCCED(ret)) {
-      SE_LOG(INFO, "success to load backup snapshot", K(backup_id));
-    }
-
-    ++backup_snapshot_index;
   }
-
-  SE_LOG(INFO, "end to load all backup snapshots", K(ret), K(backup_snapshot_count), K(backup_snapshot_index));
-
   return ret;
 }
 
@@ -919,8 +737,6 @@ int VersionSet::load_checkpoint(util::RandomAccessFile *checkpoint_reader, stora
     SE_LOG(WARN, "fail to allocate memory for buf", K(ret), K(buf_size));
   } else if (FAILED(load_all_sub_table(*checkpoint_reader, *header, buf, buf_size))) {
     SE_LOG(WARN, "fail to load sub tables", K(ret));
-  } else if (FAILED(load_backup_snapshots(*checkpoint_reader, *header, buf, buf_size))) {
-    SE_LOG(WARN, "fail to load backup snapshots", K(ret));
   } else {
     SE_LOG(INFO, "success to load version set checkpoint");
   }
@@ -930,32 +746,6 @@ int VersionSet::load_checkpoint(util::RandomAccessFile *checkpoint_reader, stora
     buf = nullptr;
   }
 
-  return ret;
-}
-
-int VersionSet::replay_backup_snapshot_log(int64_t log_type, char *log_data, int64_t log_len) {
-  int ret = Status::kOk;
-  if (!is_backup_snapshot_log(log_type) || nullptr == log_data || 0 >= log_len) {
-    ret = Status::kInvalidArgument;
-    SE_LOG(WARN, "invalid argument", K(ret), K(log_type), K(log_len));
-  } else {
-    SE_LOG(INFO, "replay one log entry", K(log_type), K(log_len));
-    switch (log_type) {
-    case REDO_LOG_ACCQUIRE_BACKUP_SNAPSHOT:
-      if (FAILED(replay_accquire_snapshot_log(log_data, log_len))) {
-        SE_LOG(WARN, "fail to replay accquire backup snapshot log", K(ret), K(log_type));
-      }
-      break;
-    case REDO_LOG_RELEASE_BACKUP_SNAPSHOT:
-      if (FAILED(replay_release_snapshot_log(log_data, log_len))) {
-        SE_LOG(WARN, "fail to replay release backup snapshot log", K(ret), K(log_type));
-      }
-      break;
-    default:
-      ret = Status::kNotSupported;
-      SE_LOG(WARN, "unknow log type", K(ret), K(log_type));
-    }
-  }
   return ret;
 }
 
@@ -1062,14 +852,6 @@ int VersionSet::write_big_subtable(util::WritableFile &checkpoint_writer, Column
   return ret;
 }
 
-int VersionSet::write_big_meta_snapshot(util::WritableFile &checkpoint_writer, SnapshotImpl &meta_snapshot) {
-  int ret = Status::kOk;
-  if (FAILED(write_big_block(checkpoint_writer, &meta_snapshot, ObjType::kMetaSnapshot))) {
-    SE_LOG(WARN, "fail to write big meta snapshot", K(ret), "seq number", meta_snapshot.GetSequenceNumber());
-  }
-  return ret;
-}
-
 int VersionSet::read_big_subtable(util::RandomAccessFile *checkpoint_reader,
                                    int64_t block_size,
                                    int64_t &file_offset)
@@ -1151,72 +933,6 @@ int VersionSet::reserve_checkpoint_block_header(char *buf,
     block_header->data_offset_ = offset;
   }
 
-  return ret;
-}
-
-int VersionSet::replay_accquire_snapshot_log(const char *log_data, int64_t log_length) {
-  int ret = Status::kOk;
-  AccquireBackupSnapshotLogEntry log_entry(0, 0);
-  int64_t pos = 0;
-
-  if (IS_NULL(log_data) || log_length <= 0) {
-    ret = Status::kInvalidArgument;
-    SE_LOG(WARN, "invalid argument", K(ret), KP(log_data), K(log_length));
-  } else if (FAILED(log_entry.deserialize(log_data, log_length, pos))) {
-    SE_LOG(WARN, "fail to deserialize accquire snapshot log entry", K(ret), K(log_length));
-  } else {
-    MetaSnapshotSet meta_snapshots;
-    BackupSnapshotId backup_id = log_entry.backup_id_;
-    uint64_t auto_increment_id = log_entry.auto_increment_id_;
-    assert(backup_id > 0);
-
-    // TODO(ljc): maybe we need a verfication mechanism to check the backup snapshot is valid
-    if (FAILED(create_backup_snapshot(meta_snapshots))) {
-      SE_LOG(WARN, "fail to create backup snapshot", K(ret));
-    } else {
-      db::BackupSnapshotMap &backup_snapshots = BackupSnapshotImpl::get_instance()->get_backup_snapshot_map();
-      if (IS_FALSE(backup_snapshots.add_backup_snapshot(backup_id, auto_increment_id, meta_snapshots))) {
-        ret = Status::kErrorUnexpected;
-        SE_LOG(WARN, "unexpected error, backup snapshot already exist", K(ret), K(backup_id));
-      } else {
-        SE_LOG(INFO, "success to replay accquire snapshot log", K(backup_id));
-      }
-    }
-  }
-  return ret;
-}
-
-int VersionSet::replay_release_snapshot_log(const char *log_data, int64_t log_length) {
-  int ret = Status::kOk;
-  ReleaseBackupSnapshotLogEntry log_entry(0);
-  int64_t pos = 0;
-
-  if (IS_NULL(log_data) || log_length <= 0) {
-    ret = Status::kInvalidArgument;
-    SE_LOG(WARN, "invalid argument", K(ret), KP(log_data), K(log_length));
-  } else if (FAILED(log_entry.deserialize(log_data, log_length, pos))) {
-    SE_LOG(WARN, "fail to deserialize release snapshot log entry", K(ret), K(log_length));
-  } else {
-    BackupSnapshotId backup_id = log_entry.backup_id_;
-    MetaSnapshotSet to_clean;
-    bool existed = false;
-    assert(backup_id > 0);
-
-    BackupSnapshotMap &backup_snapshots = BackupSnapshotImpl::get_instance()->get_backup_snapshot_map();
-    if (backup_snapshots.remove_backup_snapshot(backup_id, to_clean, existed)) {
-      if (IS_FALSE(existed)) {
-        ret = Status::kErrorUnexpected;
-        SE_LOG(WARN, "backup snapshot not found", K(ret), K(backup_id));
-      } else if (FAILED(StorageManager::recycle_backup_snapshot(to_clean))) {
-        SE_LOG(WARN, "fail to recycle backup snapshot", K(ret), K(backup_id));
-      } else {
-        SE_LOG(INFO, "success to replay release snapshot log", K(backup_id));
-      }
-    } else {
-      ret = Status::kErrorUnexpected;
-      SE_LOG(WARN, "unexpected error! backup snapshot is in use", K(ret), K(backup_id));
-    }
-  }
   return ret;
 }
 

@@ -118,7 +118,7 @@ static int se_hotbackup(THD *const thd MY_ATTRIBUTE((__unused__)),
   int ret = 0;
   const char *cmd = value->val_str(value, buf, &len);
   SeTransaction *const tx = get_or_create_tx(thd);
-  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_instance();
+  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_file_instance();
   BackupSnapshotId backup_id = 0;
   db::BinlogPosition binlog_pos;
 

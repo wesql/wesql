@@ -164,7 +164,7 @@ public:
   int get(const common::Slice &key, std::function<int(const ExtentMeta *extent_meta, int32_t level, bool &found)>, bool &found) const;
   int64_t get_extent_count(storage::Range &range) const;
   int add_layer(ExtentLayer *extent_layer);
-  int recover_reference_extents(bool for_snapshot);
+  int recover_reference_extents();
   ExtentStats get_extent_stats() const { return extent_stats_; }
   void merge_extent_stats(const ExtentStats &extent_stats);
   DECLARE_SERIALIZATION()

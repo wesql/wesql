@@ -37,7 +37,6 @@ class Snapshot {
   virtual storage::ExtentLayerVersion *get_extent_layer_version(const int64_t level) const = 0;
   virtual storage::ExtentLayer *get_extent_layer(const storage::LayerPosition &layer_position) const = 0;
   virtual int64_t get_total_extent_count() const = 0;
-  virtual int recover_extent_space() = 0;
 
 protected:
   virtual ~Snapshot() {}

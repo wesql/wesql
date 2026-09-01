@@ -298,6 +298,8 @@ SET(SE_SOURCES
   core/write_batch/write_batch_with_index.cc
   core/write_batch/write_batch_with_index_internal.cc
   core/objstore/objstore_layout.cc
+  core/objstore/objstore_snapshot.cc
+  core/objstore/objstore_allocator.cc
   core/objstore/lease_lock.cc
   core/objstore/snapshot_release_lock.cc
 )

@@ -47,8 +47,7 @@ ObjectExtentSpace::ObjectExtentSpace(util::Env *env,
       used_extent_count_(0),
       free_extent_count_(0),
       last_alloc_ts_(0),
-      inused_extent_set_(),
-      last_allocated_extent_offset_(0)
+      inused_extent_set_()
 {
   // init field
 }
@@ -117,204 +116,38 @@ int ObjectExtentSpace::remove() {
   return ret;
 }
 
-/*
-For std::set, the time consumed for various operations in some one machine is as follows:
-  insert 100000 elements: 64000us
-  find 100000 elements: 15000us
-  std::distance(100000 elements): 980us
-  std::advance(100000 elements): 950us
-*/
-int ObjectExtentSpace::find_available_extent_offset(int32_t &extent_offset)
-{
-  int ret = Status::kOk;
-  std::set<int32_t> &t = inused_extent_set_;
-  size_t size = t.size();
-  constexpr size_t MAX_EXTENT_OFFSET = INT32_MAX;
-  int32_t offset_largest_val = static_cast<int32_t>(EXTENT_OFFSET_LARGEST_VAL);
-#ifndef NDEBUG
-  TEST_SYNC_POINT_CALLBACK("ObjectExtentSpace::find_available_extent_offset::change_offset_largest_val",
-                           &offset_largest_val);
-#endif
-  extent_offset = -1;
-
-  if (0 == size) {
-    // empty
-    extent_offset = 0;
-  } else if (static_cast<long long>(size) < (1LL + offset_largest_val)) {
-    int32_t first_value = *(t.begin());
-    int32_t last_value = *(std::prev(t.end()));
-
-    if (last_allocated_extent_offset_ < 0) {
-      ret = Status::kErrorUnexpected;
-      SE_LOG(WARN, "unexpected error, last_allocated_extent_offset_ < 0", K(ret), K(last_allocated_extent_offset_));
-    } else if (first_value < 0 || last_value > offset_largest_val) {
-      ret = Status::kErrorUnexpected;
-      SE_LOG(WARN, "unexpected error, first_value < 0 or last_value > offset_largest_val", K(ret), K(first_value), K(last_value), K(offset_largest_val));
-    } else if (first_value == 0 && last_value == offset_largest_val) {
-      int32_t next_value = (last_allocated_extent_offset_ == offset_largest_val ? 0
-                                                                                : last_allocated_extent_offset_ + 1);
-      constexpr int32_t BIG_STEP_SIZE = 100000;
-      constexpr int32_t SMALL_STEP_SIZE = 5000;
-
-      int32_t cur_range_first_value = next_value;
-      int32_t cur_range_last_value = (cur_range_first_value < offset_largest_val - BIG_STEP_SIZE
-                                          ? cur_range_first_value + BIG_STEP_SIZE
-                                          : offset_largest_val);
-      while (SUCCED(ret)) {
-        if (cur_range_last_value < 0 || cur_range_first_value > cur_range_last_value) {
-          ret = Status::kErrorUnexpected;
-          SE_LOG(WARN,
-                 "unexpected error, cur_range_first_value < 0 or > cur_range_last_value",
-                 K(ret),
-                 K(cur_range_first_value),
-                 K(cur_range_last_value));
-          break;
-        }
-        auto cur_first = t.find(cur_range_first_value);
-        auto cur_last = t.find(cur_range_last_value);
-        if (cur_first != t.end() && cur_last != t.end()) {
-          long distance = std::distance(cur_first, cur_last);
-          if (distance < cur_range_last_value - cur_range_first_value) {
-            // there is an available extent offset at least, will find it
-            break;
-          } else if (distance > cur_range_last_value - cur_range_first_value) {
-            ret = Status::kErrorUnexpected;
-            SE_LOG(WARN,
-                   "unexpected error, impossible case",
-                   K(ret),
-                   K(cur_range_first_value),
-                   K(cur_range_last_value),
-                   K(distance));
-          } else {
-            // no available extent offset in this range
-            if (cur_range_last_value == offset_largest_val) {
-              cur_range_first_value = 0;
-              cur_range_last_value = BIG_STEP_SIZE;
-            } else {
-              cur_range_first_value = cur_range_last_value + 1;
-              cur_range_last_value = cur_range_first_value < offset_largest_val - BIG_STEP_SIZE
-                                         ? cur_range_first_value + BIG_STEP_SIZE
-                                         : offset_largest_val;
-            }
-          }
-        } else {
-          // there is an available extent offset at least, will find it
-          break;
-        }
-      }
-
-      if (SUCCED(ret)) {
-        int32_t step = cur_range_last_value - cur_range_first_value > SMALL_STEP_SIZE
-                           ? SMALL_STEP_SIZE
-                           : cur_range_last_value - cur_range_first_value;
-        if (step <= 0 || cur_range_last_value < 0 || cur_range_first_value > cur_range_last_value) {
-          ret = Status::kErrorUnexpected;
-          SE_LOG(WARN,
-                 "unexpected error, impossible case",
-                 K(ret),
-                 K(step),
-                 K(cur_range_first_value),
-                 K(cur_range_last_value));
-        } else {
-          bool found = false;
-          // find the available extent offset in the range [cur_range_first_value, cur_range_last_value]
-          while (step > 0 && !found) {
-            auto small_step_first = t.find(cur_range_first_value);
-            auto small_step_last = t.find(cur_range_first_value + step);
-            if (small_step_first != t.end() && small_step_last != t.end() &&
-                std::distance(small_step_first, small_step_last) == step) {
-              cur_range_first_value += step;
-              step = (cur_range_last_value - cur_range_first_value > SMALL_STEP_SIZE
-                          ? SMALL_STEP_SIZE
-                          : cur_range_last_value - cur_range_first_value);
-              continue;
-            }
-
-            for (int32_t i = cur_range_first_value; i <= cur_range_first_value + step; i++) {
-              if (t.find(i) == t.end()) {
-                extent_offset = i;
-                found = true;
-                break;
-              }
-            }
-          }
-
-          if (step < 0) {
-            ret = Status::kErrorUnexpected;
-            SE_LOG(WARN, "unexpected error, step < 0", K(ret), K(step));
-          } else if (!found) {
-            ret = Status::kErrorUnexpected;
-            SE_LOG(WARN, "extent offset set is not full but allocated failed", K(ret));
-          }
-        }
-      }
-    } else {
-      // extent offset must be in [0, offset_large_val]
-      extent_offset = (last_value != offset_largest_val) ? last_value + 1 : 0;
-    }
-  } else if ((1LL + offset_largest_val) == static_cast<long long>(size)) {
-    // full
-    ret = Status::kNoSpace;
-  } else {
-    ret = Status::kErrorUnexpected;
-    SE_LOG(WARN, "unexpected error, extent offset set size is invalid", K(ret), K(size));
-  }
-
-  if (SUCCED(ret)) {
-    if (extent_offset < 0 || extent_offset > offset_largest_val) {
-      ret = Status::kErrorUnexpected;
-      SE_LOG(WARN, "unexpected error, extent offset < 0", K(ret), K(extent_offset), K(offset_largest_val));
-    } else if (t.find(extent_offset) != t.end()) { // make sure the found extent_offset is not used.
-      ret = Status::kErrorUnexpected;
-      SE_LOG(WARN, "unexpected error, allocated extent offset is already used", K(ret), K(extent_offset));
-    } else {
-      last_allocated_extent_offset_ = extent_offset;
-    }
-  }
-  return ret;
-}
-
-
 int ObjectExtentSpace::allocate(const std::string prefix, ExtentIOInfo &io_info)
 {
   int ret = Status::kOk;
-
   if (UNLIKELY(!is_inited_)) {
     ret = Status::kNotInit;
     SE_LOG(WARN, "ObjectExtentSpace should been inited first", K(ret));
   } else {
-    int32_t extent_offset = 0;
-    ret = find_available_extent_offset(extent_offset);
-    if (FAILED(ret)) {
-      SE_LOG(WARN, "fail to allocate extent from obj extent space", K(ret));
+    int64_t objstore_extent_id = 0;
+    if (FAILED(env_->AllocExtentId(objstore_extent_id).code())) {
+      ret = Status::kObjStoreError;
+      SE_LOG(WARN, "fail to allocate extent id", K(ret));
     } else {
       ExtentId extent_id;
-      // table_space_id_(31Bits) + extent_offset(31Bits) = ExtentID,
-      // the extent_id.offset overflow is possible, it is not common case in the
-      // real world. but this design does introduce a limitation ( <= 4PB) for
-      // a single table.
-      int32_t faked_fn = convert_table_space_to_fd(table_space_id_);
-      extent_id.file_number = faked_fn;
-      extent_id.offset = extent_offset;
-      if (inused_extent_set_.insert(extent_id.offset).second) {
+      extent_id.set(objstore_extent_id);
+      if (inused_extent_set_.insert(objstore_extent_id).second) {
         ++total_extent_count_;
         ++used_extent_count_;
         io_info.set_param(OBJECT_EXTENT_SPACE,
                           extent_id,
                           MAX_EXTENT_SIZE,
                           UniqueIdAllocator::get_instance().alloc(),
-                          faked_fn,
+                          -1,
                           objstore_,
                           env_->GetObjectStoreBucket(),
                           prefix);
       } else {
         ret = Status::kErrorUnexpected;
-        SE_LOG(WARN, "fail to insert extent into inused set", K(ret),
-               K(table_space_id_), K(extent_id.offset));
+        SE_LOG(WARN, "fail to insert extent into inused set", K(ret), K(objstore_extent_id));
       }
     }
   }
-
+  
   return ret;
 }
 
@@ -323,12 +156,7 @@ int ObjectExtentSpace::recycle(const std::string prefix, const ExtentId extent_i
 
   if (UNLIKELY(!is_inited_)) {
     ret = Status::kNotInit;
-  } else if (extent_id.file_number !=
-             convert_table_space_to_fd(table_space_id_)) {
-    ret = Status::kInvalidArgument;
-    SE_LOG(WARN, "unexpected error, file_num not match",
-           K(extent_id.file_number), K(table_space_id_), K(ret));
-  } else if (inused_extent_set_.count(extent_id.offset) == 0) {
+  } else if (inused_extent_set_.count(extent_id.id()) == 0) {
     ret = Status::kInvalidArgument;
     SE_LOG(WARN, "unexpected error, can not find extent in inused set",
            K(extent_id.offset), K(ret));
@@ -341,7 +169,7 @@ int ObjectExtentSpace::recycle(const std::string prefix, const ExtentId extent_i
       SE_LOG(WARN, "fail to recyle extent", K(ret), K(extent_bucket_), K(extent_key),
              KE(st.error_code()), K(st.error_message()));
     } else {
-      inused_extent_set_.erase(extent_id.offset);
+      inused_extent_set_.erase(extent_id.id());
       --total_extent_count_;
       --used_extent_count_;
     }
@@ -364,7 +192,7 @@ int ObjectExtentSpace::reference_if_need(const std::string prefix,
     ret = Status::kInvalidArgument;
     SE_LOG(WARN, "unexpected error, file_num not match",
            K(extent_id.file_number), K(table_space_id_), K(ret));
-  } else if (!(inused_extent_set_.insert(extent_id.offset).second)) {
+  } else if (!(inused_extent_set_.insert(extent_id.id()).second)) {
     existed = true;
     SE_LOG(DEBUG, "extent is already referenced before", K(extent_id));
   } else {

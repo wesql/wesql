@@ -190,56 +190,6 @@ typedef std::unordered_map<db::ColumnFamilyData *, db::Snapshot *> MetaSnapshotM
 typedef std::unordered_set<db::Snapshot *> MetaSnapshotSet;
 
 class DB;
-class BackupSnapshotMap
-{
-public:
-  constexpr static int kMaxBackupSnapshotNum = 40000;
-
-  BackupSnapshotMap() : in_use_(false), max_auto_increment_id_(0), auto_increment_id_for_recover_(0) {}
-
-  bool find_backup_snapshot(BackupSnapshotId backup_id);
-
-  bool get_next_backup_snapshot(BackupSnapshotId prev_backup_id,
-                                BackupSnapshotId &backup_id,
-                                uint64_t &auto_increment_id,
-                                MetaSnapshotSet *&meta_snapshots);
-
-  uint64_t get_auto_increment_id(BackupSnapshotId backup_id);
-
-  uint64_t get_max_auto_increment_id();
-
-  void save_auto_increment_id_for_recover(uint64_t auto_increment_id);
-
-  uint64_t get_auto_increment_id_for_recover();
-
-  bool add_backup_snapshot(BackupSnapshotId backup_id, uint64_t auto_increment_id, MetaSnapshotSet &meta_snapshots);
-
-  bool remove_backup_snapshot(BackupSnapshotId backup_id, MetaSnapshotSet &to_clean, bool &existed);
-
-  int release_backup_snapshot(BackupSnapshotId backup_id);
-
-  int do_pending_release();
-
-  // set in_use_ to true to avoid erase a backup snapshot which is in use from this map 
-  void set_in_use(bool in_use);
-
-  BackupSnapshotId get_latest_backup_id();
-
-  size_t get_backup_snapshot_count();
-
-private:
-  friend class util::BackupSnapshotImpl;
-  void clear();
-
-private:
-  std::mutex mutex_;
-  bool in_use_; // used by checkpoint at now
-  std::map<BackupSnapshotId, MetaSnapshotSet> backup_snapshots_;
-  std::map<BackupSnapshotId, uint64_t> auto_increment_ids_;
-  uint64_t max_auto_increment_id_;         // the max auto increment id of all backup snapshots created.
-  uint64_t auto_increment_id_for_recover_; // the auto increment id of the backup snapshot used for start recovery
-  std::vector<BackupSnapshotId> pending_release_backups_;
-};
 
 // A DB is a persistent ordered map from keys to values.
 // A DB is safe for concurrent access from multiple threads without
@@ -779,6 +729,23 @@ class DB {
   // synchronization -- i.e., file deletions will be enabled only after both
   // threads call EnableFileDeletions()
   virtual common::Status EnableFileDeletions(bool force = true) = 0;
+
+  virtual bool IsObjectStoreMode() const {
+    return false;
+  }
+
+  virtual bool IsFileMode() const {
+    return false;
+  }
+
+  //TODO(ljc): remove these two after snapshot v2 feature is ready
+  static constexpr bool IsSnapshotV1Mode() {
+    return true;
+  }
+
+  static constexpr bool IsSnapshotV2Mode() {
+    return !IsSnapshotV1Mode();
+  }
 
   // for hotbackup
   virtual int create_backup_snapshot(BackupSnapshotId backup_id,

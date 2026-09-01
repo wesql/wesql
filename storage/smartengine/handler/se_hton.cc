@@ -795,24 +795,7 @@ void se_dict_cache_reset_tables_and_tablespaces()
 }
 
 int se_checkpoint(THD *thd) {
-  int ret = Status::kOk;
-  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_instance();
-  if (FAILED(backup_instance->lock_one_step())) {
-    SE_LOG(WARN, "fail to accquire exclusive lock", K(ret));
-  } else if (FAILED(backup_instance->do_checkpoint(se_db))) {
-    my_printf_error(ER_UNKNOWN_ERROR, "SE: failed to do checkpoint for backup", MYF(0));
-  } else {
-    backup_instance->set_backup_status(se_backup_status[0]);
-  }
-
-  if (Status::kInitTwice != ret) {
-    backup_instance->unlock_one_step();
-  }
-
-  if (FAILED(ret)) {
-    ret = HA_ERR_INTERNAL_ERROR;
-  }
-  return ret;
+  return Status::kOk;
 }
 
 int se_create_backup_snapshot(THD *thd,
@@ -822,7 +805,7 @@ int se_create_backup_snapshot(THD *thd,
 {
   int ret = 0;
   const char* backup_status = nullptr;
-  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_instance();
+  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_objstore_instance();
   db::BinlogPosition binlog_pos;
 
   if (IS_NULL(backup_snapshot_id)) {
@@ -833,57 +816,17 @@ int se_create_backup_snapshot(THD *thd,
     my_printf_error(ER_UNKNOWN_ERROR, "SE: binlog_file_offset is null\n", MYF(0));
   } else if (FAILED(backup_instance->lock_one_step())) {
     SE_LOG(WARN, "fail to accquire exclusive lock", K(ret));
-    // TODO(ljc):
-    // 1. add an argument in handler interface to judge whether we need do checkpoint.
-    // 2. combine se_checkpoint and se_create_backup_snapshot to one handler interface.
   } else {
-    if (SUCCED(backup_instance->get_backup_status(backup_status)) && backup_status != se_backup_status[0]) {
-      // server layer can accuire backup snapshot without doing checkpoint, if so, we should init backup snapshot here
-      if (FAILED(backup_instance->init(se_db))) {
-        SE_LOG(WARN, "Failed to init backup snapshot", K(ret));
-      } else if (FAILED(backup_instance->create_tmp_dir(se_db))) {
-        SE_LOG(WARN, "Failed to create tmp dir for backup", K(ret));
-      }
+    if (FAILED(backup_instance->init(se_db))) {
+      SE_LOG(WARN, "Failed to init backup snapshot", K(ret));
+    } else if (FAILED(backup_instance->create_tmp_dir(se_db))) {
+      SE_LOG(WARN, "Failed to create tmp dir for backup", K(ret));
+    } else if (FAILED(backup_instance->accquire_backup_snapshot(se_db, backup_snapshot_id, binlog_pos))) {
+      my_printf_error(ER_UNKNOWN_ERROR, "SE: failed to acquire snapshots for backup", MYF(0));
+    } else {
+      binlog_file = binlog_pos.file_name_;
+      *binlog_file_offset = binlog_pos.offset_;
     }
-    if (SUCCED(ret)) {
-      if (FAILED(backup_instance->accquire_backup_snapshot(se_db, backup_snapshot_id, binlog_pos))) {
-        my_printf_error(ER_UNKNOWN_ERROR, "SE: failed to acquire snapshots for backup", MYF(0));
-      } else {
-        binlog_file = binlog_pos.file_name_;
-        *binlog_file_offset = binlog_pos.offset_;
-        backup_instance->set_backup_status(se_backup_status[1]);
-      }
-    }
-  }
-
-  if (Status::kInitTwice != ret) {
-    backup_instance->unlock_one_step();
-  }
-
-  if (FAILED(ret)) {
-    ret = HA_ERR_INTERNAL_ERROR;
-  }
-  return ret;
-}
-
-int se_incremental_backup(THD *thd) {
-  int ret = 0;
-  const char *backup_status = nullptr;
-  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_instance();
-
-  if (FAILED(backup_instance->lock_one_step())) {
-    SE_LOG(WARN, "fail to accquire exclusive lock", K(ret));
-  } else if (SUCCED(backup_instance->get_backup_status(backup_status)) &&
-             0 != strcasecmp(backup_status, se_backup_status[1])) {
-    ret = Status::kInvalidArgument;
-    my_printf_error(ER_UNKNOWN_ERROR,
-                    "SE: should execute command: %s before this command\n",
-                    MYF(0),
-                    se_backup_status[1]);
-  } else if (FAILED(backup_instance->record_incremental_extent_ids(se_db))) {
-    my_printf_error(ER_UNKNOWN_ERROR, "SE: failed to record incremental extent ids for backup", MYF(0));
-  } else {
-    backup_instance->set_backup_status(se_backup_status[2]);
   }
 
   if (Status::kInitTwice != ret) {
@@ -900,7 +843,7 @@ int se_cleanup_tmp_backup_dir(THD *thd)
 {
   int ret = 0;
 
-  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_instance();
+  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_objstore_instance();
   if (FAILED(backup_instance->lock_one_step())) {
     SE_LOG(WARN, "fail to accquire exclusive lock", K(ret));
   } else if (FAILED(backup_instance->cleanup_tmp_dir(se_db))) {
@@ -915,44 +858,19 @@ int se_cleanup_tmp_backup_dir(THD *thd)
   return ret;
 }
 
-int release_current_backup_snapshot(THD *thd, uint64_t backup_snapshot_id) {
-  int ret = Status::kOk;
-  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_instance();
-
-  if (backup_snapshot_id == 0) {
-    ret = Status::kInvalidArgument;
-    my_printf_error(ER_UNKNOWN_ERROR, "SE: backup_snapshot_id is 0\n", MYF(0));
-  } else if (backup_snapshot_id == backup_instance->current_backup_id()) {
-    if (FAILED(backup_instance->release_current_backup_snapshot(se_db))) {
-      my_printf_error(ER_UNKNOWN_ERROR, "SE: failed to release backup snapshot, backup id: %ld", MYF(0),
-                      backup_snapshot_id);
-    } else {
-      backup_instance->set_backup_status(se_backup_status[4]);
-    }
-  }
-
-  return ret;
-}
-
 int se_release_backup_snapshot(THD *thd, uint64_t backup_snapshot_id) {
   int ret = 0;
-  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_instance();
+  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_objstore_instance();
 
   if (FAILED(backup_instance->lock_one_step())) {
     SE_LOG(WARN, "fail to accquire exclusive lock", K(ret));
   } else if (backup_snapshot_id == 0) {
     ret = Status::kErrorUnexpected;
     my_printf_error(ER_UNKNOWN_ERROR, "SE: backup_snapshot_id is null or 0\n", MYF(0));
-  } else if (backup_snapshot_id != backup_instance->current_backup_id()) {
-    // release old backup snapshot
-    if (FAILED(backup_instance->release_old_backup_snapshot(se_db, backup_snapshot_id))) {
-      my_printf_error(ER_UNKNOWN_ERROR, "SE: failed to release backup snapshot, backup id: %ld", MYF(0),
-                      backup_snapshot_id);
-    }
-  } else if (FAILED(release_current_backup_snapshot(thd, backup_snapshot_id))) {
-    SE_LOG(WARN, "fail to release current backup snapshot", K(ret));
+  } else if (FAILED(backup_instance->release_objstore_backup_snapshot(se_db, backup_snapshot_id))) {
+    SE_LOG(WARN, "fail to release backup snapshot", K(ret));
   } else {
-    SE_LOG(INFO, "success to release current backup snapshot", K(backup_snapshot_id));
+    SE_LOG(INFO, "success to release backup snapshot", K(backup_snapshot_id));
   }
 
   if (Status::kInitTwice != ret) {
@@ -966,9 +884,8 @@ int se_release_backup_snapshot(THD *thd, uint64_t backup_snapshot_id) {
 }
 
 int se_list_backup_snapshots(THD *thd, std::vector<uint64_t> &backup_ids) {
-  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_instance();
-  backup_instance->list_backup_snapshots(backup_ids);
-  return 0;
+  util::BackupSnapshot *backup_instance = util::BackupSnapshot::get_objstore_instance();
+  return backup_instance->list_backup_snapshots(backup_ids);
 }
 
 } // namespace smartengine

@@ -39,10 +39,6 @@ bool is_extent_log(int64_t log_type)
   return REDO_LOG_MODIFY_EXTENT_META == log_type;
 }
 
-bool is_backup_snapshot_log(int64_t log_type) {
-  return REDO_LOG_ACCQUIRE_BACKUP_SNAPSHOT == log_type || REDO_LOG_RELEASE_BACKUP_SNAPSHOT == log_type;
-}
-
 LogHeader::LogHeader()
     : magic_number_(MAGIC_NUMBER),
       data_checksum_(0),
