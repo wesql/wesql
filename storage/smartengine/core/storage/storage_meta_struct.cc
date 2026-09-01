@@ -73,7 +73,9 @@ ExtentMeta::ExtentMeta()
       extent_space_type_(FILE_EXTENT_SPACE),
       index_block_handle_(),
       table_schema_(),
-      prefix_()
+      prefix_(),
+      object_size_(0),
+      object_sha256_()
 {
 }
 
@@ -97,7 +99,9 @@ ExtentMeta::ExtentMeta(uint8_t attr,
       extent_space_type_(extent_info.extent_space_type_),
       index_block_handle_(extent_info.index_block_handle_),
       table_schema_(table_schema),
-      prefix_(prefix)
+      prefix_(prefix),
+      object_size_(0),
+      object_sha256_()
 {}
 
 ExtentMeta::ExtentMeta(const ExtentMeta &extent_meta)
@@ -117,7 +121,9 @@ ExtentMeta::ExtentMeta(const ExtentMeta &extent_meta)
       extent_space_type_(extent_meta.extent_space_type_),
       index_block_handle_(extent_meta.index_block_handle_),
       table_schema_(extent_meta.table_schema_),
-      prefix_(extent_meta.prefix_)
+      prefix_(extent_meta.prefix_),
+      object_size_(extent_meta.object_size_),
+      object_sha256_(extent_meta.object_sha256_)
 {
 }
 
@@ -143,6 +149,8 @@ ExtentMeta& ExtentMeta::operator=(const ExtentMeta &extent_meta)
   index_block_handle_ = extent_meta.index_block_handle_;
   table_schema_ = extent_meta.table_schema_;
   prefix_ = extent_meta.prefix_;
+  object_size_ = extent_meta.object_size_;
+  object_sha256_ = extent_meta.object_sha256_;
 
   return *this;
 }
@@ -165,6 +173,8 @@ void ExtentMeta::reset()
   index_block_handle_.reset();
   table_schema_.reset();
   prefix_.clear();
+  object_size_ = 0;
+  object_sha256_.clear();
 }
 
 int ExtentMeta::deep_copy(ExtentMeta *&extent_meta) const
@@ -199,6 +209,8 @@ int ExtentMeta::deep_copy(ExtentMeta *&extent_meta) const
     extent_meta->index_block_handle_ = index_block_handle_;
     extent_meta->table_schema_ = table_schema_;
     extent_meta->prefix_ = prefix_;
+    extent_meta->object_size_ = object_size_;
+    extent_meta->object_sha256_ = object_sha256_;
   }
 
   return ret;
@@ -236,6 +248,8 @@ int ExtentMeta::deep_copy(memory::SimpleAllocator &allocator, ExtentMeta *&exten
     extent_meta->index_block_handle_ = index_block_handle_;
     extent_meta->table_schema_ = table_schema_;
     extent_meta->prefix_ = prefix_;
+    extent_meta->object_size_ = object_size_;
+    extent_meta->object_sha256_ = object_sha256_;
   }
   return ret;
 }
@@ -247,12 +261,13 @@ int64_t ExtentMeta::get_deep_copy_size() const
 DEFINE_COMPACTIPLE_SERIALIZATION(ExtentMeta, attr_, smallest_key_, largest_key_,
     extent_id_, smallest_seqno_, largest_seqno_, raw_data_size_, data_size_, num_data_blocks_,
     num_entries_, num_deletes_, table_space_id_, extent_space_type_, index_block_handle_,
-    table_schema_, prefix_)
+    table_schema_, prefix_, object_size_, object_sha256_)
 
 DEFINE_TO_STRING(ExtentMeta, KV_(attr), KV_(smallest_key), KV_(largest_key), KV_(extent_id),
     KV_(smallest_seqno), KV_(largest_seqno), KV_(refs), KV_(raw_data_size), KV_(data_size),
     KV_(num_data_blocks), KV_(num_entries), KV_(num_deletes), KV_(table_space_id),
-    KV_(extent_space_type), KV_(index_block_handle), KV_(table_schema), KV_(prefix))
+    KV_(extent_space_type), KV_(index_block_handle), KV_(table_schema), KV_(prefix),
+    KV_(object_size), KV_(object_sha256))
 
 } //namespace storage
 } //namespace smartengine

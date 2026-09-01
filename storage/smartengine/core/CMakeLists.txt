@@ -35,6 +35,8 @@
 cmake_minimum_required(VERSION 2.6)
 project(smartengine)
 
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+
 if(POLICY CMP0042)
   cmake_policy(SET CMP0042 NEW)
 endif()
@@ -529,6 +531,7 @@ set(SOURCES
         objstore/lease_lock.cc
         objstore/objstore_layout.cc
         objstore/objstore_allocator.cc
+        objstore/remote_extent.cc
         objstore/snapshot_release_lock.cc
         compact/compaction.cc
         compact/compaction_job.cc
@@ -580,18 +583,20 @@ if(WIN32)
   set(SYSTEM_LIBS ${SYSTEM_LIBS} Shlwapi.lib Rpcrt4.lib)
   set(SMARTENGINE_STATIC_LIB smartenginelib${ARTIFACT_SUFFIX})
   set(SMARTENGINE_IMPORT_LIB smartengine${ARTIFACT_SUFFIX})
-  set(LIBS ${SMARTENGINE_STATIC_LIB} ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
+  set(LIBS ${SMARTENGINE_STATIC_LIB} ${THIRDPARTY_LIBS} ${SYSTEM_LIBS}
+           OpenSSL::Crypto)
 else()
   set(SYSTEM_LIBS ${CMAKE_THREAD_LIBS_INIT} rt aio)
   set(SMARTENGINE_STATIC_LIB smartengine${ARTIFACT_SUFFIX})
   set(SMARTENGINE_SHARED_LIB smartengine-shared)
   set(SMARTENGINE_IMPORT_LIB ${SMARTENGINE_SHARED_LIB})
   #set(LIBS ${SMARTENGINE_SHARED_LIB} ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
-  set(LIBS ${SMARTENGINE_STATIC_LIB} ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
+  set(LIBS ${SMARTENGINE_STATIC_LIB} ${THIRDPARTY_LIBS} ${SYSTEM_LIBS}
+           OpenSSL::Crypto)
 
   add_library(${SMARTENGINE_SHARED_LIB} SHARED ${LIB_OBJS})
   target_link_libraries(${SMARTENGINE_SHARED_LIB}
-    ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
+    ${THIRDPARTY_LIBS} ${SYSTEM_LIBS} OpenSSL::Crypto)
   set_target_properties(${SMARTENGINE_SHARED_LIB} PROPERTIES
                         LINKER_LANGUAGE CXX
                         VERSION ${ROCKSDB_VERSION}
@@ -602,7 +607,7 @@ endif()
 
 add_library(${SMARTENGINE_STATIC_LIB} STATIC ${LIB_OBJS})
 target_link_libraries(${SMARTENGINE_STATIC_LIB}
-  ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
+  ${THIRDPARTY_LIBS} ${SYSTEM_LIBS} OpenSSL::Crypto)
 
 if(WIN32)
   add_library(${SMARTENGINE_IMPORT_LIB} SHARED ${LIB_OBJS})
@@ -723,6 +728,7 @@ set(TESTS
         unittest/objstore/objstore_allocator_test.cc
         unittest/objstore/objstore_test.cc
         unittest/objstore/objstore_bench.cc
+        unittest/objstore/remote_extent_test.cc
 )
 
 set(BENCHMARKS
@@ -777,6 +783,10 @@ foreach(sourcefile ${TEST_EXES})
       )
     target_link_libraries(${exename}${ARTIFACT_SUFFIX}
       testutillib${ARTIFACT_SUFFIX} gtest ${LIBS} gflags)
+    if("${exename}" STREQUAL "remote_extent_test")
+      target_compile_definitions(${exename}${ARTIFACT_SUFFIX} PRIVATE
+        SMARTENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
     if(NOT "${exename}" MATCHES "db_sanity_test")
       add_test(NAME ${exename} COMMAND ${exename}${ARTIFACT_SUFFIX})
       add_dependencies(check ${exename}${ARTIFACT_SUFFIX})

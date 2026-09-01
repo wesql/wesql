@@ -7,7 +7,10 @@
 */
 
 #include "mysys/objstore/local.h"
+#include "mysys/objstore/provider_lifecycle.h"
+#include "mysys/objstore/s3_error.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -15,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -22,10 +26,22 @@ namespace {
 
 namespace fs = std::filesystem;
 using objstore::Errors;
+using objstore::ExactObjectOutcome;
 using objstore::LocalObjectStore;
 using objstore::ObjectMeta;
 using objstore::ObjectStore;
 using objstore::Status;
+
+std::atomic<unsigned int> provider_initialize_calls{0};
+std::atomic<unsigned int> provider_shutdown_calls{0};
+
+void record_provider_initialize() {
+  provider_initialize_calls.fetch_add(1, std::memory_order_relaxed);
+}
+
+void record_provider_shutdown() {
+  provider_shutdown_calls.fetch_add(1, std::memory_order_relaxed);
+}
 
 template <typename T>
 concept SupportsProviderCleanup = requires(T value) {
@@ -131,6 +147,148 @@ class FixedListingStore final : public LocalObjectStore {
  private:
   std::string key_;
 };
+
+void test_conditional_protocol_contract() {
+  TempDirectory temp;
+  LocalObjectStore local((temp.path() / "store").string());
+
+  const auto capabilities = local.conditional_capabilities();
+  expect(!capabilities.supports_remote_commit_io(),
+         "local provider claimed remote-commit conditional support");
+
+  const auto unsupported_get = local.get_object_exact("bucket", "key");
+  expect(unsupported_get.outcome() == ExactObjectOutcome::UNSUPPORTED &&
+             unsupported_get.body().empty() && unsupported_get.etag().empty() &&
+             unsupported_get.size() == 0 &&
+             unsupported_get.status().error_code() ==
+                 Errors::SE_CONDITIONAL_OPERATION_NOT_SUPPORTED,
+         "unsupported exact GET retained output or returned the wrong state");
+
+  const auto create_only = objstore::ConditionalPutCondition::create_only();
+  expect(create_only.is_valid(), "create-only condition is invalid");
+  const auto unsupported_put =
+      local.put_object_conditional("bucket", "key", "", create_only);
+  expect(unsupported_put.outcome() ==
+                 objstore::ConditionalPutOutcome::UNSUPPORTED &&
+             unsupported_put.etag().empty() &&
+             unsupported_put.status().error_code() ==
+                 Errors::SE_CONDITIONAL_OPERATION_NOT_SUPPORTED,
+         "unsupported conditional PUT retained output or returned wrong state");
+  const auto unsupported_file = local.put_object_from_file_conditional(
+      "bucket", "key", (temp.path() / "input").string(), create_only);
+  expect(unsupported_file.outcome() ==
+             objstore::ConditionalPutOutcome::UNSUPPORTED,
+         "local provider accepted conditional file creation");
+
+  const auto quoted_etag =
+      objstore::ConditionalPutCondition::match_etag("\"opaque-tag\"");
+  expect(quoted_etag.is_valid() && quoted_etag.etag() == "\"opaque-tag\"",
+         "quoted ETag was not preserved exactly");
+  expect(
+      !objstore::ConditionalPutCondition::match_etag("").is_valid() &&
+          !objstore::ConditionalPutCondition::match_etag(" bad ").is_valid() &&
+          !objstore::ConditionalPutCondition::match_etag("bad\r\ntag")
+               .is_valid(),
+      "invalid match-ETag condition was accepted");
+
+  const std::string binary_body{"a\0b", 3};
+  const auto found =
+      objstore::ExactObjectResult::found(binary_body, "\"binary-tag\"");
+  expect(found.is_found() && found.body() == binary_body && found.size() == 3 &&
+             found.etag() == "\"binary-tag\"",
+         "exact GET result is not binary-safe");
+  const auto empty = objstore::ExactObjectResult::found("", "\"empty-tag\"");
+  expect(empty.is_found() && empty.body().empty() && empty.size() == 0,
+         "empty exact object was confused with a missing object");
+  const auto invalid_etag = objstore::ExactObjectResult::found("stale", "");
+  expect(invalid_etag.outcome() == ExactObjectOutcome::PERMANENT_ERROR &&
+             invalid_etag.body().empty() && invalid_etag.etag().empty(),
+         "invalid exact GET result retained an untrusted body");
+
+  using objstore::s3_detail::ObjectErrorKind;
+  expect(objstore::s3_detail::classify_exact_get_failure(
+             404, false, ObjectErrorKind::OTHER) ==
+             ExactObjectOutcome::NOT_FOUND_404,
+         "HTTP 404 exact GET classification is wrong");
+  expect(objstore::s3_detail::classify_exact_get_failure(
+             404, false, ObjectErrorKind::NO_SUCH_BUCKET) ==
+             ExactObjectOutcome::PERMANENT_ERROR,
+         "missing bucket was confused with a missing object");
+  expect(objstore::s3_detail::classify_exact_get_failure(
+             -1, false, ObjectErrorKind::OTHER) ==
+             ExactObjectOutcome::TRANSIENT_UNAVAILABLE,
+         "request-not-made exact GET classification is wrong");
+  expect(objstore::s3_detail::classify_exact_get_failure(
+             503, true, ObjectErrorKind::OTHER) ==
+             ExactObjectOutcome::TRANSIENT_UNAVAILABLE,
+         "retry-exhausted exact GET classification is wrong");
+  expect(objstore::s3_detail::classify_exact_get_failure(
+             503, false, ObjectErrorKind::NO_SUCH_KEY) ==
+             ExactObjectOutcome::TRANSIENT_UNAVAILABLE,
+         "SDK error enum overrode a transient HTTP status");
+  expect(objstore::s3_detail::classify_exact_get_failure(
+             403, true, ObjectErrorKind::NO_SUCH_KEY) ==
+             ExactObjectOutcome::PERMANENT_ERROR,
+         "SDK metadata overrode a permanent HTTP status");
+  expect(
+      objstore::s3_detail::classify_conditional_put_failure(409, false) ==
+              objstore::ConditionalPutOutcome::CONFLICT_409 &&
+          objstore::s3_detail::classify_conditional_put_failure(412, false) ==
+              objstore::ConditionalPutOutcome::PRECONDITION_FAILED_412 &&
+          objstore::s3_detail::classify_conditional_put_failure(503, true) ==
+              objstore::ConditionalPutOutcome::TRANSPORT_UNKNOWN &&
+          objstore::s3_detail::classify_conditional_put_failure(403, false) ==
+              objstore::ConditionalPutOutcome::PERMANENT_ERROR &&
+          objstore::s3_detail::classify_conditional_put_failure(403, true) ==
+              objstore::ConditionalPutOutcome::PERMANENT_ERROR,
+      "conditional PUT failure classifications are not distinct");
+}
+
+void test_provider_lifecycle_refcount() {
+  provider_initialize_calls.store(0, std::memory_order_relaxed);
+  provider_shutdown_calls.store(0, std::memory_order_relaxed);
+  objstore::detail::ProviderLifecycle lifecycle(record_provider_initialize,
+                                                record_provider_shutdown);
+
+  lifecycle.release();
+  expect(provider_shutdown_calls.load(std::memory_order_relaxed) == 0,
+         "provider lifecycle underflow invoked shutdown");
+
+  constexpr int kThreadCount = 16;
+  std::atomic<int> acquired{0};
+  std::atomic<bool> release{false};
+  std::vector<std::thread> workers;
+  workers.reserve(kThreadCount);
+  for (int index = 0; index < kThreadCount; ++index) {
+    workers.emplace_back([&]() {
+      lifecycle.acquire();
+      acquired.fetch_add(1, std::memory_order_release);
+      while (!release.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      lifecycle.release();
+    });
+  }
+  while (acquired.load(std::memory_order_acquire) != kThreadCount) {
+    std::this_thread::yield();
+  }
+  expect(provider_initialize_calls.load(std::memory_order_relaxed) == 1,
+         "concurrent provider acquires initialized the SDK more than once");
+  expect(provider_shutdown_calls.load(std::memory_order_relaxed) == 0,
+         "provider SDK shut down while references were active");
+
+  release.store(true, std::memory_order_release);
+  for (std::thread &worker : workers) worker.join();
+  expect(provider_shutdown_calls.load(std::memory_order_relaxed) == 1,
+         "last provider release did not shut down the SDK exactly once");
+
+  lifecycle.acquire();
+  lifecycle.release();
+  lifecycle.release();
+  expect(provider_initialize_calls.load(std::memory_order_relaxed) == 2 &&
+             provider_shutdown_calls.load(std::memory_order_relaxed) == 2,
+         "provider lifecycle did not support a balanced reinitialization");
+}
 
 void test_local_object_store() {
   TempDirectory temp;
@@ -507,6 +665,8 @@ void test_local_object_store() {
 
 int main() {
   try {
+    test_provider_lifecycle_refcount();
+    test_conditional_protocol_contract();
     test_local_object_store();
     std::cout << "local ObjectStore tests passed\n";
     return 0;

@@ -16,6 +16,9 @@
 
 #include "extent_meta_manager.h"
 
+#include <vector>
+
+#include "objstore/remote_extent.h"
 #include "storage/storage_logger.h"
 #include "storage/storage_log_entry.h"
 #include "util/dio_helper.h"
@@ -77,8 +80,17 @@ int ExtentMetaManager::write_meta(const ExtentMeta &extent_meta, bool write_log)
   int ret = Status::kOk;
   ExtentMeta *extent_meta_ptr = nullptr;
   ModifyExtentMetaLogEntry log_entry(extent_meta);
+  std::string validation_error;
 
-  if (write_log && FAILED(StorageLogger::get_instance().write_log(REDO_LOG_MODIFY_EXTENT_META, log_entry))) {
+  if (write_log && remote_extent::enabled() &&
+      !remote_extent::validate_metadata(
+          extent_meta, remote_extent::MetadataValidationMode::NEW_REFERENCE,
+          nullptr, &validation_error)) {
+    ret = Status::kCorruption;
+    SE_LOG(ERROR, "reject unverified remote extent metadata", K(ret),
+           K(validation_error), K(extent_meta));
+    remote_extent::enter_fenced(validation_error);
+  } else if (write_log && FAILED(StorageLogger::get_instance().write_log(REDO_LOG_MODIFY_EXTENT_META, log_entry))) {
     SE_LOG(WARN, "fail to write change extent meta log", K(ret));
   } else if (FAILED(extent_meta.deep_copy(extent_meta_ptr))) {
     SE_LOG(WARN, "fail to deep copy extent_meta", K(ret));
@@ -303,6 +315,41 @@ int ExtentMetaManager::clear_free_extent_meta()
 
   return ret;
 
+}
+
+int ExtentMetaManager::validate_all_remote_extents()
+{
+  int ret = Status::kOk;
+  if (!remote_extent::enabled()) return ret;
+
+  std::vector<ExtentMeta> metadata;
+  std::string validation_error;
+  {
+    util::SpinRLockGuard guard(meta_mutex_);
+    metadata.reserve(extent_meta_map_.size());
+    for (const auto &entry : extent_meta_map_) {
+      if (IS_NULL(entry.second)) {
+        ret = Status::kCorruption;
+        validation_error = "remote extent metadata map contains null";
+        SE_LOG(ERROR, "remote extent metadata map contains null", K(ret),
+               "extent_id", entry.first);
+        break;
+      }
+      metadata.push_back(*entry.second);
+    }
+  }
+
+  for (const ExtentMeta &extent_meta : metadata) {
+    if (FAILED(ret)) break;
+    if (!remote_extent::verify_metadata_object(extent_meta, nullptr,
+                                               &validation_error)) {
+      ret = Status::kCorruption;
+      SE_LOG(ERROR, "remote extent metadata verification failed", K(ret),
+             K(validation_error), K(extent_meta));
+    }
+  }
+  if (FAILED(ret)) remote_extent::enter_fenced(validation_error);
+  return ret;
 }
 
 void ExtentMetaManager::free_extent_meta(ExtentMeta *&extent_meta)

@@ -300,6 +300,7 @@ SET(SE_SOURCES
   core/write_batch/write_batch_with_index_internal.cc
   core/objstore/objstore_layout.cc
   core/objstore/lease_lock.cc
+  core/objstore/remote_extent.cc
   core/objstore/snapshot_release_lock.cc
 )
 
@@ -351,8 +352,21 @@ endif()
 
 MYSQL_ADD_PLUGIN(smartengine ${SE_SOURCES} STORAGE_ENGINE DEFAULT STATIC_ONLY
   LINK_LIBRARIES ${smartengine_static_libs} extra::rapidjson extra::unordered_dense
+                 OpenSSL::Crypto
   #  DEPENDENCIES libis_all tbb
 )
+
+IF(WITH_UNIT_TESTS)
+  MYSQL_ADD_EXECUTABLE(remote_extent_test
+    core/unittest/objstore/remote_extent_test.cc
+    ADD_TEST remote_extent_test
+    COMPILE_DEFINITIONS SMARTENGINE_SOURCE_DIR="${SE_SOURCE_DIR}"
+    INCLUDE_DIRECTORIES ${SE_SOURCE_DIR}/unittest
+    LINK_LIBRARIES smartengine ${GTEST_LIBRARIES}
+    EXCLUDE_FROM_ALL
+    SKIP_TCMALLOC
+  )
+ENDIF()
 
 # TODO: read this file list from src.mk:TOOL_SOURCES
 SET(SE_TOOL_SOURCES
