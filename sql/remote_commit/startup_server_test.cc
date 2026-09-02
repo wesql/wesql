@@ -237,6 +237,60 @@ void test_modes() {
          "accepted null startup mode output");
 }
 
+void test_canonical_startup_data_directory(const fs::path &directory) {
+  const fs::path existing = directory / "existing-root";
+  fs::create_directories(existing);
+  const fs::path existing_expected = fs::weakly_canonical(existing);
+
+  const std::vector<fs::path> existing_spellings = {
+      existing,
+      fs::path(existing.string() + "/"),
+      fs::path(existing.string() + "/."),
+      fs::path(existing.string() + "////"),
+  };
+  for (const fs::path &configured : existing_spellings) {
+    fs::path resolved;
+    std::string error;
+    expect(canonical_startup_data_directory(configured, &resolved, &error),
+           error.c_str());
+    expect(resolved == existing_expected,
+           "trailing-slash spelling changed an existing startup root");
+  }
+
+  const fs::path fresh = directory / "fresh-root";
+  expect(!fs::exists(fresh), "fresh startup-root fixture already exists");
+  const fs::path fresh_expected =
+      fs::weakly_canonical(fresh.parent_path()) / fresh.filename();
+  const std::vector<fs::path> fresh_spellings = {
+      fresh,
+      fs::path(fresh.string() + "/"),
+      fs::path(fresh.string() + "/."),
+      fs::path(fresh.string() + "////"),
+  };
+  for (const fs::path &configured : fresh_spellings) {
+    fs::path resolved;
+    std::string error;
+    expect(canonical_startup_data_directory(configured, &resolved, &error),
+           error.c_str());
+    expect(resolved == fresh_expected,
+           "trailing-slash spelling changed a fresh startup root");
+  }
+
+  fs::path resolved;
+  std::string error;
+  expect(!canonical_startup_data_directory(fs::path("/"), &resolved, &error),
+         "accepted a root-only startup data directory");
+  expect(!error.empty(), "root-only rejection omitted its reason");
+
+  const fs::path missing_parent = directory / "missing-parent";
+  expect(!fs::exists(missing_parent),
+         "missing-parent fixture unexpectedly exists");
+  expect(!canonical_startup_data_directory(missing_parent / "child", &resolved,
+                                           &error),
+         "accepted a startup root whose parent does not exist");
+  expect(!error.empty(), "missing-parent rejection omitted its reason");
+}
+
 void test_proof_transport(const fs::path &directory) {
   std::string error;
   StartupProofReference reference;
@@ -549,6 +603,7 @@ int main() {
   test_remote_commit_option_policy();
   test_external_security_policy();
   test_managed_path_options();
+  test_canonical_startup_data_directory(temporary.path);
   test_control_directory(temporary.path);
   test_proof_transport(temporary.path);
   test_child_argv(temporary.path);

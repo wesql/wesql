@@ -144,6 +144,13 @@ bool validate_innodb_startup_managed_paths(
 bool validate_smartengine_startup_managed_paths(
     const StartupSmartengineManagedPaths &paths, std::string *error);
 
+// Resolves a configured data-directory path to the canonical parent plus the
+// final directory name. Lexical trailing separators and "." components are
+// accepted, including for a not-yet-created target whose parent exists.
+bool canonical_startup_data_directory(
+    const std::filesystem::path &configured,
+    std::filesystem::path *root, std::string *error);
+
 StartupInnoDBManagedPaths innodb_startup_managed_paths_after_parse();
 #ifdef WITH_SMARTENGINE
 StartupSmartengineManagedPaths

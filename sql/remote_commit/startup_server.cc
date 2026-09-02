@@ -635,6 +635,36 @@ bool validate_startup_external_security(
   return true;
 }
 
+bool canonical_startup_data_directory(const fs::path &configured,
+                                       fs::path *root, std::string *error) {
+  if (error != nullptr) error->clear();
+  if (root == nullptr) return fail(error, "null startup root output");
+  if (configured.empty())
+    return fail(error, "remote startup data directory is empty");
+
+  std::error_code path_error;
+  fs::path absolute = fs::absolute(configured, path_error).lexically_normal();
+  if (path_error)
+    return fail(error, "cannot resolve remote startup data directory");
+
+  // libstdc++ preserves a trailing separator through lexical normalization,
+  // which leaves filename() empty for an otherwise valid directory. Strip
+  // that lexical spelling while keeping root-only paths rejected below.
+  if (absolute.filename().empty() && absolute.parent_path() != absolute)
+    absolute = absolute.parent_path();
+  if (absolute.filename().empty())
+    return fail(error, "cannot resolve remote startup data directory");
+
+  const fs::path parent =
+      fs::weakly_canonical(absolute.parent_path(), path_error);
+  if (path_error || !fs::is_directory(parent, path_error) || path_error)
+    return fail(error,
+                "remote startup data-directory parent is not a real "
+                "directory");
+  *root = parent / absolute.filename();
+  return true;
+}
+
 bool validate_startup_managed_path_options(int argc, char *const argv[],
                                            std::string *error) {
   if (error != nullptr) error->clear();

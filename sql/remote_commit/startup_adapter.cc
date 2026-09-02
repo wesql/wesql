@@ -228,18 +228,7 @@ bool canonical_target_root(fs::path *root, std::string *error) {
                                : mysql_real_data_home;
   if (configured == nullptr || configured[0] == '\0')
     return !fail(error, "remote startup data directory is empty");
-  std::error_code path_error;
-  fs::path absolute = fs::absolute(configured, path_error).lexically_normal();
-  if (path_error || absolute.filename().empty())
-    return !fail(error, "cannot resolve remote startup data directory");
-  const fs::path parent = fs::weakly_canonical(absolute.parent_path(),
-                                               path_error);
-  if (path_error || !fs::is_directory(parent, path_error) || path_error)
-    return !fail(error,
-                 "remote startup data-directory parent is not a real "
-                 "directory");
-  *root = parent / absolute.filename();
-  return true;
+  return canonical_startup_data_directory(fs::path(configured), root, error);
 }
 
 bool same_root(const fs::path &left, const fs::path &right) {
