@@ -1493,6 +1493,9 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   rc::reset_commit_admission_for_test(false);
 
   rc::reset_startup_lifecycle_for_test();
+  epoch_proof.head_body = head_body;
+  epoch_proof.head_etag = head_etag;
+  epoch_proof.head_generation = head.generation;
   initialize(true);
   adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
   expect_denied();
