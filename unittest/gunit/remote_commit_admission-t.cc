@@ -23,6 +23,7 @@
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
 #include "sql/dd/impl/system_registry.h"
 #include "sql/handler.h"
+#include "sql/item.h"
 #include "sql/mysqld.h"
 #include "sql/partition_info.h"
 #include "sql/remote_commit/policy.h"
@@ -33,6 +34,7 @@
 #include "sql/remote_commit/server_hooks.h"
 #include "sql/remote_commit/sql_admission.h"
 #include "sql/rpl_gtid.h"
+#include "sql/set_var.h"
 #include "sql/sql_lex.h"
 #include "sql/tc_log.h"
 #include "sql/xa.h"
@@ -1621,6 +1623,65 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   initialize(true);
   adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
   expect_cache_only();
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       DictionaryCacheFkChecksAreSingleLiteralSessionSettings) {
+  auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  const auto saved_context = context;
+  const bool saved_initialize = opt_initialize;
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  auto restore = create_scope_guard([&] {
+    initializer.thd()->lex->var_list.clear();
+    initializer.thd()->system_thread = NON_SYSTEM_THREAD;
+    initializer.TearDown();
+    context = saved_context;
+    opt_initialize = saved_initialize;
+  });
+  opt_initialize = false;
+  context.set_stage(dd::bootstrap::Stage::FETCHED_PROPERTIES);
+  context.set_actual_dd_version(dd::DD_VERSION);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  THD *thd = initializer.thd();
+  thd->system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  thd->lex->sql_command = SQLCOM_SET_OPTION;
+  thd->lex->no_write_to_binlog = true;
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  ASSERT_FALSE(rc::activate_installed_root(activation)) << rc::startup_error();
+  for (const auto scope : {OPT_DEFAULT, OPT_SESSION, OPT_GLOBAL,
+                           OPT_PERSIST, OPT_PERSIST_ONLY}) {
+    for (const char *name : {"foreign_key_checks", "sql_log_bin"}) {
+      for (const int number : {-1, 0, 1, 2}) {
+        Item_int *value = new (thd->mem_root) Item_int(number);
+        set_var assignment(scope, System_variable_tracker::make_tracker(name),
+                           value);
+        thd->lex->var_list.push_back(&assignment, thd->mem_root);
+        const bool allowed =
+            (scope == OPT_DEFAULT || scope == OPT_SESSION) &&
+            std::string_view(name) == "foreign_key_checks" &&
+            (number == 0 || number == 1);
+        EXPECT_EQ(allowed, rc::may_rebuild_startup_dictionary_cache(thd));
+        if (allowed) {
+          EXPECT_FALSE(rc::enforce_sql_command_admission(thd));
+          EXPECT_FALSE(rc::may_initialize_system_tables(thd));
+          context.set_stage(dd::bootstrap::Stage::CREATED_TABLES);
+          EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(thd));
+          context.set_stage(dd::bootstrap::Stage::FETCHED_PROPERTIES);
+          thd->lex->var_list.push_back(&assignment, thd->mem_root);
+          EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(thd));
+        }
+        thd->lex->var_list.clear();
+      }
+    }
+  }
+  set_var default_value(
+      OPT_SESSION, System_variable_tracker::make_tracker("foreign_key_checks"),
+      nullptr);
+  thd->lex->var_list.push_back(&default_value, thd->mem_root);
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(thd));
+  thd->lex->var_list.clear();
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,

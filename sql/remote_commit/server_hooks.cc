@@ -38,6 +38,7 @@
 #include "sql/dd/dd.h"
 #include "sql/dd/dictionary.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
+#include "sql/item.h"
 #include "sql/log_event.h"
 #include "sql/mysqld.h"
 #include "sql/remote_commit/evidence.h"
@@ -47,6 +48,7 @@
 #include "sql/remote_commit/sql_command_policy.h"
 #include "sql/rpl_gtid.h"
 #include "sql/rpl_log_encryption.h"
+#include "sql/set_var.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
 #include "sql/transaction_info.h"
@@ -2319,19 +2321,39 @@ bool may_initialize_system_tables(const THD *thd) {
 bool may_rebuild_startup_dictionary_cache(const THD *thd) {
   if (!enabled() || opt_initialize || thd == nullptr ||
       thd->system_thread != SYSTEM_THREAD_DD_INITIALIZE ||
-      thd->lex == nullptr || thd->lex->sql_command != SQLCOM_CREATE_TABLE ||
-      thd->lex->create_info == nullptr ||
-      (thd->lex->create_info->options & HA_LEX_CREATE_TMP_TABLE) != 0)
+      thd->lex == nullptr)
     return false;
   const auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
-  const Table_ref *table = thd->lex->query_tables;
-  const dd::Dictionary *dictionary = dd::get_dictionary();
   if (context.get_stage() != dd::bootstrap::Stage::FETCHED_PROPERTIES ||
-      !context.is_restart() || dictionary == nullptr || table == nullptr ||
-      table->next_global != nullptr || table->db == nullptr ||
-      table->table_name == nullptr ||
-      !dictionary->is_dd_table_name(table->db, table->table_name))
+      !context.is_restart())
     return false;
+  if (thd->lex->sql_command == SQLCOM_CREATE_TABLE) {
+    const Table_ref *table = thd->lex->query_tables;
+    const dd::Dictionary *dictionary = dd::get_dictionary();
+    if (thd->lex->create_info == nullptr ||
+        (thd->lex->create_info->options & HA_LEX_CREATE_TMP_TABLE) != 0 ||
+        dictionary == nullptr || table == nullptr ||
+        table->next_global != nullptr || table->db == nullptr ||
+        table->table_name == nullptr ||
+        !dictionary->is_dd_table_name(table->db, table->table_name))
+      return false;
+  } else if (thd->lex->sql_command == SQLCOM_SET_OPTION) {
+    if (thd->lex->query_tables != nullptr || thd->lex->var_list.elements != 1)
+      return false;
+    const auto *assignment =
+        dynamic_cast<const set_var *>(thd->lex->var_list.head());
+    if (assignment == nullptr ||
+        (assignment->type != OPT_DEFAULT && assignment->type != OPT_SESSION) ||
+        std::string_view(assignment->m_var_tracker.get_var_name()) !=
+            "foreign_key_checks" ||
+        assignment->value == nullptr ||
+        assignment->value->type() != Item::INT_ITEM)
+      return false;
+    const longlong value = assignment->value->val_int();
+    if (value != 0 && value != 1) return false;
+  } else {
+    return false;
+  }
 
   // mysql_create_table_no_lock uses no_ha_table for these registered names;
   // Storage_adapter::store only core_store()s before CREATED_TABLES.

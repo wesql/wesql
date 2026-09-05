@@ -1561,8 +1561,9 @@ DD_INITIALIZE，每次提交仍重新检查生命周期。作用域退出（包�
 接管 worker 与完成预恢复验证的 installed re-exec 另有只用于 SQL 检查的 DD
 缓存重建例外。它要求已采用的精确 epoch/HEAD 仍有效、准入关闭且排空，线程是
 DD_INITIALIZE，未启用 initialize，DD 和 Server 版本完全相同，且阶段恰为
-FETCHED_PROPERTIES。只允许单个已注册 DD 表的非临时 CREATE TABLE；用户表、
-升级/降级、其他 SQL 或其他阶段均不适用。此时上游 `mysql_create_table_no_lock`
+FETCHED_PROPERTIES。只允许单个已注册 DD 表的非临时 CREATE TABLE，以及该建表
+循环的单项会话 `SET FOREIGN_KEY_CHECKS=0/1` 字面量设置；全局/持久 SET、其他变量、
+表达式、用户表、升级/降级、其他 SQL 或其他阶段均不适用。此时上游 `mysql_create_table_no_lock`
 对注册 DD 表设置 `no_ha_table`，`Storage_adapter::store` 在 CREATED_TABLES 前
 仅执行 `core_store`，因此重建的是缓存。该能力不接入 begin/check/consume 提交
 入口，不授予持久提交；已有 published-root 提交拒绝规则继续生效。

@@ -266,7 +266,8 @@ bool may_initialize_empty_root();
 bool may_initialize_system_tables(const THD *thd);
 
 // SQL parsing only: an authenticated existing root may rebuild registered DD
-// table cache entries before persistent DD storage is enabled. No commit grant.
+// table cache entries and their session FK-check guard before persistent DD
+// storage is enabled. No commit grant.
 bool may_rebuild_startup_dictionary_cache(const THD *thd);
 
 // Only for the fresh Auto_THD in InnoDB's compiled startup PFS table creation.
