@@ -272,6 +272,15 @@ bool runtime_deployment_declaration(StartupDeploymentIdentity *declaration,
 
 }  // namespace
 
+bool canonical_initialized_schema_inventory(
+    const std::vector<std::string> &schemas, bool performance_schema_compiled) {
+  const std::vector<std::string> expected = performance_schema_compiled
+      ? std::vector<std::string>{"information_schema", "mysql",
+                                 "performance_schema", "sys"}
+      : std::vector<std::string>{"information_schema", "mysql", "sys"};
+  return schemas == expected;
+}
+
 bool declare_server_root_runtime_deployment(
     const StartupDeploymentIdentity &declaration, std::string *error) {
   if (error != nullptr) error->clear();
@@ -862,8 +871,13 @@ struct DataDictionaryInventory {
   }
 
   bool has_canonical_bootstrap_schemas() const {
-    static const std::vector<std::string> kExpected{"mysql", "sys"};
-    return healthy() && persistent_schemas == kExpected;
+#ifdef WITH_PERFSCHEMA_STORAGE_ENGINE
+    constexpr bool performance_schema_compiled = true;
+#else
+    constexpr bool performance_schema_compiled = false;
+#endif
+    return healthy() && canonical_initialized_schema_inventory(
+                            persistent_schemas, performance_schema_compiled);
   }
 
   bool operator==(const DataDictionaryInventory &) const = default;
@@ -1817,7 +1831,9 @@ void observe_smartengine_absent(ServerRootEvidenceObservation *observation) {
 }  // namespace
 
 StartupStepResult verify_initialized_empty_root(
-    const ServerRootVerificationRequest &request) {
+    const ServerRootVerificationRequest &request,
+    std::string_view configured_binlog_basename,
+    const fs::path &configured_binlog_index) {
   std::string detail;
   if (!valid_request_shape(request, &detail) || request.installed ||
       request.route != StartupCoordinatorRoute::BOOTSTRAP ||
@@ -1840,6 +1856,19 @@ StartupStepResult verify_initialized_empty_root(
   TwoStageGlobalReadLock global_lock(auto_thd.thd);
   if (!global_lock.acquire(&detail))
     return {StartupStepOutcome::BLOCKED, std::move(detail)};
+  const fs::path binlog_path(configured_binlog_basename);
+  if (binlog_path.empty() || binlog_path.has_parent_path() ||
+      binlog_path == "." || binlog_path == ".." ||
+      configured_binlog_index.empty() ||
+      configured_binlog_index.has_parent_path() ||
+      configured_binlog_index == "." || configured_binlog_index == "..") {
+    return {StartupStepOutcome::CORRUPT,
+            "initialization binary-log configuration is not root-local"};
+  }
+  // The built-in sys schema script inserts grants after its earlier reload.
+  if (reload_acl_caches(auto_thd.thd, false, false, nullptr))
+    return {StartupStepOutcome::BLOCKED,
+            "cannot load the initialized persistent privilege tables"};
 
   const auto capture = [&](BootstrapServerSample *sample) {
     if (!may_initialize_empty_root() || mysql_bin_log.is_open() ||
@@ -1856,20 +1885,14 @@ StartupStepResult verify_initialized_empty_root(
       return false;
     }
     sample->server_uuid = server_uuid_ptr;
-    const std::string binlog_name =
-        log_bin_basename == nullptr
-            ? std::string()
-            : fs::path(log_bin_basename).filename().string();
-    if (binlog_name.empty()) {
-      detail = "initialization binary-log basename is unavailable";
-      return false;
-    }
+    const std::string binlog_name(configured_binlog_basename);
     std::error_code scan_error;
     fs::directory_iterator entry(request.root, scan_error);
     const fs::directory_iterator end;
     while (!scan_error && entry != end) {
       const std::string name = entry->path().filename().string();
       if (name == "smartengine" || name == "tc.log" ||
+          name == configured_binlog_index.string() ||
           name == binlog_name || name.starts_with(binlog_name + ".")) {
         detail = "initialized root contains unexpected engine or TC state";
         return false;
@@ -1898,15 +1921,23 @@ StartupStepResult verify_initialized_empty_root(
   if (!may_initialize_empty_root() || before != after)
     return {StartupStepOutcome::CORRUPT,
             "initialization authority or paired inventories changed"};
-  if (after.server_uuid != request.deployment.server_uuid ||
-      !after.executed_gtid.canonical.empty() ||
-      !after.dictionary.has_canonical_bootstrap_schemas() ||
-      !after.acl.canonical_initialize_insecure_state() ||
-      after.replication != ServerReplicationInventory{} ||
-      after.prepared != ServerPreparedInventory{}) {
+  if (after.server_uuid != request.deployment.server_uuid)
+    append_detail("server UUID does not match", &detail);
+  if (!after.executed_gtid.canonical.empty())
+    append_detail("executed GTIDs are not empty", &detail);
+  if (!after.dictionary.healthy())
+    append_detail(data_dictionary_health_detail(after.dictionary), &detail);
+  else if (!after.dictionary.has_canonical_bootstrap_schemas())
+    append_detail("persistent schemas differ from initialization", &detail);
+  if (!after.acl.canonical_initialize_insecure_state())
+    append_detail("accounts or grants differ from initialization", &detail);
+  if (after.replication != ServerReplicationInventory{})
+    append_detail("replication repositories are not empty", &detail);
+  if (after.prepared != ServerPreparedInventory{})
+    append_detail("prepared transactions are not empty", &detail);
+  if (!detail.empty()) {
     return {StartupStepOutcome::CORRUPT,
-            "initialized DD, accounts, GTID, repositories or prepared state "
-            "are not the canonical empty source"};
+            "initialized state is not the canonical empty source: " + detail};
   }
   return {StartupStepOutcome::READY, {}};
 }

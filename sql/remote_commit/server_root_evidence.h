@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "sql/remote_commit/startup_coordinator.h"
@@ -49,6 +50,10 @@ struct ServerPreparedInventory {
 
   bool operator==(const ServerPreparedInventory &) const = default;
 };
+
+// Input is the sorted, complete persistent schema inventory from the DD.
+bool canonical_initialized_schema_inventory(
+    const std::vector<std::string> &schemas, bool performance_schema_compiled);
 
 // Raw observations are separate from policy comparison so every unavailable
 // production authority remains visible and the fail-closed decisions can be
@@ -169,7 +174,9 @@ StartupStepResult collect_server_root_evidence(
 // The initialize child has no binlog or SmartEngine yet. Verify its persisted
 // system state and absence of old authority without acquiring a snapshot.
 StartupStepResult verify_initialized_empty_root(
-    const ServerRootVerificationRequest &request);
+    const ServerRootVerificationRequest &request,
+    std::string_view configured_binlog_basename,
+    const std::filesystem::path &configured_binlog_index);
 
 }  // namespace wesql::remote_commit
 

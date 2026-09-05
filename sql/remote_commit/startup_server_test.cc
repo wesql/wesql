@@ -467,9 +467,17 @@ void test_child_argv(const fs::path &directory) {
          error.c_str());
   expect(has_argument(child, "--initialize-insecure"),
          "bootstrap child lacks initialize-insecure");
+  expect(has_argument(child, "--default-storage-engine=InnoDB"),
+         "initialize child does not select the system-table engine");
+#ifdef WITH_SMARTENGINE
   expect(has_argument(child, "--skip-smartengine") &&
-             has_argument(child, "--default-storage-engine=InnoDB"),
+             has_argument(child, "--skip-smartengine-compaction-stats") &&
+             has_argument(child, "--skip-smartengine-global-info"),
          "initialize child may open SmartEngine before epoch adoption");
+#else
+  expect(!has_argument(child, "--skip-smartengine"),
+         "initialize child references an uncompiled storage engine");
+#endif
   expect(has_argument(child, "--skip-initialize"),
          "bootstrap child lacks initialize-off override");
   expect(has_argument(child, "--skip-initialize-insecure"),

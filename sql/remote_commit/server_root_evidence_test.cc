@@ -599,6 +599,26 @@ void test_bootstrap_requires_bootstrap_authorities() {
 }  // namespace
 
 int main() {
+  for (const bool performance_schema_compiled : {false, true}) {
+    std::vector<std::string> schemas{"information_schema", "mysql", "sys"};
+    if (performance_schema_compiled)
+      schemas.insert(schemas.begin() + 2, "performance_schema");
+    expect(rc::canonical_initialized_schema_inventory(
+               schemas, performance_schema_compiled),
+           "canonical compiled system schemas were rejected");
+    expect(!rc::canonical_initialized_schema_inventory(
+               schemas, !performance_schema_compiled),
+           "schema inventory from another compile configuration was accepted");
+    schemas.push_back("user_data");
+    expect(!rc::canonical_initialized_schema_inventory(
+               schemas, performance_schema_compiled),
+           "additional user schema was accepted as an empty source");
+    schemas.pop_back();
+    schemas.erase(schemas.begin());
+    expect(!rc::canonical_initialized_schema_inventory(
+               schemas, performance_schema_compiled),
+           "missing information_schema was accepted as initialized");
+  }
   test_runtime_deployment_declaration_is_external_and_immutable();
   test_extent_canonicalization();
   test_persistent_engine_policy();

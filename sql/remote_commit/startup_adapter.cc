@@ -1671,7 +1671,9 @@ bool startup_finish_bootstrap_preflight(std::string *error) {
   ServerRootVerificationRequest request{StartupCoordinatorRoute::BOOTSTRAP,
                                         g_adapter.target_root, deployment,
                                         false, nullptr, nullptr};
-  const StartupStepResult compared = verify_initialized_empty_root(request);
+  const StartupStepResult compared = verify_initialized_empty_root(
+      request, g_adapter.configured_binlog_basename,
+      g_adapter.configured_binlog_index);
   if (!compared.ready())
     return fail(error, "bootstrap EMPTY_SOURCE evidence failed: " +
                            compared.detail);

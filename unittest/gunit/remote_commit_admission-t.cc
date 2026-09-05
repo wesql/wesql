@@ -33,6 +33,7 @@
 #include "sql/rpl_gtid.h"
 #include "sql/sql_lex.h"
 #include "sql/tc_log.h"
+#include "sql/xa.h"
 #include "unittest/gunit/handler-t.h"
 #include "unittest/gunit/test_utils.h"
 
@@ -1361,6 +1362,19 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   adopt(rc::StartupEpochAdoptionRole::BOOTSTRAP_SNAPSHOT);
   EXPECT_FALSE(rc::may_initialize_empty_root());
   EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       EmptyXaRecoveryQueueIsNoopButPreparedEntriesRemainRejected) {
+  ASSERT_FALSE(Recovered_xa_transactions::init());
+  auto destroy = create_scope_guard([] { Recovered_xa_transactions::destroy(); });
+  auto &recovered = Recovered_xa_transactions::instance();
+  EXPECT_FALSE(recovered.recover_prepared_xa_transactions());
+  XA_recover_txn transaction{};
+  transaction.id.set(41, "external", 8, "", 0);
+  ASSERT_FALSE(recovered.add_prepared_xa_transaction(&transaction));
+  EXPECT_TRUE(recovered.recover_prepared_xa_transactions());
+  EXPECT_TRUE(recovered.recover_prepared_xa_transactions());
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,

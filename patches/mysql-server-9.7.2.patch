@@ -3060,21 +3060,22 @@ index 7cca516a50e6dcd0079fcea34176883feecf324a..5af643b678f35aefc907b6d977f971a4
      LogErr(ERROR_LEVEL, ER_TC_RECOVERY_FAILED_THESE_ARE_YOUR_OPTIONS);
      return 1;
 diff --git a/sql/xa.cc b/sql/xa.cc
-index 6cd97c373f391fba08b0db2c63dd534e05820d62..1b1f73fc9621ac46d4e644518427000dc370c06b 100644
+index 6cd97c373f391fba08b0db2c63dd534e05820d62..1152e18eddd6a62ed5d581d9c2fc2b61299a31aa 100644
 --- a/sql/xa.cc
 +++ b/sql/xa.cc
-@@ -246,6 +246,10 @@ static bool xarecover_create_mdl_backup(XA_recover_txn &txn,
+@@ -246,6 +246,11 @@ static bool xarecover_create_mdl_backup(XA_recover_txn &txn,
  }
  
  bool Recovered_xa_transactions::recover_prepared_xa_transactions() {
-+  if (xa::recovery::reject_direct_xid_operation(
++  if (!m_prepared_xa_trans.empty() &&
++      xa::recovery::reject_direct_xid_operation(
 +          xa::recovery::Direct_xid_operation::SET_PREPARED_IN_TC_BY_XID))
 +    return true;
 +
    bool ret = false;
  
    if (m_mem_root_inited) {
-@@ -268,6 +272,10 @@ bool Recovered_xa_transactions::recover_prepared_xa_transactions() {
+@@ -268,6 +273,10 @@ bool Recovered_xa_transactions::recover_prepared_xa_transactions() {
  }
  
  int ha_recover(Xid_commit_list *commit_list, Xa_state_list *xa_list) {

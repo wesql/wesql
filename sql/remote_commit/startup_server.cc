@@ -1027,8 +1027,18 @@ bool build_startup_child_argv(const std::vector<std::string> &original,
                      std::to_string(spec.inherited_daemon_pipe_fd));
   }
   if (spec.initialize_insecure) {
+#ifdef WITH_SMARTENGINE
     // SmartEngine first opens in the snapshot worker, after epoch adoption.
     child->push_back("--skip-smartengine");
+    for (const std::string_view suffix : {
+             "cfstats", "dbstats", "perf-context", "perf-context-global",
+             "global-info", "ddl", "locks", "trx", "tables", "columns",
+             "compaction-stats", "compaction-task", "compaction-history",
+             "mem-alloc", "subtable",
+             "table-space", "query-trace", "debug-info"}) {
+      child->push_back("--skip-smartengine-" + std::string(suffix));
+    }
+#endif
     child->push_back("--default-storage-engine=InnoDB");
     child->push_back("--initialize-insecure");
   }
