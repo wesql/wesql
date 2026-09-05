@@ -1558,6 +1558,15 @@ InnoDB 编译内 PFS 建表调用单独创建 `Auto_THD`，其原始类型为 BA
 DD_INITIALIZE，每次提交仍重新检查生命周期。作用域退出（包括错误返回）
 后恢复 BACKGROUND，再由 Auto_THD 销毁；其他后台线程不获得此授权。
 
+接管 worker 与完成预恢复验证的 installed re-exec 另有只用于 SQL 检查的 DD
+缓存重建例外。它要求已采用的精确 epoch/HEAD 仍有效、准入关闭且排空，线程是
+DD_INITIALIZE，未启用 initialize，DD 和 Server 版本完全相同，且阶段恰为
+FETCHED_PROPERTIES。只允许单个已注册 DD 表的非临时 CREATE TABLE；用户表、
+升级/降级、其他 SQL 或其他阶段均不适用。此时上游 `mysql_create_table_no_lock`
+对注册 DD 表设置 `no_ha_table`，`Storage_adapter::store` 在 CREATED_TABLES 前
+仅执行 `core_store`，因此重建的是缓存。该能力不接入 begin/check/consume 提交
+入口，不授予持久提交；已有 published-root 提交拒绝规则继续生效。
+
 初始化预检不要求尚不存在的 binlog cursor，也不申请 SmartEngine 快照。
 它在全局读锁下前后两次检查 DD、初始账号及权限、复制仓库、prepared 和空
 GTID 集；同时要求 SmartEngine 未加载、对应目录不存在、TC 与 binlog 文件
