@@ -38,6 +38,7 @@
 #include "sql/binlog_index.h"
 #include "sql/binlog_istream.h"
 #include "sql/binlog_reader.h"
+#include "sql/changestreams/apply/replication_thread_status.h"
 #include "sql/dd/cache/dictionary_client.h"
 #include "sql/dd/dd.h"
 #include "sql/dd/dd_version.h"
@@ -281,6 +282,19 @@ bool canonical_initialized_schema_inventory(
   return schemas == expected;
 }
 
+bool legacy_tc_log_absent(const fs::path &root, std::string *detail) {
+  if (detail != nullptr) detail->clear();
+  std::error_code error;
+  const fs::file_status status = fs::symlink_status(root / "tc.log", error);
+  if (status.type() == fs::file_type::not_found &&
+      (!error || error == std::errc::no_such_file_or_directory))
+    return true;
+  if (detail != nullptr)
+    *detail = error ? "cannot inspect the legacy tc.log path: " + error.message()
+                    : "legacy tc.log exists";
+  return false;
+}
+
 bool declare_server_root_runtime_deployment(
     const StartupDeploymentIdentity &declaration, std::string *error) {
   if (error != nullptr) error->clear();
@@ -494,12 +508,16 @@ StartupStepResult compare_server_root_evidence(
   if (require_available(observation.replication, "replication inventory",
                         &has_unavailable, &issues)) {
     const ServerReplicationInventory &inventory = observation.replication.value;
-    evidence->repository_empty =
-        inventory.channel_count == 0 && inventory.source_rows == 0 &&
-        inventory.relay_rows == 0 && inventory.worker_rows == 0;
+    evidence->repository_empty = inventory.empty();
     if (!evidence->repository_empty)
       record_mismatch("replication inventory",
-                      "channel map or repository is not empty",
+                      "channel map or repository is not empty: channels=" +
+                          std::to_string(inventory.channel_count) +
+                          ", unconfigured_default=" +
+                          std::to_string(inventory.unconfigured_default_channel) +
+                          ", source_rows=" + std::to_string(inventory.source_rows) +
+                          ", relay_rows=" + std::to_string(inventory.relay_rows) +
+                          ", worker_rows=" + std::to_string(inventory.worker_rows),
                       &has_mismatch, &issues);
   }
 
@@ -1363,14 +1381,36 @@ bool capture_replication_inventory(THD *thd,
   }
   *inventory = {};
 
-  // The channel-map read lock excludes every supported channel create/remove
-  // path for the complete repository scan. With no mapped channel, no replica
-  // thread owns a repository writer; TL_READ then gives each persisted table a
-  // read lock while its exact row count is sampled.
+  // MySQL always creates an unconfigured default channel. Keep map and thread
+  // state locked while distinguishing that placeholder from replication state
+  // and sampling the persisted repositories under their TL_READ locks.
   channel_map.rdlock();
   auto unlock_channel_map =
       create_scope_guard([] { channel_map.unlock(); });
   inventory->channel_count = channel_map.get_num_instances(true);
+  Master_info *default_channel = channel_map.get_default_channel_mi();
+  const bool lock_default =
+      inventory->channel_count == 1 && default_channel != nullptr &&
+      default_channel->rli != nullptr;
+  if (lock_default) {
+    default_channel->channel_wrlock();
+    lock_slave_threads(default_channel);
+  }
+  auto unlock_default = create_scope_guard([&] {
+    if (lock_default) {
+      unlock_slave_threads(default_channel);
+      default_channel->channel_unlock();
+    }
+  });
+  const auto unconfigured_default = [&] {
+    return lock_default && default_channel->get_channel()[0] == '\0' &&
+           !Master_info::is_configured(default_channel) &&
+           !default_channel->inited && !default_channel->rli->inited &&
+           !default_channel->slave_running.load() &&
+           !default_channel->rli->slave_running.load() &&
+           default_channel->rli->get_worker_count() == 0;
+  };
+  inventory->unconfigured_default_channel = unconfigured_default();
   if (!count_repository_table(
           thd, MI_INFO_NAME,
           static_cast<uint>(Master_info::get_number_info_mi_fields()),
@@ -1385,8 +1425,9 @@ bool capture_replication_inventory(THD *thd,
           &inventory->worker_rows, detail)) {
     return false;
   }
-  if (inventory->channel_count != channel_map.get_num_instances(true)) {
-    *detail = "replication channel map changed while its read lock was held";
+  if (inventory->channel_count != channel_map.get_num_instances(true) ||
+      inventory->unconfigured_default_channel != unconfigured_default()) {
+    *detail = "replication channel state changed while its locks were held";
     return false;
   }
   return true;
@@ -1462,16 +1503,9 @@ bool capture_old_tc_inventory(const ServerRootVerificationRequest &request,
   if (!inventory->executed_gtid_empty)
     append_detail("the executed GTID set is not empty", detail);
 
-  std::error_code status_error;
-  const fs::file_status tc_status =
-      fs::symlink_status(request.root / "tc.log", status_error);
-  if (status_error) {
-    append_detail("cannot inspect the legacy tc.log path", detail);
-  } else {
-    inventory->tc_log_absent = tc_status.type() == fs::file_type::not_found;
-    if (!inventory->tc_log_absent)
-      append_detail("legacy tc.log exists", detail);
-  }
+  std::string tc_detail;
+  inventory->tc_log_absent = legacy_tc_log_absent(request.root, &tc_detail);
+  append_detail(tc_detail, detail);
 
   auto [index_error, files] = mysql_bin_log.get_log_index();
   inventory->index_complete = index_error == LOG_INFO_EOF;
@@ -1931,7 +1965,7 @@ StartupStepResult verify_initialized_empty_root(
     append_detail("persistent schemas differ from initialization", &detail);
   if (!after.acl.canonical_initialize_insecure_state())
     append_detail("accounts or grants differ from initialization", &detail);
-  if (after.replication != ServerReplicationInventory{})
+  if (!after.replication.empty())
     append_detail("replication repositories are not empty", &detail);
   if (after.prepared != ServerPreparedInventory{})
     append_detail("prepared transactions are not empty", &detail);

@@ -40,6 +40,13 @@ struct ServerReplicationInventory {
   uint64_t source_rows{0};
   uint64_t relay_rows{0};
   uint64_t worker_rows{0};
+  bool unconfigured_default_channel{false};
+
+  bool empty() const {
+    return ((channel_count == 0 && !unconfigured_default_channel) ||
+            (channel_count == 1 && unconfigured_default_channel)) &&
+           source_rows == 0 && relay_rows == 0 && worker_rows == 0;
+  }
 
   bool operator==(const ServerReplicationInventory &) const = default;
 };
@@ -54,6 +61,11 @@ struct ServerPreparedInventory {
 // Input is the sorted, complete persistent schema inventory from the DD.
 bool canonical_initialized_schema_inventory(
     const std::vector<std::string> &schemas, bool performance_schema_compiled);
+
+// ENOENT is absence; existing entries (including dangling symlinks) and all
+// other inspection failures are rejected.
+bool legacy_tc_log_absent(const std::filesystem::path &root,
+                          std::string *detail);
 
 // Raw observations are separate from policy comparison so every unavailable
 // production authority remains visible and the fail-closed decisions can be

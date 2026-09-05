@@ -5,6 +5,7 @@
 #include "sql/remote_commit/persistent_engine_policy.h"
 
 #include <cstdlib>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <optional>
@@ -596,9 +597,70 @@ void test_bootstrap_requires_bootstrap_authorities() {
   }
 }
 
+void test_unconfigured_default_channel_is_not_replication_state() {
+  Fixture fixture;
+  const rc::ServerRootVerificationRequest request{
+      rc::StartupCoordinatorRoute::TAKEOVER, "/restored", fixture.deployment,
+      false, &fixture.candidate, nullptr};
+  rc::StartupRootEvidence evidence;
+  auto &inventory = fixture.observation.replication.value;
+  inventory.channel_count = 1;
+  inventory.unconfigured_default_channel = true;
+  expect(rc::compare_server_root_evidence(request, fixture.observation,
+                                          &evidence).ready() &&
+             evidence.repository_empty,
+         "unconfigured default channel with empty repositories was rejected");
+  const auto empty_default = inventory;
+  using Mutation = std::function<void(rc::ServerReplicationInventory &)>;
+  for (const Mutation &mutate : std::vector<Mutation>{
+           [](auto &i) { i.unconfigured_default_channel = false; },
+           [](auto &i) { i.channel_count = 2; },
+           [](auto &i) { i.channel_count = 0; },
+           [](auto &i) { i.source_rows = 1; },
+           [](auto &i) { i.relay_rows = 1; },
+           [](auto &i) { i.worker_rows = 1; }}) {
+    inventory = empty_default;
+    mutate(inventory);
+    expect(rc::compare_server_root_evidence(request, fixture.observation,
+                                            &evidence).outcome ==
+               rc::StartupStepOutcome::CORRUPT,
+           "nonempty or inconsistent replication state was accepted");
+  }
+}
+
+void test_tc_log_absence_uses_filesystem_error_semantics() {
+  namespace fs = std::filesystem;
+  std::string pattern =
+      (fs::temp_directory_path() / "task34-tc-absence-XXXXXX").string();
+  expect(mkdtemp(pattern.data()) != nullptr, "cannot create tc fixture root");
+  const fs::path root(pattern);
+  std::string detail;
+  expect(rc::legacy_tc_log_absent(root, &detail) && detail.empty(),
+         "missing tc.log was not recognized as absent");
+  {
+    std::ofstream file(root / "tc.log");
+    file << "legacy authority";
+  }
+  expect(!rc::legacy_tc_log_absent(root, &detail) && !detail.empty(),
+         "regular tc.log was accepted as absent");
+  expect(!rc::legacy_tc_log_absent(root / "tc.log", &detail),
+         "ENOTDIR was accepted as absence");
+  fs::remove(root / "tc.log");
+  fs::create_directory(root / "tc.log");
+  expect(!rc::legacy_tc_log_absent(root, &detail),
+         "tc.log directory was accepted as absent");
+  fs::remove(root / "tc.log");
+  fs::create_symlink("missing-target", root / "tc.log");
+  expect(!rc::legacy_tc_log_absent(root, &detail),
+         "dangling tc.log symlink was accepted as absent");
+  fs::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
+  test_unconfigured_default_channel_is_not_replication_state();
+  test_tc_log_absence_uses_filesystem_error_semantics();
   for (const bool performance_schema_compiled : {false, true}) {
     std::vector<std::string> schemas{"information_schema", "mysql", "sys"};
     if (performance_schema_compiled)
