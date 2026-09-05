@@ -258,9 +258,11 @@ std::string startup_error();
 // It never authorizes native replay or write admission.
 bool may_run_startup_bootstrap_worker();
 
-// Only compiled-in DD/system-table statements in the isolated initialize
-// child may mutate its unpublished empty root without a remote LOG decision.
+// Only the isolated initialize child may create the pre-epoch empty root.
 bool may_initialize_empty_root();
+// Compiled DD/system-table work may mutate that unpublished root during
+// preflight, or DD restart in the exact adopted-epoch bootstrap snapshot
+// worker. Client admission stays closed; takeover/installed roles are excluded.
 bool may_initialize_system_tables(const THD *thd);
 
 // True only after a fresh bootstrap snapshot/export worker adopted the exact

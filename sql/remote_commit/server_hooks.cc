@@ -2300,10 +2300,16 @@ bool may_initialize_empty_root() {
 }
 
 bool may_initialize_system_tables(const THD *thd) {
-  return thd != nullptr &&
-         (thd->system_thread == SYSTEM_THREAD_DD_INITIALIZE ||
-          thd->system_thread == SYSTEM_THREAD_SERVER_INITIALIZE) &&
-         may_initialize_empty_root();
+  if (thd == nullptr) return false;
+  if (opt_initialize) {
+    return (thd->system_thread == SYSTEM_THREAD_DD_INITIALIZE ||
+            thd->system_thread == SYSTEM_THREAD_SERVER_INITIALIZE) &&
+           may_initialize_empty_root();
+  }
+  // MySQL also uses DD_INITIALIZE for compiled dictionary restart work.
+  // The first snapshot will cover this work in the unpublished empty root.
+  return thd->system_thread == SYSTEM_THREAD_DD_INITIALIZE &&
+         may_run_startup_bootstrap_snapshot_worker();
 }
 
 bool may_run_startup_bootstrap_snapshot_worker() {

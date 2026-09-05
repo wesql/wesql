@@ -1365,6 +1365,69 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,
+       BootstrapSnapshotAllowsOnlyCompiledDictionaryWork) {
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] { opt_initialize = saved_initialize; });
+  opt_initialize = false;
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  initialize(false);
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  epoch_proof.head_body.clear();
+  epoch_proof.head_etag.clear();
+  epoch_proof.head_generation = 0;
+  adopt(rc::StartupEpochAdoptionRole::BOOTSTRAP_SNAPSHOT);
+  ASSERT_TRUE(rc::may_initialize_system_tables(&thd));
+  EXPECT_FALSE(rc::may_initialize_empty_root());
+  thd.lex->sql_command = SQLCOM_CREATE_TABLE;
+  thd.lex->no_write_to_binlog = true;
+  EXPECT_FALSE(rc::enforce_sql_command_admission(&thd));
+  EXPECT_FALSE(rc::begin_commit_admission(&thd, true));
+  rc::check_commit_authorization(&thd, true);
+  rc::consume_commit_authorization(&thd, true, true, true);
+  rc::end_commit_admission(&thd, false);
+  EXPECT_FALSE(rc::commit_admission_open_for_test());
+  EXPECT_EQ(0U, rc::commit_admission_count_for_test());
+
+  EXPECT_FALSE(rc::may_initialize_system_tables(nullptr));
+  for (const auto kind : {NON_SYSTEM_THREAD, SYSTEM_THREAD_DD_RESTART,
+                          SYSTEM_THREAD_SERVER_INITIALIZE,
+                          SYSTEM_THREAD_INIT_FILE,
+                          SYSTEM_THREAD_SERVER_UPGRADE}) {
+    thd.system_thread = kind;
+    EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  }
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  opt_initialize = true;
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  opt_initialize = false;
+  rc::reset_commit_admission_for_test(true);
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  rc::reset_commit_admission_for_test(false);
+  ASSERT_TRUE(rc::may_initialize_system_tables(&thd));
+  rc::shutdown();
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       PublishedRootRolesDoNotGetBootstrapDictionaryMutation) {
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] { opt_initialize = saved_initialize; });
+  opt_initialize = false;
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  ASSERT_FALSE(rc::activate_installed_root(activation)) << rc::startup_error();
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
        EmptyXaRecoveryQueueIsNoopButPreparedEntriesRemainRejected) {
   ASSERT_FALSE(Recovered_xa_transactions::init());
   auto destroy = create_scope_guard([] { Recovered_xa_transactions::destroy(); });

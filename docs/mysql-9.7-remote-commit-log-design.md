@@ -1537,6 +1537,13 @@ HEAD 不存在、准入关闭、未取得 epoch 等状态；客户端、init-fil
 为 SmartEngine 内部元数据分配远端区间。后续快照子进程使用原配置，
 在采用父进程 epoch 后首次打开 SmartEngine。
 
+该 bootstrap 快照子进程重新打开初始化目录时，MySQL 的编译内 DD 重启流程
+同样使用 `SYSTEM_THREAD_DD_INITIALIZE`，并执行不写 binlog 的系统表语句。
+只有这个线程可以在精确采用父 epoch、HEAD 仍不存在、生命周期仍为
+INITIALIZING、普通准入关闭且排空时完成 DD 工作；其结果由首次完整快照覆盖。
+这不向客户端、init-file、系统升级线程或接管/已安装根授予同一例外。
+进入普通准入、关闭或其他启动角色后，能力立即失效。
+
 初始化预检不要求尚不存在的 binlog cursor，也不申请 SmartEngine 快照。
 它在全局读锁下前后两次检查 DD、初始账号及权限、复制仓库、prepared 和空
 GTID 集；同时要求 SmartEngine 未加载、对应目录不存在、TC 与 binlog 文件
