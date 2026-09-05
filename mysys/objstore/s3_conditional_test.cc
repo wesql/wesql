@@ -741,7 +741,7 @@ void test_http_exact_get_results(const char *endpoint) {
   objstore::S3ObjectStore store("us-east-1", std::move(client));
   TempFile destination("");
   for (const std::string key : {"missing-key", "missing-bucket", "forbidden",
-                                "one-byte", "oversized"}) {
+                                "one-byte", "oversized", "retry"}) {
     const auto memory = store.get_object_exact("bucket", key, 1);
     const auto file = store.get_object_to_file_exact(
         "bucket", key, destination.path().string(), 1);
@@ -749,7 +749,7 @@ void test_http_exact_get_results(const char *endpoint) {
       expect(memory.outcome() == objstore::ExactObjectOutcome::NOT_FOUND_404 &&
                  file.outcome() == objstore::ExactFileOutcome::NOT_FOUND_404,
              "HTTP missing key did not remain 404 under a one-byte limit");
-    } else if (key == "one-byte") {
+    } else if (key == "one-byte" || key == "retry") {
       expect(memory.is_found() && memory.body() == "x" && file.is_applied() &&
                  read_file(destination.path()) == "x",
              "HTTP exact one-byte object failed");
