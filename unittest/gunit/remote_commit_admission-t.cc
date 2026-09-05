@@ -24,6 +24,7 @@
 #include "sql/dd/impl/system_registry.h"
 #include "sql/dd/impl/types/charset_impl.h"
 #include "sql/dd/impl/types/collation_impl.h"
+#include "sql/dd/impl/types/resource_group_impl.h"
 #include "sql/dd/impl/types/tablespace_impl.h"
 #include "sql/handler.h"
 #include "sql/item.h"
@@ -1808,6 +1809,109 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   initialize(true);
   adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
   expect_allowed();
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       ResourceGroupsRequireCompletedAuthenticatedDictionaryRestart) {
+  auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  const auto saved_context = context;
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] {
+    context = saved_context;
+    opt_initialize = saved_initialize;
+  });
+  opt_initialize = false;
+  context.set_stage(dd::bootstrap::Stage::FINISHED);
+  context.set_actual_dd_version(dd::DD_VERSION);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  initialize(true);
+  EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+  ASSERT_FALSE(rc::activate_installed_root(activation));
+  const auto expect_allowed = [&] {
+    EXPECT_TRUE(rc::may_validate_startup_resource_groups(&thd));
+    EXPECT_FALSE(rc::may_validate_startup_dictionary_contents(&thd));
+    EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+    EXPECT_FALSE(rc::commit_admission_open_for_test());
+    EXPECT_EQ(0U, rc::commit_admission_count_for_test());
+  };
+  expect_allowed();
+  EXPECT_FALSE(rc::may_validate_startup_resource_groups(nullptr));
+  for (const auto kind : {NON_SYSTEM_THREAD, SYSTEM_THREAD_BACKGROUND,
+                          SYSTEM_THREAD_DD_RESTART,
+                          SYSTEM_THREAD_SERVER_UPGRADE}) {
+    thd.system_thread = kind;
+    EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+  }
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  for (const auto stage : {dd::bootstrap::Stage::FETCHED_PROPERTIES,
+                           dd::bootstrap::Stage::SYNCED,
+                           dd::bootstrap::Stage::POPULATED}) {
+    context.set_stage(stage);
+    EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+  }
+  context.set_stage(dd::bootstrap::Stage::FINISHED);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID - 1);
+  EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  opt_initialize = true;
+  EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+  opt_initialize = false;
+  rc::reset_commit_admission_for_test(true);
+  EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+  rc::reset_commit_admission_for_test(false);
+  rc::shutdown();
+  EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  expect_allowed();
+  rc::reset_startup_lifecycle_for_test();
+  initialize(false);
+  epoch_proof.head_body.clear();
+  epoch_proof.head_etag.clear();
+  epoch_proof.head_generation = 0;
+  adopt(rc::StartupEpochAdoptionRole::BOOTSTRAP_SNAPSHOT);
+  EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+}
+
+TEST(RemoteCommitStartupDictionary, DefaultResourceGroupsMatchEveryStoredField) {
+  namespace rc = wesql::remote_commit;
+  using resourcegroups::Type;
+  EXPECT_FALSE(rc::startup_default_resource_group_matches(nullptr, false));
+  for (const bool system : {false, true}) {
+    dd::Resource_group_impl group;
+    const char *name = system ? "SYS_default" : "USR_default";
+    const auto type = system ? Type::SYSTEM_RESOURCE_GROUP
+                             : Type::USER_RESOURCE_GROUP;
+    group.set_name(name);
+    group.set_resource_group_type(type);
+    group.set_resource_group_enabled(true);
+    group.set_thread_priority(0);
+    group.set_cpu_id_mask({});
+    ASSERT_TRUE(rc::startup_default_resource_group_matches(&group, system));
+    EXPECT_FALSE(rc::startup_default_resource_group_matches(&group, !system));
+    group.set_name(system ? "sys_default" : "usr_default");
+    EXPECT_FALSE(rc::startup_default_resource_group_matches(&group, system));
+    group.set_name(name);
+    group.set_resource_group_type(system ? Type::USER_RESOURCE_GROUP
+                                         : Type::SYSTEM_RESOURCE_GROUP);
+    EXPECT_FALSE(rc::startup_default_resource_group_matches(&group, system));
+    group.set_resource_group_type(type);
+    group.set_resource_group_enabled(false);
+    EXPECT_FALSE(rc::startup_default_resource_group_matches(&group, system));
+    group.set_resource_group_enabled(true);
+    group.set_thread_priority(1);
+    EXPECT_FALSE(rc::startup_default_resource_group_matches(&group, system));
+    group.set_thread_priority(0);
+    group.set_cpu_id_mask({resourcegroups::Range(0, 0)});
+    EXPECT_FALSE(rc::startup_default_resource_group_matches(&group, system));
+    group.set_cpu_id_mask({});
+    EXPECT_TRUE(rc::startup_default_resource_group_matches(&group, system));
+  }
 }
 
 TEST(RemoteCommitStartupDictionary, RejectsRowSetAndEveryPersistedFieldMismatch) {

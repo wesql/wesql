@@ -2370,18 +2370,28 @@ bool may_rebuild_startup_dictionary_cache(const THD *thd) {
          installed_reexec_pre_recovery_authorized_locked();
 }
 
-bool may_validate_startup_dictionary_contents(const THD *thd) {
+static bool may_validate_restored_dictionary_stage(
+    const THD *thd, dd::bootstrap::Stage stage) {
   if (!enabled() || opt_initialize || thd == nullptr ||
       thd->system_thread != SYSTEM_THREAD_DD_INITIALIZE)
     return false;
   const auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
-  if (context.get_stage() != dd::bootstrap::Stage::SYNCED ||
-      !context.is_restart())
+  if (context.get_stage() != stage || !context.is_restart())
     return false;
   std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
   std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
   return takeover_recovery_worker_authorized_locked() ||
          installed_reexec_pre_recovery_authorized_locked();
+}
+
+bool may_validate_startup_dictionary_contents(const THD *thd) {
+  return may_validate_restored_dictionary_stage(thd,
+                                               dd::bootstrap::Stage::SYNCED);
+}
+
+bool may_validate_startup_resource_groups(const THD *thd) {
+  return may_validate_restored_dictionary_stage(thd,
+                                               dd::bootstrap::Stage::FINISHED);
 }
 
 bool validate_startup_dictionary_contents(THD *thd, std::string *error) {

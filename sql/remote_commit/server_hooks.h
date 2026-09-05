@@ -274,6 +274,9 @@ bool may_rebuild_startup_dictionary_cache(const THD *thd);
 bool may_validate_startup_dictionary_contents(const THD *thd);
 bool validate_startup_dictionary_contents(THD *thd, std::string *error);
 
+// Resource-group deserialization follows the completed same-version DD restart.
+bool may_validate_startup_resource_groups(const THD *thd);
+
 // Only for the fresh Auto_THD in InnoDB's compiled startup PFS table creation.
 // Restore its BACKGROUND tag before Auto_THD destroys the internal thread.
 class Scoped_startup_pfs_initialization {

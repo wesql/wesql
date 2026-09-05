@@ -11,10 +11,22 @@
 #include "sql/dd/impl/types/collation_impl.h"
 #include "sql/dd/types/charset.h"
 #include "sql/dd/types/collation.h"
+#include "sql/dd/types/resource_group.h"
 #include "sql/dd/types/tablespace.h"
 #include "sql/dd/types/tablespace_file.h"
 
 namespace wesql::remote_commit {
+
+inline bool startup_default_resource_group_matches(
+    const dd::Resource_group *group, bool system) {
+  return group != nullptr &&
+         group->name() == (system ? "SYS_default" : "USR_default") &&
+         group->resource_group_type() ==
+             (system ? resourcegroups::Type::SYSTEM_RESOURCE_GROUP
+                     : resourcegroups::Type::USER_RESOURCE_GROUP) &&
+         group->resource_group_enabled() && group->cpu_id_mask().none() &&
+         group->thread_priority() == 0;
+}
 
 inline bool startup_temporary_tablespace_matches(const dd::Tablespace *space,
                                                std::string_view filename) {
