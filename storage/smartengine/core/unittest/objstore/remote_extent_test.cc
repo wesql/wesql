@@ -254,6 +254,26 @@ TEST_F(RuntimeTest, ExtentIoStillRejectsBucketAndFutureEpochMismatch) {
   EXPECT_TRUE(store.objects.empty());
 }
 
+TEST_F(RuntimeTest, ExtentWriteRejectsClientChangeAfterInitialization) {
+  FakeObjectStore engine_client;
+  FakeObjectStore replacement_runtime_client;
+  ObjectIOExtent extent;
+  ASSERT_EQ(common::Status::kOk,
+            extent.init(object_extent_id(1, 0), 1, &engine_client, "bucket",
+                        build_test_prefix("db", 1, 0)));
+  clear_test_runtime();
+  std::string error;
+  ASSERT_TRUE(install_test_runtime(test_config(&replacement_runtime_client),
+                                   &error)) << error;
+  const std::string body(MAX_EXTENT_SIZE, 'x');
+  EXPECT_EQ(common::Status::kCorruption,
+            extent.write(common::Slice(body), 0));
+  EXPECT_TRUE(is_fenced());
+  EXPECT_TRUE(store.objects.empty());
+  EXPECT_TRUE(engine_client.objects.empty());
+  EXPECT_TRUE(replacement_runtime_client.objects.empty());
+}
+
 TEST(RemoteExtentRuntimeProvider, DefaultsOffAndDelegatesWhenInstalled) {
   clear_runtime_provider();
   g_provider_store = nullptr;
