@@ -115,6 +115,13 @@ class HeadPublisher {
   PublishResult probe();
   PublishResult acquire_epoch(std::string_view writer_id);
 
+  // Bind the bounded reader's post-acquisition candidate before publishing
+  // the takeover snapshot. Retains local ownership and verifies both objects.
+  PublishResult bind_takeover_candidate(
+      const PublishedBytes &expected_epoch_object,
+      const WriterEpoch &expected_epoch,
+      const PublishedBytes &expected_head_object, const Head &expected_head);
+
   // Re-establishes same-writer ownership after a same-binary re-exec. Both
   // fixed objects are re-read and must equal the caller's canonical bytes,
   // ETags, and parsed values. This performs no remote write and installs the

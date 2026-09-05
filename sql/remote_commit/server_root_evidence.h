@@ -166,6 +166,11 @@ StartupStepResult collect_server_root_evidence(
     const ServerRootVerificationRequest &request, StartupRootEvidence *evidence,
     RetainedSmartengineSnapshotEvidence *retained_smartengine = nullptr);
 
+// The initialize child has no binlog or SmartEngine yet. Verify its persisted
+// system state and absence of old authority without acquiring a snapshot.
+StartupStepResult verify_initialized_empty_root(
+    const ServerRootVerificationRequest &request);
+
 }  // namespace wesql::remote_commit
 
 #endif  // SQL_REMOTE_COMMIT_SERVER_ROOT_EVIDENCE_INCLUDED

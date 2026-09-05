@@ -285,6 +285,58 @@ PublishResult HeadPublisher::acquire_epoch(std::string_view writer_id) {
   return write;
 }
 
+PublishResult HeadPublisher::bind_takeover_candidate(
+    const PublishedBytes &expected_epoch_object,
+    const WriterEpoch &expected_epoch,
+    const PublishedBytes &expected_head_object, const Head &expected_head) {
+  if (state_.lifecycle == LifecycleState::FENCED)
+    return result(PublishOutcome::FENCED, last_error_);
+  if (local_writer_id_.empty() || adopted_read_only_ ||
+      state_.lifecycle == LifecycleState::RUNNING ||
+      !state_.epoch.has_value() || !state_.epoch_object.has_value() ||
+      !state_.head.has_value() || !state_.head_object.has_value() ||
+      *state_.epoch != expected_epoch ||
+      !same_object(*state_.epoch_object, expected_epoch_object) ||
+      local_writer_id_ != expected_epoch.writer_id)
+    return terminal(PublishOutcome::PERMANENT_ERROR,
+                    "takeover candidate lacks locally acquired epoch");
+
+  Head parsed;
+  std::string error;
+  if (expected_head_object.etag.empty() ||
+      !parse_head(expected_head_object.body, stream_, &parsed, &error) ||
+      parsed != expected_head ||
+      expected_head.generation < state_.head->generation ||
+      (expected_head.generation == state_.head->generation &&
+       !same_object(*state_.head_object, expected_head_object)) ||
+      expected_head.writer.epoch > expected_epoch.epoch ||
+      (expected_head.writer.epoch == expected_epoch.epoch &&
+       expected_head.writer.id != expected_epoch.writer_id))
+    return terminal(PublishOutcome::FENCED,
+                    "takeover candidate is invalid or regresses cached HEAD");
+
+  const PublishResult head_read =
+      store_.read(stream_.remote_prefix + "/HEAD", kHeadMaxBytes);
+  if (!head_read.applied())
+    return terminal(head_read.outcome == PublishOutcome::ABSENT
+                        ? PublishOutcome::FENCED
+                        : head_read.outcome,
+                    "cannot verify takeover candidate: " + head_read.detail);
+  if (!same_object(*head_read.object, expected_head_object))
+    return terminal(PublishOutcome::FENCED,
+                    "HEAD changed after takeover candidate selection");
+  const PublishResult ownership = check_epoch_owner();
+  if (!ownership.applied()) return ownership;
+  if (!same_object(*ownership.object, expected_epoch_object))
+    return terminal(PublishOutcome::FENCED,
+                    "takeover epoch object identity changed");
+
+  state_.head = expected_head;
+  state_.head_object = expected_head_object;
+  last_error_.clear();
+  return result(PublishOutcome::APPLIED, {}, expected_head_object);
+}
+
 PublishResult HeadPublisher::adopt_epoch(
     const PublishedBytes &expected_epoch_object,
     const WriterEpoch &expected_epoch,

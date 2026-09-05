@@ -23,11 +23,14 @@
 #include "sql/handler.h"
 #include "sql/mysqld.h"
 #include "sql/partition_info.h"
+#include "sql/remote_commit/policy.h"
 #include "sql/remote_commit/protocol_codec.h"
 #include "sql/remote_commit/evidence.h"
 #include "sql/remote_commit/publisher.h"
+#include "sql/remote_commit/segment_sealer.h"
 #include "sql/remote_commit/server_hooks.h"
 #include "sql/remote_commit/sql_admission.h"
+#include "sql/rpl_gtid.h"
 #include "sql/sql_lex.h"
 #include "sql/tc_log.h"
 #include "unittest/gunit/handler-t.h"
@@ -39,6 +42,47 @@ namespace {
 using namespace std::chrono_literals;
 using my_testing::Server_initializer;
 namespace fs = std::filesystem;
+
+TEST(RemoteCommitStartupPolicy, ReadsParsedGtidBeforeRuntimeInitialization) {
+  const auto saved_mode = Gtid_mode::sysvar_mode;
+  const auto saved_consistency = _gtid_consistency_mode;
+  const auto saved_runtime = global_gtid_mode.get();
+  auto *const saved_lock = global_tsid_lock;
+  auto restore = create_scope_guard([&] {
+    Gtid_mode::sysvar_mode = saved_mode;
+    _gtid_consistency_mode = saved_consistency;
+    global_gtid_mode.set(saved_runtime);
+    global_tsid_lock = saved_lock;
+  });
+  global_tsid_lock = nullptr;
+  global_gtid_mode.set(Gtid_mode::OFF);
+  Gtid_mode::sysvar_mode = Gtid_mode::ON;
+  _gtid_consistency_mode = GTID_CONSISTENCY_MODE_ON;
+
+  const auto policy =
+      wesql::remote_commit::configured_startup_policy_for_test();
+  EXPECT_TRUE(policy.gtid_mode_on);
+  EXPECT_TRUE(policy.enforce_gtid_consistency);
+  EXPECT_TRUE(policy.anonymous_gtid_forbidden);
+  EXPECT_EQ(Gtid_mode::OFF, global_gtid_mode.get());
+  EXPECT_EQ(nullptr, global_tsid_lock);
+
+  for (const auto mode : {Gtid_mode::OFF, Gtid_mode::OFF_PERMISSIVE,
+                          Gtid_mode::ON_PERMISSIVE}) {
+    Gtid_mode::sysvar_mode = mode;
+    const auto rejected =
+        wesql::remote_commit::configured_startup_policy_for_test();
+    EXPECT_FALSE(rejected.gtid_mode_on);
+    EXPECT_FALSE(rejected.anonymous_gtid_forbidden);
+  }
+  Gtid_mode::sysvar_mode = Gtid_mode::ON;
+  for (const auto mode : {GTID_CONSISTENCY_MODE_OFF,
+                          GTID_CONSISTENCY_MODE_WARN}) {
+    _gtid_consistency_mode = mode;
+    EXPECT_FALSE(wesql::remote_commit::configured_startup_policy_for_test()
+                     .enforce_gtid_consistency);
+  }
+}
 
 class Scoped_temp_directory {
  public:
@@ -70,6 +114,84 @@ std::string read_test_file(const fs::path &path) {
   std::ifstream input(path, std::ios::binary);
   return {std::istreambuf_iterator<char>(input),
           std::istreambuf_iterator<char>()};
+}
+
+TEST(RemoteCommitSegmentSealer, ConcurrentAppendKeepsExactValidatedRange) {
+  namespace rc = wesql::remote_commit;
+  class Store final : public rc::ConditionalIo {
+   public:
+    objstore::ExactObjectResult get(std::string_view, uint64_t) override {
+      return objstore::ExactObjectResult::found(body, "\"segment\"");
+    }
+    objstore::ConditionalPutResult put(
+        std::string_view, std::string_view bytes,
+        const objstore::ConditionalPutCondition &) override {
+      body = bytes;
+      return objstore::ConditionalPutResult::applied("\"segment\"");
+    }
+    std::string body;
+  };
+
+  for (const std::string change : {"append", "truncate", "replace", "corrupt"}) {
+    SCOPED_TRACE(change);
+    Scoped_temp_directory directory;
+    ASSERT_FALSE(directory.path().empty());
+    const fs::path path = directory.path() / "binlog.000001";
+    std::string body(32, '\0');
+    body[4] = 2;
+    body[9] = static_cast<char>(body.size());
+    write_test_file(path, std::string(4, 'x') + body);
+    rc::NativeBinlogRange range;
+    range.local_path = path.string();
+    range.source = {"binlog.000001", 4, 4 + body.size()};
+    range.metadata.transaction_count = 1;
+    range.metadata.gtid_set = "11111111-1111-1111-1111-111111111111:1";
+    range.metadata.xids = {1};
+    std::string error;
+    ASSERT_TRUE(rc::sha256_hex(body, &range.metadata.native_sha256, &error));
+    rc::StreamIdentity stream;
+    ASSERT_TRUE(rc::build_stream_identity("repo", "main", "repo/main",
+                                          &stream, &error));
+    const rc::Writer writer{"11111111111111111111111111111111", 1};
+    rc::SegmentTip tip;
+    tip.kind = rc::SegmentTipKind::SNAPSHOT_ROOT;
+    tip.snapshot_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    tip.cursor = rc::Cursor{range.source.file, range.source.start_pos};
+    Store io;
+    rc::ProtocolStore store(&io);
+    rc::SegmentSealer sealer(&store, stream, 1024);
+    if (change == "corrupt") {
+      std::string changed = body;
+      changed.back() = 'x';
+      write_test_file(path, std::string(4, 'x') + changed);
+    } else {
+      sealer.set_after_read_for_test([&] {
+        if (change == "append") {
+          std::ofstream append(path, std::ios::binary | std::ios::app);
+          append << "next group";
+          ASSERT_TRUE(static_cast<bool>(append));
+        } else if (change == "truncate") {
+          fs::resize_file(path, 4);
+        } else {
+          const fs::path replacement = directory.path() / "replacement";
+          write_test_file(replacement, std::string(4, 'x') + body);
+          fs::rename(replacement, path);
+        }
+      });
+    }
+    rc::SealedSegments sealed;
+    const auto result = sealer.seal(writer, 1, tip, {range}, &sealed);
+    if (change == "append") {
+      ASSERT_TRUE(result.applied()) << result.detail;
+      ASSERT_EQ(1U, sealed.segments.size());
+      EXPECT_EQ(body, io.body);
+      EXPECT_EQ(range.metadata.native_sha256, sealed.segments[0].sha256);
+      EXPECT_EQ(range.source.end_pos, sealed.durable_cursor.pos);
+    } else {
+      EXPECT_EQ(rc::PublishOutcome::PERMANENT_ERROR, result.outcome);
+      EXPECT_TRUE(io.body.empty());
+    }
+  }
 }
 
 int fake_engine_prepare(handlerton *, THD *, bool) { return 0; }
@@ -932,10 +1054,21 @@ class FakeConditionalIo final : public rc::ConditionalIo {
   }
 
   objstore::ConditionalPutResult put(
-      std::string_view, std::string_view,
-      const objstore::ConditionalPutCondition &) override {
-    return objstore::ConditionalPutResult::unsupported();
+      std::string_view key, std::string_view body,
+      const objstore::ConditionalPutCondition &condition) override {
+    if (!allow_epoch_cas) return objstore::ConditionalPutResult::unsupported();
+    std::lock_guard<std::mutex> guard(mutex);
+    const auto found = objects.find(std::string(key));
+    if (condition.mode() != objstore::ConditionalPutMode::MATCH_ETAG ||
+        found == objects.end() || found->second.etag != condition.etag()) {
+      return objstore::ConditionalPutResult::precondition_failed_412(
+          status(objstore::SE_UNEXPECTED, "epoch condition changed"));
+    }
+    found->second = {std::string(body), "\"acquired-epoch\""};
+    return objstore::ConditionalPutResult::applied(found->second.etag);
   }
+
+  bool allow_epoch_cas{false};
 
   void set(std::string key, std::string body, std::string etag) {
     std::lock_guard<std::mutex> guard(mutex);
@@ -1149,6 +1282,85 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   EXPECT_TRUE(rc::may_run_startup_bootstrap_worker());
   EXPECT_FALSE(rc::may_bypass_stock_binlog_recovery());
   EXPECT_FALSE(rc::startup_existing_binlog_boundary(&file, &pos));
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       OnlyCompiledInitializationInPreflightMayMutateUnpublishedRoot) {
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] { opt_initialize = saved_initialize; });
+  opt_initialize = true;
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+
+  initialize(false);
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  rc::reset_startup_lifecycle_for_test();
+  ASSERT_FALSE(rc::initialize_startup_lifecycle_for_test(&io, stream, true));
+  EXPECT_FALSE(rc::may_initialize_system_tables(nullptr));
+  for (const auto kind : {SYSTEM_THREAD_DD_INITIALIZE,
+                          SYSTEM_THREAD_SERVER_INITIALIZE}) {
+    thd.system_thread = kind;
+    ASSERT_TRUE(rc::may_initialize_system_tables(&thd));
+    thd.lex->sql_command = SQLCOM_CREATE_TABLE;
+    thd.lex->no_write_to_binlog = true;
+    EXPECT_FALSE(rc::enforce_sql_command_admission(&thd));
+    EXPECT_FALSE(rc::begin_commit_admission(&thd, true));
+    rc::check_commit_authorization(&thd, true);
+    rc::consume_commit_authorization(&thd, true, true, true);
+    rc::end_commit_admission(&thd, false);
+    EXPECT_FALSE(rc::commit_admission_open_for_test());
+  }
+  for (const auto kind : {NON_SYSTEM_THREAD, SYSTEM_THREAD_DD_RESTART,
+                          SYSTEM_THREAD_INIT_FILE,
+                          SYSTEM_THREAD_SERVER_UPGRADE}) {
+    thd.system_thread = kind;
+    EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  }
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  opt_initialize = false;
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  opt_initialize = true;
+  rc::reset_startup_lifecycle_for_test();
+  publish_namespace(true);
+  ASSERT_FALSE(rc::initialize_startup_lifecycle_for_test(&io, stream, true));
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       EmptyRootInitializationSkipsOnlyDummyRecoveryAndRevokesOnStateChange) {
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] { opt_initialize = saved_initialize; });
+  opt_initialize = true;
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  TC_LOG_DUMMY dummy;
+  publish_namespace(false);
+  ASSERT_FALSE(rc::initialize_startup_lifecycle_for_test(&io, stream, true));
+  ASSERT_TRUE(rc::may_initialize_empty_root());
+  EXPECT_EQ(0, dummy.open(nullptr));
+  EXPECT_FALSE(rc::may_bypass_stock_binlog_recovery());
+
+  rc::reset_commit_admission_for_test(true);
+  EXPECT_FALSE(rc::may_initialize_empty_root());
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  rc::reset_commit_admission_for_test(false);
+  ASSERT_TRUE(rc::may_initialize_empty_root());
+
+  rc::StartupEpochProof acquired;
+  io.allow_epoch_cas = true;
+  ASSERT_FALSE(rc::acquire_startup_epoch(&acquired)) << rc::startup_error();
+  EXPECT_FALSE(rc::may_initialize_empty_root());
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+
+  rc::reset_startup_lifecycle_for_test();
+  publish_namespace(false);
+  ASSERT_FALSE(rc::initialize_startup_lifecycle_for_test(&io, stream, true));
+  epoch_proof.head_body.clear();
+  epoch_proof.head_etag.clear();
+  epoch_proof.head_generation = 0;
+  adopt(rc::StartupEpochAdoptionRole::BOOTSTRAP_SNAPSHOT);
+  EXPECT_FALSE(rc::may_initialize_empty_root());
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,

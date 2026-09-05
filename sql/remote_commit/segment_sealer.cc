@@ -3,10 +3,14 @@
 #include "sql/remote_commit/segment_sealer.h"
 
 #include <array>
-#include <filesystem>
-#include <fstream>
+#include <cerrno>
+#include <fcntl.h>
 #include <limits>
 #include <utility>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "scope_guard.h"
 
 namespace wesql::remote_commit {
 namespace {
@@ -103,34 +107,47 @@ PublishResult SegmentSealer::read_range(const NativeBinlogRange &range,
   if (range.source.start_pos >= range.source.end_pos)
     return result(PublishOutcome::PERMANENT_ERROR, "empty binlog range");
   const uint64_t length = range.source.end_pos - range.source.start_pos;
-  if (length > max_segment_bytes_ || length > std::string().max_size())
+  if (length > max_segment_bytes_ || length > std::string().max_size() ||
+      range.source.end_pos >
+          static_cast<uint64_t>(std::numeric_limits<off_t>::max()))
     return result(PublishOutcome::PERMANENT_ERROR,
                   "binlog range exceeds the configured segment limit");
 
-  std::error_code filesystem_error;
-  const uint64_t size_before =
-      std::filesystem::file_size(range.local_path, filesystem_error);
-  if (filesystem_error || range.source.end_pos > size_before)
-    return result(PublishOutcome::PERMANENT_ERROR,
-                  "binlog range is outside the source file");
-
-  std::ifstream input(range.local_path, std::ios::binary);
-  if (!input)
+  const int input =
+      ::open(range.local_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (input < 0)
     return result(PublishOutcome::PERMANENT_ERROR,
                   "cannot open native binlog source");
-  input.seekg(static_cast<std::streamoff>(range.source.start_pos));
-  if (!input)
+  auto close_input = create_scope_guard([&] { ::close(input); });
+  struct stat before {};
+  if (::fstat(input, &before) != 0 || !S_ISREG(before.st_mode) ||
+      before.st_size < 0 ||
+      range.source.end_pos > static_cast<uint64_t>(before.st_size))
     return result(PublishOutcome::PERMANENT_ERROR,
-                  "cannot seek native binlog source");
+                  "binlog range is outside the source file");
   body->assign(static_cast<size_t>(length), '\0');
-  input.read(body->data(), static_cast<std::streamsize>(length));
-  if (input.gcount() != static_cast<std::streamsize>(length) || !input)
-    return result(PublishOutcome::PERMANENT_ERROR,
-                  "short read from native binlog source");
-
-  const uint64_t size_after =
-      std::filesystem::file_size(range.local_path, filesystem_error);
-  if (filesystem_error || size_before != size_after)
+  size_t consumed = 0;
+  while (consumed < body->size()) {
+    const ssize_t count = ::pread(
+        input, body->data() + consumed, body->size() - consumed,
+        static_cast<off_t>(range.source.start_pos + consumed));
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0)
+      return result(PublishOutcome::PERMANENT_ERROR,
+                    "short read from native binlog source");
+    consumed += static_cast<size_t>(count);
+  }
+#ifdef WESQL_TEST
+  if (after_read_for_test_) after_read_for_test_();
+#endif
+  // Later groups may append after this range while its remote decision waits.
+  // Keep the opened inode and reject replacement or shrinkage, not growth.
+  struct stat after {};
+  struct stat named {};
+  if (::fstat(input, &after) != 0 ||
+      ::lstat(range.local_path.c_str(), &named) != 0 ||
+      !S_ISREG(named.st_mode) || before.st_dev != named.st_dev ||
+      before.st_ino != named.st_ino || after.st_size < before.st_size)
     return result(PublishOutcome::PERMANENT_ERROR,
                   "native binlog source changed while sealing");
   std::string validation_error;
@@ -197,6 +214,9 @@ PublishResult SegmentSealer::seal(
                             &segment.key, &error))
       return result(PublishOutcome::PERMANENT_ERROR,
                     "cannot describe native segment: " + error);
+    if (segment.sha256 != range.metadata.native_sha256)
+      return result(PublishOutcome::PERMANENT_ERROR,
+                    "native range differs from checksum-validated bytes");
 
     auto upload = store_->create_immutable(segment.key, body);
     if (!upload.applied()) return upload;

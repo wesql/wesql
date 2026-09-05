@@ -162,6 +162,11 @@ uint64_t maximum_allowed_binlog_cache(uint64_t max_segment_bytes) {
 
 std::vector<PolicyViolation> validate_startup_policy(
     const StartupPolicy &policy) {
+  return validate_startup_policy(policy, false);
+}
+
+std::vector<PolicyViolation> validate_startup_policy(
+    const StartupPolicy &policy, bool bootstrap_preflight) {
   std::vector<PolicyViolation> violations;
   if (!is_remote_commit_provider(policy.provider))
     add_violation(&violations, PolicyError::INVALID_PROVIDER, policy.provider);
@@ -179,7 +184,7 @@ std::vector<PolicyViolation> validate_startup_policy(
                   policy.binlog_basename);
   if (!policy.conditional_io.complete())
     add_violation(&violations, PolicyError::CONDITIONAL_IO_UNSUPPORTED);
-  if (!policy.log_bin)
+  if (!policy.log_bin && !bootstrap_preflight)
     add_violation(&violations, PolicyError::BINLOG_DISABLED);
   if (!policy.binlog_format_row)
     add_violation(&violations, PolicyError::BINLOG_FORMAT_NOT_ROW);

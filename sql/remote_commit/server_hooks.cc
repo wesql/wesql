@@ -142,6 +142,7 @@ struct RuntimeState {
   std::mutex state_mutex;
   bool initialized{false};
   bool running{false};
+  bool bootstrap_preflight{false};
   StartupPhase startup_phase{StartupPhase::UNINITIALIZED};
   StartupRoute startup_route{StartupRoute::DISABLED};
   bool startup_epoch_adopted{false};
@@ -273,9 +274,11 @@ StartupPolicy configured_startup_policy(
   policy.binlog_order_commits = opt_binlog_order_commits;
   policy.binlog_error_action_abort_server =
       binlog_error_action == ABORT_SERVER;
-  policy.gtid_mode_on = global_gtid_mode.get() == Gtid_mode::ON;
+  // Options are parsed here, but gtid_server_init() has not populated the
+  // runtime cache or created global_tsid_lock yet.
+  policy.gtid_mode_on = Gtid_mode::sysvar_mode == Gtid_mode::ON;
   policy.enforce_gtid_consistency =
-      get_gtid_consistency_mode() == GTID_CONSISTENCY_MODE_ON;
+      _gtid_consistency_mode == GTID_CONSISTENCY_MODE_ON;
   policy.anonymous_gtid_forbidden = policy.gtid_mode_on;
   policy.max_binlog_cache_size = max_binlog_cache_size;
   policy.max_binlog_stmt_cache_size = max_binlog_stmt_cache_size;
@@ -310,9 +313,10 @@ StartupPolicy configured_startup_policy(
   return policy;
 }
 
-bool reject_startup_policy(const StartupPolicy &policy, std::string *error) {
+bool reject_startup_policy(const StartupPolicy &policy, bool bootstrap_preflight,
+                           std::string *error) {
   const std::vector<PolicyViolation> violations =
-      validate_startup_policy(policy);
+      validate_startup_policy(policy, bootstrap_preflight);
   if (violations.empty()) return false;
   const PolicyViolation &first = violations.front();
   *error = "remote commit startup policy violation: ";
@@ -666,6 +670,20 @@ bool exact_adopted_head_locked(bool expect_absent) {
          state.head_object->etag == proof.head_etag;
 }
 
+bool bootstrap_preflight_worker_authorized_locked() {
+  const PublisherState *state =
+      g_runtime.publisher == nullptr ? nullptr : &g_runtime.publisher->state();
+  return g_runtime.initialized && !g_runtime.running &&
+         g_runtime.startup_route == StartupRoute::BOOTSTRAP &&
+         !g_runtime.startup_epoch_adopted &&
+         g_runtime.startup_phase == StartupPhase::HEAD_PROBED &&
+         g_runtime.status.state == LifecycleState::INITIALIZING &&
+         admission_closed_and_drained_locked() &&
+         state != nullptr && !state->head.has_value() &&
+         !state->head_object.has_value() &&
+         state->lifecycle == LifecycleState::INITIALIZING;
+}
+
 bool takeover_recovery_worker_authorized_locked() {
   const PublisherState *state =
       g_runtime.publisher == nullptr ? nullptr : &g_runtime.publisher->state();
@@ -792,6 +810,14 @@ bool scan_native_range(const NativeBinlogRange &range,
   metadata->transaction_count = 0;
   metadata->gtid_set.clear();
   metadata->xids.clear();
+  metadata->native_sha256.clear();
+  if (range.source.start_pos >= range.source.end_pos ||
+      range.source.end_pos - range.source.start_pos > maximum_segment_bytes())
+    return fail_with(error, "native range exceeds the segment limit");
+  std::string validated_bytes;
+  validated_bytes.reserve(range.source.end_pos - range.source.start_pos);
+  if (range.source.start_pos == 0)
+    validated_bytes.assign(BINLOG_MAGIC, BIN_LOG_HEADER_SIZE);
 
   Binlog_file_reader reader(true);
   const my_off_t scan_start =
@@ -810,12 +836,16 @@ bool scan_native_range(const NativeBinlogRange &range,
       mysql::binlog::event::UNKNOWN_EVENT;
   std::string rotate_target;
   while (reader.position() < range.source.end_pos) {
+    const my_off_t event_start = reader.position();
     std::unique_ptr<Log_event> event(reader.read_event_object());
     if (event == nullptr)
       return fail_with(error, std::string("cannot decode native range: ") +
                                   reader.get_error_str());
     if (reader.position() > range.source.end_pos)
       return fail_with(error, "native range ends in a partial event");
+    if (event->temp_buf == nullptr || reader.position() <= event_start)
+      return fail_with(error, "native event lacks its validated wire bytes");
+    validated_bytes.append(event->temp_buf, reader.position() - event_start);
     const auto [info_error, event_info] =
         extract_log_event_basic_info(event.get());
     if (info_error || boundary_parser.feed_event(event_info, false))
@@ -863,7 +893,7 @@ bool scan_native_range(const NativeBinlogRange &range,
     metadata->gtid_set.append(gtids[index]);
   }
   metadata->transaction_count = gtids.size();
-  return true;
+  return sha256_hex(validated_bytes, &metadata->native_sha256, error);
 }
 
 bool build_native_ranges(MYSQL_BIN_LOG *binlog, const Cursor &start,
@@ -1767,6 +1797,10 @@ PublishResult publish_prepared_runtime_snapshot(
 }
 
 bool initialize() {
+  return initialize(false);
+}
+
+bool initialize(bool bootstrap_preflight) {
   std::unique_lock<std::mutex> state_lock(g_runtime.state_mutex);
   if (!enabled()) {
     g_runtime.startup_route = StartupRoute::DISABLED;
@@ -1827,6 +1861,7 @@ bool initialize() {
   const objstore::ConditionalObjectStoreCapabilities capabilities =
       object_store->conditional_capabilities();
   if (reject_startup_policy(configured_startup_policy(capabilities),
+                            bootstrap_preflight,
                             &g_runtime.last_error)) {
     return true;
   }
@@ -1849,6 +1884,7 @@ bool initialize() {
 
   g_runtime.initialized = true;
   g_runtime.running = false;
+  g_runtime.bootstrap_preflight = bootstrap_preflight;
   g_runtime.startup_epoch_adopted = false;
   g_runtime.startup_epoch_adoption_role =
       StartupEpochAdoptionRole::TAKEOVER_RECOVERY;
@@ -2252,17 +2288,22 @@ bool may_run_startup_bootstrap_worker() {
   if (!enabled()) return false;
   std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
   std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
-  const PublisherState *state =
-      g_runtime.publisher == nullptr ? nullptr : &g_runtime.publisher->state();
-  return g_runtime.initialized && !g_runtime.running &&
-         g_runtime.startup_route == StartupRoute::BOOTSTRAP &&
-         !g_runtime.startup_epoch_adopted &&
-         g_runtime.startup_phase == StartupPhase::HEAD_PROBED &&
-         g_runtime.status.state == LifecycleState::INITIALIZING &&
-         admission_closed_and_drained_locked() &&
-         state != nullptr && !state->head.has_value() &&
-         !state->head_object.has_value() &&
-         state->lifecycle == LifecycleState::INITIALIZING;
+  return bootstrap_preflight_worker_authorized_locked();
+}
+
+bool may_initialize_empty_root() {
+  if (!enabled() || !opt_initialize) return false;
+  std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
+  std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
+  return g_runtime.bootstrap_preflight &&
+         bootstrap_preflight_worker_authorized_locked();
+}
+
+bool may_initialize_system_tables(const THD *thd) {
+  return thd != nullptr &&
+         (thd->system_thread == SYSTEM_THREAD_DD_INITIALIZE ||
+          thd->system_thread == SYSTEM_THREAD_SERVER_INITIALIZE) &&
+         may_initialize_empty_root();
 }
 
 bool may_run_startup_bootstrap_snapshot_worker() {
@@ -2344,6 +2385,7 @@ void deinitialize() {
     g_runtime.object_store_owned = false;
     g_runtime.object_store_provider_initialized = false;
     g_runtime.initialized = false;
+    g_runtime.bootstrap_preflight = false;
     g_runtime.running = false;
     g_runtime.startup_phase = StartupPhase::UNINITIALIZED;
     g_runtime.startup_route = StartupRoute::DISABLED;
@@ -2708,6 +2750,7 @@ void release_order_token(OrderToken *token) {
 void check_commit_authorization(THD *thd, bool all) {
   if (!enabled()) return;
   if (thd == nullptr) fail_stop("null THD at remote commit guard");
+  if (may_initialize_system_tables(thd)) return;
   Transaction_ctx *transaction = thd->get_transaction();
   const auto scope = all ? Transaction_ctx::SESSION : Transaction_ctx::STMT;
   const bool real = all || !transaction->is_active(Transaction_ctx::SESSION);
@@ -2737,6 +2780,7 @@ void check_commit_authorization(THD *thd, bool all) {
 void consume_commit_authorization(THD *thd, bool, bool is_real_trans,
                                   bool has_read_write_engine) {
   if (!enabled() || !is_real_trans || !has_read_write_engine) return;
+  if (may_initialize_system_tables(thd)) return;
   std::string error;
   bool authorized = false;
   {
@@ -2859,6 +2903,7 @@ void discard_recovery_commit_authorization(THD *thd) {
 bool begin_commit_admission(THD *thd, bool potentially_durable) {
   if (!enabled() || !potentially_durable) return false;
   if (thd == nullptr) fail_stop("null THD at remote commit admission");
+  if (may_initialize_system_tables(thd)) return false;
   std::unique_lock<std::mutex> lock(g_runtime.admission_mutex);
   if (terminal_snapshot_failure_locked() || g_runtime.shutdown_draining ||
       g_runtime.shutting_down)
@@ -4011,8 +4056,13 @@ void end_clone_cut_barrier(CloneCutBarrierLease *lease) {
 }
 
 #ifdef WESQL_TEST
+StartupPolicy configured_startup_policy_for_test() {
+  return configured_startup_policy({});
+}
+
 bool initialize_startup_lifecycle_for_test(ConditionalIo *conditional_io,
-                                           const StreamIdentity &stream) {
+                                           const StreamIdentity &stream,
+                                           bool bootstrap_preflight) {
   if (conditional_io == nullptr || stream.stream_id.empty()) return true;
   std::lock_guard<std::mutex> admission_guard(g_runtime.admission_mutex);
   std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
@@ -4038,6 +4088,7 @@ bool initialize_startup_lifecycle_for_test(ConditionalIo *conditional_io,
 
   g_runtime.initialized = true;
   g_runtime.running = false;
+  g_runtime.bootstrap_preflight = bootstrap_preflight;
   g_runtime.startup_phase = StartupPhase::HEAD_PROBED;
   g_runtime.startup_route = g_runtime.publisher->state().head.has_value()
                                 ? StartupRoute::TAKEOVER
@@ -4086,6 +4137,7 @@ void reset_startup_lifecycle_for_test() {
   g_runtime.store.reset();
   g_runtime.metadata_io = nullptr;
   g_runtime.initialized = false;
+  g_runtime.bootstrap_preflight = false;
   g_runtime.running = false;
   g_runtime.startup_phase = StartupPhase::UNINITIALIZED;
   g_runtime.startup_route = StartupRoute::DISABLED;

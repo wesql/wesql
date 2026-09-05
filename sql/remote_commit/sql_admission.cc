@@ -100,6 +100,7 @@ bool enforce_sql_command_admission(THD *thd) {
   if (!enabled()) return false;
   if (thd == nullptr || thd->lex == nullptr)
     return reject(thd, "missing parsed SQL command");
+  if (may_initialize_system_tables(thd)) return false;
 
   const enum_sql_command command = thd->lex->sql_command;
   const SqlCommandClass command_class = classify_sql_command(command);

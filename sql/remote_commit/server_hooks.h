@@ -230,6 +230,7 @@ bool startup_io_runtime(StartupIoRuntime *runtime);
 // Initializes the fixed stream identity, conditional client, and HEAD-first
 // startup probe. MySQL-style return: false is success, true is error.
 bool initialize();
+bool initialize(bool bootstrap_preflight);
 void shutdown();
 void deinitialize();
 
@@ -256,6 +257,11 @@ std::string startup_error();
 // Allows only EMPTY_SOURCE initialization of a known fresh bootstrap root.
 // It never authorizes native replay or write admission.
 bool may_run_startup_bootstrap_worker();
+
+// Only compiled-in DD/system-table statements in the isolated initialize
+// child may mutate its unpublished empty root without a remote LOG decision.
+bool may_initialize_empty_root();
+bool may_initialize_system_tables(const THD *thd);
 
 // True only after a fresh bootstrap snapshot/export worker adopted the exact
 // parent epoch while HEAD was still absent. It never grants native replay,
@@ -405,12 +411,15 @@ bool materialize_clone_cut_binlog_seed(
     const std::filesystem::path &destination, std::string *error);
 
 #ifdef WESQL_TEST
+struct StartupPolicy;
+StartupPolicy configured_startup_policy_for_test();
 // Creates only the server-hook runtime around a fake conditional store and
 // performs the real mutation-free publisher probe. Tests then drive the public
 // adoption/activation APIs and their exact remote readbacks. The ConditionalIo
 // remains caller-owned through deinitialize().
 bool initialize_startup_lifecycle_for_test(ConditionalIo *conditional_io,
-                                           const StreamIdentity &stream);
+                                           const StreamIdentity &stream,
+                                           bool bootstrap_preflight = false);
 void reset_startup_lifecycle_for_test();
 // Resets only the admission primitive for focused commit-path tests. It does
 // not manufacture a startup phase, installed HEAD proof, or RUNNING state.

@@ -1816,6 +1816,101 @@ void observe_smartengine_absent(ServerRootEvidenceObservation *observation) {
 
 }  // namespace
 
+StartupStepResult verify_initialized_empty_root(
+    const ServerRootVerificationRequest &request) {
+  std::string detail;
+  if (!valid_request_shape(request, &detail) || request.installed ||
+      request.route != StartupCoordinatorRoute::BOOTSTRAP ||
+      !may_initialize_empty_root()) {
+    return {StartupStepOutcome::CORRUPT,
+            "empty-root initialization authority is not held: " + detail};
+  }
+  ServerRootEvidenceObservation opened;
+  observe_opened_root(request, &opened);
+  StartupDeploymentIdentity declaration;
+  if (!opened.opened_root_matches.available ||
+      !opened.opened_root_matches.value ||
+      !configured_server_root_runtime_deployment(&declaration, &detail) ||
+      declaration != request.deployment) {
+    return {StartupStepOutcome::CORRUPT,
+            "initialized root or deployment identity does not match"};
+  }
+
+  Auto_THD auto_thd;
+  TwoStageGlobalReadLock global_lock(auto_thd.thd);
+  if (!global_lock.acquire(&detail))
+    return {StartupStepOutcome::BLOCKED, std::move(detail)};
+
+  const auto capture = [&](BootstrapServerSample *sample) {
+    if (!may_initialize_empty_root() || mysql_bin_log.is_open() ||
+        dynamic_cast<TC_LOG_DUMMY *>(tc_log) == nullptr ||
+        server_uuid_ptr == nullptr ||
+        !capture_gtid(&sample->executed_gtid, &detail) ||
+        !capture_data_dictionary_inventory(auto_thd.thd, &sample->dictionary,
+                                            &detail) ||
+        !capture_replication_inventory(auto_thd.thd, &sample->replication,
+                                       &detail) ||
+        !capture_acl_inventory(auto_thd.thd, &sample->acl, &detail) ||
+        !capture_prepared_inventory(&sample->prepared)) {
+      if (detail.empty()) detail = "initialization inventory is unavailable";
+      return false;
+    }
+    sample->server_uuid = server_uuid_ptr;
+    const std::string binlog_name =
+        log_bin_basename == nullptr
+            ? std::string()
+            : fs::path(log_bin_basename).filename().string();
+    if (binlog_name.empty()) {
+      detail = "initialization binary-log basename is unavailable";
+      return false;
+    }
+    std::error_code scan_error;
+    fs::directory_iterator entry(request.root, scan_error);
+    const fs::directory_iterator end;
+    while (!scan_error && entry != end) {
+      const std::string name = entry->path().filename().string();
+      if (name == "smartengine" || name == "tc.log" ||
+          name == binlog_name || name.starts_with(binlog_name + ".")) {
+        detail = "initialized root contains unexpected engine or TC state";
+        return false;
+      }
+      entry.increment(scan_error);
+    }
+    if (scan_error) {
+      detail = "cannot inspect initialized root for old engine or TC state";
+      return false;
+    }
+#ifdef WITH_SMARTENGINE
+    SmartengineProviderSearch search;
+    plugin_foreach(auto_thd.thd, find_smartengine_provider,
+                   MYSQL_STORAGE_ENGINE_PLUGIN, &search);
+    if (search.partial || search.complete_count != 0) {
+      detail = "SmartEngine was opened before bootstrap epoch acquisition";
+      return false;
+    }
+#endif
+    return true;
+  };
+  BootstrapServerSample before;
+  BootstrapServerSample after;
+  if (!capture(&before) || !capture(&after))
+    return {StartupStepOutcome::BLOCKED, std::move(detail)};
+  if (!may_initialize_empty_root() || before != after)
+    return {StartupStepOutcome::CORRUPT,
+            "initialization authority or paired inventories changed"};
+  if (after.server_uuid != request.deployment.server_uuid ||
+      !after.executed_gtid.canonical.empty() ||
+      !after.dictionary.has_canonical_bootstrap_schemas() ||
+      !after.acl.canonical_initialize_insecure_state() ||
+      after.replication != ServerReplicationInventory{} ||
+      after.prepared != ServerPreparedInventory{}) {
+    return {StartupStepOutcome::CORRUPT,
+            "initialized DD, accounts, GTID, repositories or prepared state "
+            "are not the canonical empty source"};
+  }
+  return {StartupStepOutcome::READY, {}};
+}
+
 StartupStepResult collect_server_root_observation(
     const ServerRootVerificationRequest &request,
     ServerRootEvidenceObservation *result,

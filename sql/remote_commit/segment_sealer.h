@@ -6,6 +6,9 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#ifdef WESQL_TEST
+#include <functional>
+#endif
 
 #include "sql/remote_commit/protocol_codec.h"
 #include "sql/remote_commit/publisher.h"
@@ -16,6 +19,7 @@ struct NativeRangeMetadata {
   uint64_t transaction_count{0};
   std::string gtid_set;
   std::vector<uint64_t> xids;
+  std::string native_sha256;
 };
 
 struct NativeBinlogRange {
@@ -50,12 +54,21 @@ class SegmentSealer {
                      const std::vector<NativeBinlogRange> &ranges,
                      SealedSegments *sealed);
 
+#ifdef WESQL_TEST
+  void set_after_read_for_test(std::function<void()> hook) {
+    after_read_for_test_ = std::move(hook);
+  }
+#endif
+
  private:
   PublishResult read_range(const NativeBinlogRange &range, std::string *body);
 
   ProtocolStore *store_;
   StreamIdentity stream_;
   uint64_t max_segment_bytes_;
+#ifdef WESQL_TEST
+  std::function<void()> after_read_for_test_;
+#endif
 };
 
 }  // namespace wesql::remote_commit

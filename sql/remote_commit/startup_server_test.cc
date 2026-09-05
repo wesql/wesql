@@ -467,6 +467,9 @@ void test_child_argv(const fs::path &directory) {
          error.c_str());
   expect(has_argument(child, "--initialize-insecure"),
          "bootstrap child lacks initialize-insecure");
+  expect(has_argument(child, "--skip-smartengine") &&
+             has_argument(child, "--default-storage-engine=InnoDB"),
+         "initialize child may open SmartEngine before epoch adoption");
   expect(has_argument(child, "--skip-initialize"),
          "bootstrap child lacks initialize-off override");
   expect(has_argument(child, "--skip-initialize-insecure"),
@@ -490,6 +493,8 @@ void test_child_argv(const fs::path &directory) {
   expect(has_argument(child,
                       "--wesql-remote-startup-mode=installed-reexec"),
          "re-exec child has the wrong startup mode");
+  expect(!has_argument(child, "--skip-smartengine"),
+         "installed child inherited initialization-only engine deferral");
   expect(!has_prefix(child, "--wesql-remote-startup-output="),
          "re-exec child unexpectedly has startup output");
   expect(std::count(child.begin(), child.end(), "--skip-daemonize") == 1,

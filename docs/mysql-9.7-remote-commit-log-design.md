@@ -1503,3 +1503,42 @@ P0 每个 group commit 至少产生 segment PUT、small manifest PUT 和 HEAD CA
 模型必须按三次条件写及相应 GET 计费，不能继续沿用“一组一次 S3 请求”的数字。
 后续可把 manifest header 合并进 segment 降低请求数，但必须保持同一 HEAD/CAS
 和恢复校验语义。
+
+## 启动配置检查的时机（2026-09-05）
+
+远端启动发生在命令行解析完成之后、MySQL 初始化 GTID 子系统之前。
+此时检查 `gtid_mode` 和 `enforce_gtid_consistency`，必须读取已经解析的配置值。
+不能读取运行时 GTID 缓存，也不能调用要求 GTID 锁已存在的接口。
+例如，命令行明确设置 `--gtid-mode=ON` 时，运行时缓存暂时仍为 OFF，
+不能据此拒绝启动。配置本身为 OFF 或任一 PERMISSIVE 模式时仍须拒绝。
+
+这项修正不提前创建 GTID 子系统，也不放宽返回成功或恢复的条件。
+回归验证需覆盖“配置 ON、运行时缓存 OFF、GTID 锁尚未创建”的启动状态，
+再用新候选执行首次启动、写入和空目录接管。
+
+内部 BOOTSTRAP_PREFLIGHT 子进程只初始化空目录并提交检查结果，不提供客户端
+服务、不取得写入权。MySQL 在 `--initialize-insecure` 阶段主动关闭 binlog，
+因此该子进程的配置检查允许这一项临时状态，其余持久性检查继续执行。
+这项例外由启动适配器在已解析为 BOOTSTRAP_PREFLIGHT 且确实处于初始化时传入。
+普通父进程、快照子进程、接管进程和最终服务进程仍须开启 binlog；
+子进程还必须证明 HEAD 不存在、准入关闭且事务已排空，才可以完成空目录检查。
+
+同一隔离初始化阶段允许 MySQL 编译进二进制的数据字典与系统表初始化语句
+修改尚未发布的临时目录。这仅限 `SYSTEM_THREAD_DD_INITIALIZE` 和
+`SYSTEM_THREAD_SERVER_INITIALIZE`，并同时验证初始化选项、内部 preflight 模式、
+HEAD 不存在、准入关闭、未取得 epoch 等状态；客户端、init-file、DD 重启与升级
+线程均不在例外内。该能力贯穿 SQL 准入与最终 engine commit 检查，不打开普通
+写入准入，也不生成远端事务成功声明；初始化结果仍须通过 EMPTY_SOURCE 检查
+及首次快照发布，才能成为正式数据源。
+
+初始化阶段的 TC_LOG_DUMMY 仅在同一空根能力有效时跳过普通 `ha_recover`；
+这一条件不改变普通启动、按 XID 提交或回滚、binlog 恢复的拒绝规则。
+此子进程暂不加载 SmartEngine，系统表使用 InnoDB，防止在没有 epoch 时
+为 SmartEngine 内部元数据分配远端区间。后续快照子进程使用原配置，
+在采用父进程 epoch 后首次打开 SmartEngine。
+
+初始化预检不要求尚不存在的 binlog cursor，也不申请 SmartEngine 快照。
+它在全局读锁下前后两次检查 DD、初始账号及权限、复制仓库、prepared 和空
+GTID 集；同时要求 SmartEngine 未加载、对应目录不存在、TC 与 binlog 文件
+不存在，且授权和两个样本均保持不变。取得 epoch 后的快照阶段仍执行完整
+EMPTY_SOURCE、binlog cut 和 SmartEngine 精确 live-set 校验。

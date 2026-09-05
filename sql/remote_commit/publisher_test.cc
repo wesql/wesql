@@ -201,6 +201,99 @@ PublishFixture make_publish_fixture() {
   return fixture;
 }
 
+void test_takeover_binds_newer_candidate_and_preserves_epoch() {
+  const PublishFixture fixture = make_publish_fixture();
+  const rc::WriterEpoch acquired{3, "33333333333333333333333333333333", 2};
+  std::string old_epoch_body;
+  std::string acquired_body;
+  std::string error;
+  expect(rc::serialize_writer_epoch(fixture.stream, fixture.epoch2,
+                                    &old_epoch_body, &error) &&
+             rc::serialize_writer_epoch(fixture.stream, acquired,
+                                         &acquired_body, &error),
+         "cannot serialize takeover epochs");
+  const rc::PublishedBytes epoch_object{acquired_body, "\"epoch-3\""};
+  const rc::PublishedBytes candidate{fixture.intended_head_body,
+                                      "\"head-2\""};
+  for (const bool lost_epoch : {false, true}) {
+    FakeIo io;
+    io.gets.push_back(objstore::ExactObjectResult::found(
+        fixture.prior_head_body, fixture.prior_head_etag));
+    io.gets.push_back(objstore::ExactObjectResult::found(
+        old_epoch_body, "\"epoch-2\""));
+    rc::HeadPublisher publisher(&io, fixture.stream);
+    expect(publisher.probe().applied(), "cannot probe takeover parent");
+    io.put_results.push_back(objstore::ConditionalPutResult::applied());
+    io.gets.push_back(objstore::ExactObjectResult::found(
+        epoch_object.body, epoch_object.etag));
+    expect(publisher.acquire_epoch(acquired.writer_id).applied(),
+           "cannot acquire takeover epoch");
+    io.puts.clear();
+    io.gets.push_back(objstore::ExactObjectResult::found(candidate.body,
+                                                       candidate.etag));
+    io.gets.push_back(objstore::ExactObjectResult::found(
+        lost_epoch ? old_epoch_body : epoch_object.body,
+        lost_epoch ? "\"epoch-lost\"" : epoch_object.etag));
+    const auto bound = publisher.bind_takeover_candidate(
+        epoch_object, acquired, candidate, fixture.intended_head);
+    expect(io.puts.empty(), "candidate binding performed a remote write");
+    if (lost_epoch) {
+      expect(bound.outcome == rc::PublishOutcome::FENCED &&
+                 publisher.state().head->generation == 1,
+             "lost epoch changed the cached parent or was accepted");
+      continue;
+    }
+    expect(bound.applied() &&
+               *publisher.state().head == fixture.intended_head &&
+               publisher.state().head_object->etag == candidate.etag &&
+               *publisher.state().epoch == acquired,
+           "newer candidate was not bound under the acquired epoch");
+
+    rc::TransitionManifest transition = fixture.transition;
+    transition.generation = 3;
+    transition.writer = {acquired.writer_id, acquired.epoch};
+    transition.head_parent = rc::HeadParent{2, candidate.etag,
+                                            hash(candidate.body)};
+    const auto &prior_manifest = fixture.intended_head.manifest;
+    transition.previous = rc::ManifestRef{2, prior_manifest.key,
+                                           prior_manifest.size,
+                                           prior_manifest.sha256};
+    transition.recovery_window.manifest_count = 3;
+    std::string manifest_body;
+    expect(rc::stabilize_transition_manifest(
+               fixture.stream,
+               fixture.intended_head.recovery_window.manifest_bytes,
+               &transition, &manifest_body, &error),
+           "cannot stabilize next takeover transition");
+    rc::Head next = fixture.intended_head;
+    next.generation = 3;
+    next.writer = transition.writer;
+    next.parent = transition.head_parent;
+    next.recovery_window = transition.recovery_window;
+    next.manifest.size = manifest_body.size();
+    next.manifest.sha256 = hash(manifest_body);
+    expect(rc::transition_manifest_key(fixture.stream, next.writer, 3,
+                                       next.manifest.sha256,
+                                       &next.manifest.key, &error),
+           "cannot derive next takeover manifest key");
+    std::string next_body;
+    expect(rc::serialize_head(fixture.stream, next, &next_body, &error),
+           "cannot serialize next takeover HEAD");
+    io.put_results.push_back(objstore::ConditionalPutResult::applied());
+    io.put_results.push_back(objstore::ConditionalPutResult::applied());
+    for (const auto &object :
+         {rc::PublishedBytes{manifest_body, "\"manifest-3\""}, epoch_object,
+          candidate, rc::PublishedBytes{next_body, "\"head-3\""}, epoch_object})
+      io.gets.push_back(objstore::ExactObjectResult::found(object.body,
+                                                         object.etag));
+    expect(publisher.publish(transition, next).applied(),
+           "bound newer candidate could not advance HEAD");
+    expect(io.puts.size() == 2 && io.puts.back().etag == candidate.etag &&
+               publisher.state().head->generation == 3,
+           "takeover publication did not use the newer exact parent");
+  }
+}
+
 void test_success_requires_readback() {
   FakeIo io;
   io.put_results.push_back(objstore::ConditionalPutResult::applied("ignored"));
@@ -667,6 +760,7 @@ void test_bootstrap_adopts_epoch_while_head_absent() {
 }  // namespace
 
 int main() {
+  test_takeover_binds_newer_candidate_and_preserves_epoch();
   test_success_requires_readback();
   test_explicit_read_cap_is_forwarded();
   test_success_then_missing_fences();

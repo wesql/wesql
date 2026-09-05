@@ -396,6 +396,10 @@ class FakeOperations final : public rc::StartupCoordinatorOperations {
 
   rc::StartupStepResult acquire_epoch(rc::ExactWriterEpoch *result) override {
     events_->push_back("acquire");
+    if (candidate_publisher != nullptr)
+      expect(candidate_publisher->acquire_epoch(acquired.value.writer_id)
+                 .applied(),
+             "real publisher could not acquire coordinator epoch");
     *result = acquired;
     return acquire_result;
   }
@@ -404,6 +408,15 @@ class FakeOperations final : public rc::StartupCoordinatorOperations {
       const rc::StartupSnapshotPublishRequest &request,
       rc::PublishedStartupHead *result) override {
     events_->push_back("publish");
+    if (candidate_publisher != nullptr) {
+      expect(request.candidate != nullptr,
+             "coordinator omitted the takeover candidate");
+      const auto bound = candidate_publisher->bind_takeover_candidate(
+          request.epoch.object, request.epoch.value,
+          request.candidate->head_object, request.candidate->head);
+      if (!bound.applied())
+        return {rc::StartupStepOutcome::FENCED, bound.detail};
+    }
     published_cut_snapshot_id = request.snapshot_cut.snapshot_id;
     published_extent_digest = request.root_evidence.exported_extent_set_sha256;
     if (!mutate_root_on_publish.empty()) {
@@ -441,6 +454,7 @@ class FakeOperations final : public rc::StartupCoordinatorOperations {
   }
 
   rc::StartupHookProbe probe;
+  rc::HeadPublisher *candidate_publisher{nullptr};
   rc::ExactWriterEpoch acquired;
   rc::PublishedStartupHead published;
   fs::path proof_path;
@@ -713,6 +727,93 @@ void test_takeover_parent_worker_reexec_lifecycle() {
          "re-exec admission proof omitted exact installed state");
   expect_events(reexec_events,
                 {"read", "classify", "snapshot", "activate", "read"});
+}
+
+void test_takeover_newer_candidate_rebinds_real_publisher() {
+  class CandidateIo final : public rc::ConditionalIo {
+   public:
+    objstore::ExactObjectResult get(std::string_view key, uint64_t) override {
+      const auto &object = key.ends_with("/HEAD") ? head : current_epoch;
+      return objstore::ExactObjectResult::found(object.body, object.etag);
+    }
+    objstore::ConditionalPutResult put(
+        std::string_view key, std::string_view body,
+        const objstore::ConditionalPutCondition &condition) override {
+      expect(key.ends_with("/WRITER_EPOCH") &&
+                 body == next_epoch.body &&
+                 condition.etag() == current_epoch.etag,
+             "unexpected candidate fixture epoch CAS");
+      head = next_head;
+      current_epoch = next_epoch;
+      return objstore::ConditionalPutResult::applied(next_epoch.etag);
+    }
+    rc::PublishedBytes head, next_head, current_epoch, next_epoch;
+  };
+
+  for (const bool lose_epoch : {false, true}) {
+    const fs::path parent = unique_parent("newer-candidate");
+    RootCleanup cleanup(parent);
+    TakeoverFixture fixture;
+    const ExactHead newer = exact_head(
+        8, {fixture.old_epoch.value.writer_id, fixture.old_epoch.value.epoch},
+        fixture.cursor, "dddddddddddddddddddddddddddddddd",
+        rc::HeadParent{7, fixture.initial.head_object.etag,
+                       hash(fixture.initial.head_object.body)});
+    fixture.candidate = plan(newer, fixture.acquired,
+                              rc::ManifestKind::SNAPSHOT, fixture.old_extents);
+    fixture.published_head = exact_head(
+        9, {fixture.acquired.value.writer_id, fixture.acquired.value.epoch},
+        fixture.cursor, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        rc::HeadParent{8, fixture.candidate.head_object.etag,
+                       hash(fixture.candidate.head_object.body)});
+    fixture.published = plan(fixture.published_head, fixture.acquired,
+                              rc::ManifestKind::SNAPSHOT,
+                              fixture.recovered_extents);
+    fixture.published.snapshot.log_anchor.kind =
+        rc::LogAnchorKind::MANIFEST_BOUNDARY;
+    fixture.published.snapshot.log_anchor.generation = 8;
+    fixture.published.snapshot.log_anchor.manifest = fixture.candidate.head.manifest;
+    fixture.published.snapshot.log_anchor.cursor = fixture.cursor;
+    fixture.published.manifests.front().value.head_parent = fixture.published.head.parent;
+    fixture.published.manifests.front().value.segment_tip = fixture.published.head.segment_tip;
+
+    CandidateIo io;
+    io.head = fixture.initial.head_object;
+    io.current_epoch = fixture.old_epoch.object;
+    io.next_head = fixture.candidate.head_object;
+    io.next_epoch = fixture.acquired.object;
+    rc::HeadPublisher publisher(&io, stream());
+    expect(publisher.probe().applied(), "cannot probe real publisher");
+    std::vector<std::string> events;
+    FakeStorage storage(&events);
+    FakeOperations operations(&events);
+    configure_takeover(&storage, &operations, fixture, parent);
+    operations.candidate_publisher = &publisher;
+    rc::StartupCoordinator coordinator(stream(), &storage, &operations);
+    const auto prepared = coordinator.prepare_worker(options(parent));
+    expect(prepared.worker_required(), prepared.detail.c_str());
+    expect(publisher.state().head->generation == 7 &&
+               coordinator.candidate()->head.generation == 8,
+           "fixture did not expose a newer post-acquisition candidate");
+    if (lose_epoch)
+      io.current_epoch = epoch(6, "66666666666666666666666666666666", 5).object;
+    const auto worker = completion(
+        *prepared.worker_request,
+        evidence(fixture.cursor, false, fixture.recovered_extents),
+        takeover_cut(fixture, parent / "restore.tmp"));
+    const auto finished = coordinator.finish_worker(worker);
+    if (lose_epoch) {
+      expect(finished.outcome == rc::StartupCoordinatorOutcome::FENCED &&
+                 !fs::exists(parent / "data"),
+             "coordinator published or installed after losing the epoch");
+    } else {
+      expect(finished.restart_required(), finished.detail.c_str());
+      expect(publisher.state().head->generation == 8 &&
+                 publisher.state().head_object->etag == io.next_head.etag &&
+                 operations.persisted_proof->head.value.generation == 9,
+             "coordinator failed to publish from the selected newer parent");
+    }
+  }
 }
 
 void test_bootstrap_preflight_worker_reexec_lifecycle() {
@@ -1314,6 +1415,7 @@ void test_phase_misuse_fails_without_callbacks() {
 }  // namespace
 
 int main() {
+  test_takeover_newer_candidate_rebinds_real_publisher();
   test_takeover_parent_worker_reexec_lifecycle();
   test_bootstrap_preflight_worker_reexec_lifecycle();
   test_typed_transport_round_trips_and_rejects_tampering();

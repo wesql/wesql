@@ -2966,7 +2966,7 @@ index fe603cd8bb955e1e8bbac25ece2a7087ee8ba041..f766b714a12584cde29f85f9dad81056
      Use copy algorithm if:
      - old_alter_table system variable is set without in-place requested using
 diff --git a/sql/tc_log.cc b/sql/tc_log.cc
-index 7cca516a50e6dcd0079fcea34176883feecf324a..7ba5a88dd2fa2379440d0a6b40a5cb08efca97f7 100644
+index 7cca516a50e6dcd0079fcea34176883feecf324a..5af643b678f35aefc907b6d977f971a4fd6b1d0a 100644
 --- a/sql/tc_log.cc
 +++ b/sql/tc_log.cc
 @@ -56,12 +56,16 @@
@@ -3050,6 +3050,15 @@ index 7cca516a50e6dcd0079fcea34176883feecf324a..7ba5a88dd2fa2379440d0a6b40a5cb08
      xa_status_code ret = ht->rollback_by_xid(ht, static_cast<XID *>(arg));
  
      if (ret != XA_OK &&
+@@ -237,4 +258,8 @@
+ int TC_LOG_DUMMY::open(const char *) {
++#ifdef WESQL
++  // This isolated fresh root cannot contain transactions to recover.
++  if (wesql::remote_commit::may_initialize_empty_root()) return 0;
++#endif
+   if (ha_recover()) {
+     LogErr(ERROR_LEVEL, ER_TC_RECOVERY_FAILED_THESE_ARE_YOUR_OPTIONS);
+     return 1;
 diff --git a/sql/xa.cc b/sql/xa.cc
 index 6cd97c373f391fba08b0db2c63dd534e05820d62..1b1f73fc9621ac46d4e644518427000dc370c06b 100644
 --- a/sql/xa.cc

@@ -392,6 +392,17 @@ class ProductionStartupOperations final : public StartupCoordinatorOperations {
       return {StartupStepOutcome::CORRUPT,
               "snapshot publication runtime is incomplete"};
     }
+    if (request.route == StartupCoordinatorRoute::TAKEOVER) {
+      if (request.candidate == nullptr)
+        return {StartupStepOutcome::CORRUPT,
+                "takeover publication lacks its selected candidate"};
+      const PublishResult bound = runtime_.publisher->bind_takeover_candidate(
+          request.epoch.object, request.epoch.value,
+          request.candidate->head_object, request.candidate->head);
+      const StartupStepResult binding =
+          map_publish_result(bound, "bind takeover publication parent");
+      if (!binding.ready()) return binding;
+    }
     std::error_code filesystem_error;
     const fs::path scratch = control_directory_ / "snapshot-readback";
     if (!fs::create_directory(scratch, filesystem_error) || filesystem_error) {
@@ -720,7 +731,9 @@ bool input_reference(StartupProofReference *reference, std::string *error) {
 }
 
 bool initialize_runtime(std::string *error) {
-  if (wesql::remote_commit::initialize()) {
+  const bool bootstrap_preflight =
+      g_adapter.mode == StartupServerMode::BOOTSTRAP_PREFLIGHT && opt_initialize;
+  if (wesql::remote_commit::initialize(bootstrap_preflight)) {
     const std::string detail = startup_error();
     return !fail(error,
                  detail.empty() ? "remote commit initialization failed"
@@ -1658,37 +1671,10 @@ bool startup_finish_bootstrap_preflight(std::string *error) {
   ServerRootVerificationRequest request{StartupCoordinatorRoute::BOOTSTRAP,
                                         g_adapter.target_root, deployment,
                                         false, nullptr, nullptr};
-  ServerRootEvidenceObservation observation;
-  const StartupStepResult observed =
-      collect_server_root_observation(request, &observation);
-  StartupRootEvidence evidence;
-  const StartupStepResult compared =
-      observed.ready()
-          ? compare_server_root_evidence(request, observation, &evidence)
-          : observed;
+  const StartupStepResult compared = verify_initialized_empty_root(request);
   if (!compared.ready())
     return fail(error, "bootstrap EMPTY_SOURCE evidence failed: " +
                            compared.detail);
-  if (!observation.dd_matches.available ||
-      !observation.dd_matches.value || !observation.replication.available ||
-      observation.replication.value.channel_count != 0 ||
-      observation.replication.value.source_rows != 0 ||
-      observation.replication.value.relay_rows != 0 ||
-      observation.replication.value.worker_rows != 0 ||
-      !observation.prepared.available ||
-      observation.prepared.value.internal_entries != 0 ||
-      observation.prepared.value.external_entries != 0 ||
-      !observation.empty_source_scan_stable.available ||
-      !observation.empty_source_scan_stable.value ||
-      !observation.old_tc_authority_empty.available ||
-      !observation.old_tc_authority_empty.value ||
-      !observation.user_state_empty.available ||
-      !observation.user_state_empty.value ||
-      !observation.legacy_live_extents_empty.available ||
-      !observation.legacy_live_extents_empty.value) {
-    return fail(error,
-                "bootstrap preflight lacks a required EMPTY_SOURCE authority");
-  }
   StartupBootstrapPreflight preflight;
   preflight.root = g_adapter.target_root;
   preflight.request_nonce = random_hex(32);

@@ -1026,7 +1026,12 @@ bool build_startup_child_argv(const std::vector<std::string> &original,
     child->push_back(std::string(kDaemonPipeOption) + "=" +
                      std::to_string(spec.inherited_daemon_pipe_fd));
   }
-  if (spec.initialize_insecure) child->push_back("--initialize-insecure");
+  if (spec.initialize_insecure) {
+    // SmartEngine first opens in the snapshot worker, after epoch adoption.
+    child->push_back("--skip-smartengine");
+    child->push_back("--default-storage-engine=InnoDB");
+    child->push_back("--initialize-insecure");
+  }
   return true;
 }
 

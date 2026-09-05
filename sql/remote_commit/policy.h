@@ -131,6 +131,8 @@ uint64_t maximum_allowed_binlog_cache(uint64_t max_segment_bytes);
 
 std::vector<PolicyViolation> validate_startup_policy(
     const StartupPolicy &policy);
+std::vector<PolicyViolation> validate_startup_policy(
+    const StartupPolicy &policy, bool bootstrap_preflight);
 
 enum class AuthorizationKind : uint8_t {
   NONE,

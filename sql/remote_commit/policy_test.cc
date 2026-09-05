@@ -83,6 +83,21 @@ void test_policy() {
   auto policy = valid_policy();
   expect(rc::validate_startup_policy(policy).empty(), "valid policy");
 
+  policy.log_bin = false;
+  expect(contains(rc::validate_startup_policy(policy),
+                  rc::PolicyError::BINLOG_DISABLED),
+         "serving process requires binlog");
+  expect(rc::validate_startup_policy(policy, true).empty(),
+         "bootstrap preflight permits initialization with binlog disabled");
+  policy.gtid_mode_on = false;
+  policy.smartengine_write_disable_wal = true;
+  const auto preflight = rc::validate_startup_policy(policy, true);
+  expect(contains(preflight, rc::PolicyError::GTID_MODE_NOT_ON),
+         "bootstrap preflight still requires parsed GTID configuration");
+  expect(contains(preflight, rc::PolicyError::SMARTENGINE_WAL_DISABLED),
+         "bootstrap preflight does not skip other durability checks");
+  policy = valid_policy();
+
   policy.provider = "local";
   policy.conditional_io = {};
   policy.binlog_transaction_compression = true;
