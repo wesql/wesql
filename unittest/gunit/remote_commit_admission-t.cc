@@ -36,6 +36,7 @@
 #include "sql/rpl_gtid.h"
 #include "sql/set_var.h"
 #include "sql/sql_lex.h"
+#include "sql/sql_parse.h"
 #include "sql/tc_log.h"
 #include "sql/xa.h"
 #include "unittest/gunit/handler-t.h"
@@ -1682,6 +1683,35 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   thd->lex->var_list.push_back(&default_value, thd->mem_root);
   EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(thd));
   thd->lex->var_list.clear();
+
+  const std::pair<const char *, bool> statements[] = {
+      {"SET FOREIGN_KEY_CHECKS=0", true},
+      {"SET FOREIGN_KEY_CHECKS=1", true},
+      {"SET SESSION foreign_key_checks=0", true},
+      {"SET @@session.foreign_key_checks=1", true},
+      {"SET GLOBAL foreign_key_checks=1", false},
+      {"SET PERSIST foreign_key_checks=1", false},
+      {"SET PERSIST_ONLY foreign_key_checks=1", false},
+      {"SET foreign_key_checks=DEFAULT", false},
+      {"SET foreign_key_checks='1'", false},
+      {"SET foreign_key_checks=0+1", false},
+      {"SET foreign_key_checks=2", false},
+      {"SET foreign_key_checks=1, sql_log_bin=0", false},
+      {"SET sql_log_bin=0", false},
+      {"SET @foreign_key_checks=1", false}};
+  for (const auto &[query, allowed] : statements) {
+    SCOPED_TRACE(query);
+    std::string sql(query);
+    Parser_state parser;
+    ASSERT_FALSE(parser.init(thd, sql.data(), sql.size()));
+    lex_start(thd);
+    mysql_reset_thd_for_next_command(thd);
+    ASSERT_FALSE(parse_sql(thd, &parser, nullptr));
+    thd->lex->no_write_to_binlog = true;
+    EXPECT_EQ(allowed, rc::may_rebuild_startup_dictionary_cache(thd));
+    if (allowed) EXPECT_FALSE(rc::enforce_sql_command_admission(thd));
+    thd->lex->var_list.clear();
+  }
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,
