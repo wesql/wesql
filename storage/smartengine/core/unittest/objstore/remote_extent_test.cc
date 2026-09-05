@@ -16,6 +16,7 @@
 
 #include "schema/table_schema.h"
 #include "storage/storage_meta_struct.h"
+#include "storage/io_extent.h"
 #include "util/testharness.h"
 
 namespace smartengine {
@@ -209,6 +210,49 @@ class RuntimeTest : public testing::Test {
 
   FakeObjectStore store;
 };
+
+TEST_F(RuntimeTest, ExtentIoBindsRuntimeClientInsteadOfEngineLocalClient) {
+  FakeObjectStore engine_client;
+  ObjectIOExtent extent;
+  const ExtentId id = object_extent_id(1, 0);
+  const std::string prefix = build_test_prefix("db", 1, 0);
+  ASSERT_EQ(common::Status::kOk,
+            extent.init(id, 1, &engine_client, "bucket", prefix));
+  const std::string body(MAX_EXTENT_SIZE, 'x');
+  ASSERT_EQ(common::Status::kOk, extent.write(common::Slice(body), 0));
+  std::string key;
+  std::string error;
+  ASSERT_TRUE(object_key(test_config(&store), prefix, id, &key, nullptr,
+                          &error)) << error;
+  ASSERT_EQ(1U, store.objects.size());
+  EXPECT_EQ(body, store.objects.at(key));
+  EXPECT_GT(store.exact_get_count, 0U);
+  EXPECT_TRUE(engine_client.objects.empty());
+  EXPECT_EQ(0U, engine_client.exact_get_count);
+  EXPECT_FALSE(is_fenced());
+}
+
+TEST_F(RuntimeTest, ExtentIoStillRejectsBucketAndFutureEpochMismatch) {
+  FakeObjectStore engine_client;
+  ObjectIOExtent extent;
+  const ExtentId id = object_extent_id(1, 0);
+  const std::string prefix = build_test_prefix("db", 1, 0);
+  EXPECT_EQ(common::Status::kCorruption,
+            extent.init(id, 1, &engine_client, "other-bucket", prefix));
+  EXPECT_TRUE(is_fenced());
+  clear_test_runtime();
+  std::string error;
+  ASSERT_TRUE(install_test_runtime(test_config(&store), &error)) << error;
+  auto future_config = test_config(&store);
+  future_config.writer_epoch = 38;
+  std::string future_prefix;
+  ASSERT_TRUE(build_prefix(future_config, "db", 1, 0, &future_prefix, &error));
+  EXPECT_EQ(common::Status::kCorruption,
+            extent.init(id, 1, &engine_client, "bucket", future_prefix));
+  EXPECT_TRUE(is_fenced());
+  EXPECT_TRUE(engine_client.objects.empty());
+  EXPECT_TRUE(store.objects.empty());
+}
 
 TEST(RemoteExtentRuntimeProvider, DefaultsOffAndDelegatesWhenInstalled) {
   clear_runtime_provider();

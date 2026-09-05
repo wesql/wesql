@@ -399,11 +399,12 @@ int ObjectIOExtent::init(const ExtentId &extent_id,
         KP(object_store), K(bucket));
   } else {
     std::string validation_error;
+    ::objstore::ObjectStore *io_object_store = object_store;
     if (remote_extent::enabled()) {
       remote_extent::RuntimeConfig config;
       std::string object_key;
       if (!remote_extent::runtime_config(&config, &validation_error) ||
-          config.object_store != object_store || config.bucket != bucket ||
+          config.bucket != bucket ||
           !remote_extent::object_key(config, prefix, extent_id, &object_key,
                                      nullptr, &validation_error)) {
         ret = Status::kCorruption;
@@ -413,12 +414,16 @@ int ObjectIOExtent::init(const ExtentId &extent_id,
         SE_LOG(ERROR, "reject invalid remote extent I/O", K(ret),
                K(validation_error), K(extent_id), K(bucket), K(prefix));
         remote_extent::enter_fenced(validation_error);
+      } else {
+        // Env owns a separate client. Immutable I/O uses the client bound to
+        // the adopted remote-commit runtime and rechecks it on every write.
+        io_object_store = config.object_store;
       }
     }
     if (SUCCED(ret)) {
       extent_id_ = extent_id;
       unique_id_ = unique_id;
-      object_store_ = object_store;
+      object_store_ = io_object_store;
       bucket_ = bucket;
       prefix_ = prefix;
 
