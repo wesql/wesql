@@ -793,6 +793,15 @@ bool create_startup_control_directory(const fs::path &target_root,
   return fsync_directory(parent, error);
 }
 
+fs::path startup_temporary_data_root(const fs::path &control_directory) {
+  const std::string name = control_directory.filename().string();
+  // Encoding preserves the random name's entropy without case aliases.
+  const std::string encoded = hex_digest(
+      reinterpret_cast<const unsigned char *>(name.data()), name.size());
+  return control_directory.parent_path() /
+         ("data.wesql-remote-startup-" + encoded + ".root");
+}
+
 bool remove_startup_control_directory(const fs::path &control_directory,
                                       std::string *error) {
   constexpr std::string_view kPrefix = ".wesql-remote-startup-";

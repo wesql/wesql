@@ -336,6 +336,20 @@ void test_control_directory(const fs::path &directory) {
   expect(control.filename().string().starts_with(".wesql-remote-startup-"),
          "control directory has the wrong prefix");
   expect(fs::is_directory(control), "control path is not a directory");
+  const fs::path data_root = startup_temporary_data_root(control);
+  const std::string data_name = data_root.filename().string();
+  expect(data_root.parent_path() == directory,
+         "temporary data root is not a sibling of control directory");
+  expect(!data_name.empty() && data_name.front() != '.',
+         "InnoDB skips a hidden temporary data root");
+  expect(std::none_of(data_name.begin(), data_name.end(), [](char byte) {
+           return byte >= 'A' && byte <= 'Z';
+         }),
+         "temporary data root requires a case alias during InnoDB scanning");
+  expect(startup_temporary_data_root(directory / ".wesql-remote-startup-ABC123") !=
+             startup_temporary_data_root(directory / ".wesql-remote-startup-abc123"),
+         "case-distinct control identities produce the same data root");
+  expect(!fs::exists(data_root), "deriving a data root created it prematurely");
   write_file(control / "worker.err", "retained evidence\n");
   fs::create_directory(control / "snapshot-readback");
   write_file(control / "snapshot-readback" / "payload", "bytes\n");

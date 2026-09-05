@@ -163,6 +163,9 @@ smartengine_startup_managed_paths_after_parse();
 bool create_startup_control_directory(
     const std::filesystem::path &target_root,
     std::filesystem::path *control_directory, std::string *error);
+// Derives a nonhidden, lowercase sibling from a created control directory.
+std::filesystem::path startup_temporary_data_root(
+    const std::filesystem::path &control_directory);
 bool remove_startup_control_directory(
     const std::filesystem::path &control_directory, std::string *error);
 

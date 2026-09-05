@@ -771,10 +771,8 @@ bool create_parent_control(std::string *error) {
                                         &g_adapter.control_directory, error)) {
     return false;
   }
-  // InnoDB skips a scan root whose basename starts with a dot.
   g_adapter.temporary_root =
-      g_adapter.target_root.parent_path() /
-      ("data" + g_adapter.control_directory.filename().string() + ".root");
+      startup_temporary_data_root(g_adapter.control_directory);
   std::error_code status_error;
   if (fs::exists(g_adapter.temporary_root, status_error) || status_error)
     return !fail(error,
