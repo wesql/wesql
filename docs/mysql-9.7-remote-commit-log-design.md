@@ -1560,3 +1560,8 @@ EMPTY_SOURCE、binlog cut 和 SmartEngine 精确 live-set 校验。
 持久仓库都零行时才视为无复制状态；其他通道仍拒绝。检查期间保持通道映射
 与默认通道运行锁。旧 tc.log 检查只接受明确的文件不存在；现存文件、目录、
 悬空链接和其他文件系统错误均拒绝。
+
+SmartEngine Env 与 Server 各自拥有独立的对象存储客户端。远端 extent 初始化
+使用已采用运行时中的客户端，绑定其 bucket、stream 和 epoch；不把两个独立
+客户端的指针相等当作配置一致的证据。后续条件写入仍检查绑定指针及 bucket
+与当前运行时一致，并执行原有前缀、epoch、内容和精确读取校验。
