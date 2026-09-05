@@ -1576,6 +1576,12 @@ FETCHED_PROPERTIES。只允许单个已注册 DD 表的非临时 CREATE TABLE，
 验证前后均重查已采用的启动授权，不对已有快照执行 INSERT/UPDATE/DELETE，也不
 扩大任何提交入口。bootstrap 初始构建仍走上游正常填充。
 
+InnoDB 重启恢复在字符集验证之前还会无条件更新 innodb_temporary 的 DD 文件名。
+对具有同一 SYNCED 启动授权的已发布根，此调用改用只读 acquire，要求表空间名、
+InnoDB 引擎、单文件集合及文件名字节均与当前配置一致；缺项、多项或差异均失败。
+匹配时不调用 acquire_for_modification/update，避免把冗余更新留给后续 DD 事务
+提交。初始化与非远端路径保持原有更新行为。
+
 初始化预检不要求尚不存在的 binlog cursor，也不申请 SmartEngine 快照。
 它在全局读锁下前后两次检查 DD、初始账号及权限、复制仓库、prepared 和空
 GTID 集；同时要求 SmartEngine 未加载、对应目录不存在、TC 与 binlog 文件

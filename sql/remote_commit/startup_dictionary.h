@@ -4,14 +4,27 @@
 #define SQL_REMOTE_COMMIT_STARTUP_DICTIONARY_INCLUDED
 
 #include <span>
+#include <string_view>
 #include <unordered_map>
 
 #include "mysql/strings/m_ctype.h"
 #include "sql/dd/impl/types/collation_impl.h"
 #include "sql/dd/types/charset.h"
 #include "sql/dd/types/collation.h"
+#include "sql/dd/types/tablespace.h"
+#include "sql/dd/types/tablespace_file.h"
 
 namespace wesql::remote_commit {
+
+inline bool startup_temporary_tablespace_matches(const dd::Tablespace *space,
+                                               std::string_view filename) {
+  if (space == nullptr || space->name() != "innodb_temporary" ||
+      space->engine() != "InnoDB" || space->files().size() != 1 ||
+      filename.empty())
+    return false;
+  const dd::Tablespace_file *file = *space->files().begin();
+  return file != nullptr && std::string_view(file->filename()) == filename;
+}
 
 // Match the complete row set and fields written by DD's charset population.
 inline bool startup_character_sets_match(

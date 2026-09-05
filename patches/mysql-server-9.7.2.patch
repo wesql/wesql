@@ -3926,20 +3926,22 @@ index bc0b1d3d98171a70669687ec1427273d2e797864..cb704e5eb7acb223e4764eb75247f14c
        break;
  
 diff --git a/storage/innobase/handler/ha_innodb.cc b/storage/innobase/handler/ha_innodb.cc
-index 7bcd0e61b0ff694da85062bd421fdecad1e29ef1..4a3c9e3db2bc6f066c239be73d724071b2a727ff 100644
+index 7bcd0e61b0ff694da85062bd421fdecad1e29ef1..f6324d9bcd83a0877465572e4b95b08efec59a25 100644
 --- a/storage/innobase/handler/ha_innodb.cc
 +++ b/storage/innobase/handler/ha_innodb.cc
-@@ -69,6 +69,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
+@@ -69,6 +69,11 @@ this program; if not, write to the Free Software Foundation, Inc.,
  #include <sql_table.h>
  #include "mysql/components/services/mysql_system_variable.h"  // sysvar_reader
  #include "mysql/components/services/system_variable_source.h"
 +#ifdef WESQL
++#include "sql/remote_commit/server_hooks.h"
++#include "sql/remote_commit/startup_dictionary.h"
 +#include "sql/remote_commit/startup_server.h"
 +#endif
  
  #ifndef UNIV_HOTBACKUP
  #include <current_thd.h>
-@@ -336,6 +339,23 @@ static char *innobase_reset_monitor_counter = nullptr;
+@@ -336,6 +341,23 @@ static char *innobase_reset_monitor_counter = nullptr;
  static char *innobase_reset_all_monitor_counter = nullptr;
  static char *innobase_doublewrite_dir = nullptr;
  
@@ -3963,6 +3965,24 @@ index 7bcd0e61b0ff694da85062bd421fdecad1e29ef1..4a3c9e3db2bc6f066c239be73d724071
  static ulong innodb_flush_method;
  
  /* This variable can be set in the server configure file, specifying
+@@ -3923,4 +3945,17 @@ static bool update_innodb_temporary_metadata(THD *thd) {
+   auto &dc = *thd->dd_client();
+   dd::cache::Dictionary_client::Auto_releaser releaser(&dc);
+   const dd::String_type tbsp_name{dict_sys_t::s_temp_space_name};
++#ifdef WESQL
++  if (wesql::remote_commit::may_validate_startup_dictionary_contents(thd)) {
++    const dd::Tablespace *stored = nullptr;
++    if (dc.acquire(tbsp_name, &stored) ||
++        !wesql::remote_commit::startup_temporary_tablespace_matches(stored,
++                                                                  fpath)) {
++      LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
++             "restored innodb_temporary metadata differs from configured file");
++      return true;
++    }
++    return false;
++  }
++#endif
+   dd::Tablespace *tmp_tbsp{nullptr};
 diff --git a/storage/innobase/include/arch0log.h b/storage/innobase/include/arch0log.h
 index 6d2590d3dfd7eab7adb4f7d8029720ea6deea8a0..b4efece24001027cfbcc60a74c790569faf4aea7 100644
 --- a/storage/innobase/include/arch0log.h

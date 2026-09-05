@@ -24,6 +24,7 @@
 #include "sql/dd/impl/system_registry.h"
 #include "sql/dd/impl/types/charset_impl.h"
 #include "sql/dd/impl/types/collation_impl.h"
+#include "sql/dd/impl/types/tablespace_impl.h"
 #include "sql/handler.h"
 #include "sql/item.h"
 #include "sql/mysqld.h"
@@ -1887,6 +1888,36 @@ TEST(RemoteCommitStartupDictionary, RejectsRowSetAndEveryPersistedFieldMismatch)
   EXPECT_FALSE(matches());
   collations.pop_back();
   EXPECT_TRUE(matches());
+}
+
+TEST(RemoteCommitStartupDictionary, TemporaryTablespaceRequiresExactSingleFile) {
+  dd::Tablespace_impl space;
+  space.set_name("innodb_temporary");
+  space.set_engine("InnoDB");
+  const auto matches = [&](std::string_view filename = "./ibtmp1") {
+    return rc::startup_temporary_tablespace_matches(&space, filename);
+  };
+  EXPECT_FALSE(rc::startup_temporary_tablespace_matches(nullptr, "./ibtmp1"));
+  EXPECT_FALSE(matches());
+  auto *file = space.add_file();
+  file->set_filename("./ibtmp1");
+  EXPECT_TRUE(matches());
+  EXPECT_FALSE(matches(""));
+  EXPECT_FALSE(matches("ibtmp1"));
+  EXPECT_FALSE(matches("./ibtmp2"));
+  EXPECT_FALSE(matches("/other/root/ibtmp1"));
+  file->set_filename("./ibtmp2");
+  EXPECT_FALSE(matches());
+  file->set_filename("./ibtmp1");
+  space.set_name("user_tablespace");
+  EXPECT_FALSE(matches());
+  space.set_name("innodb_temporary");
+  space.set_engine("OTHER");
+  EXPECT_FALSE(matches());
+  space.set_engine("InnoDB");
+  EXPECT_TRUE(matches());
+  space.add_file()->set_filename("./ibtmp1");
+  EXPECT_FALSE(matches());
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,
