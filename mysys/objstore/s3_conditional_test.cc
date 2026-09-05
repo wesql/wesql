@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -206,8 +207,14 @@ class ScriptedS3ObjectStore final : public objstore::S3ObjectStore {
         ++get_write_chunks_;
         if (!*body) {
           Aws::Delete(body);
-          throw std::runtime_error("failed to prepare partial GET body");
+          return Aws::S3::Model::GetObjectOutcome(
+              make_error(Aws::S3::S3Errors::UNKNOWN, -1, true));
         }
+        body->seekg(0);
+        const std::string readable{std::istreambuf_iterator<char>{*body},
+                                   std::istreambuf_iterator<char>{}};
+        expect(readable == get_failure_body_.substr(0, 64 * 1024),
+               "SDK cannot read the complete bounded error response");
         Aws::Delete(body);
       }
       return Aws::S3::Model::GetObjectOutcome(
@@ -683,6 +690,80 @@ void test_bounded_exact_streaming_get_results() {
          "bounded exact file stream trusted an undersized Content-Length");
 }
 
+void test_bounded_error_responses() {
+  ScriptedS3ObjectStore store;
+  TempFile destination("");
+  for (const int status : {404, 403, 503}) {
+    for (const auto kind : {Aws::S3::S3Errors::NO_SUCH_KEY,
+                            Aws::S3::S3Errors::NO_SUCH_BUCKET}) {
+      store.get_failure_after_write(std::string(512, 'x'), status, status == 503,
+                                    kind);
+      const auto memory = store.get_object_exact("bucket", "key", 1);
+      const auto file = store.get_object_to_file_exact(
+          "bucket", "key", destination.path().string(), 1);
+      const bool missing = status == 404 && kind == Aws::S3::S3Errors::NO_SUCH_KEY;
+      expect((memory.outcome() == objstore::ExactObjectOutcome::NOT_FOUND_404) == missing &&
+                 (file.outcome() == objstore::ExactFileOutcome::NOT_FOUND_404) == missing &&
+                 !memory.is_found() && !file.is_applied() &&
+                 file.status().cloud_provider_err_code() == status &&
+                 fs::file_size(destination.path()) == 0,
+             "bounded error body lost HTTP or bucket/key classification");
+    }
+  }
+  for (const uint64_t payload_limit : {1, 128 * 1024}) {
+    for (const size_t error_size : {64 * 1024, 64 * 1024 + 1}) {
+      store.get_failure_after_write(std::string(error_size, 'x'), 404, false,
+                                    Aws::S3::S3Errors::NO_SUCH_KEY);
+      const auto memory = store.get_object_exact("bucket", "key", payload_limit);
+      const auto file = store.get_object_to_file_exact(
+          "bucket", "key", destination.path().string(), payload_limit);
+      expect(memory.outcome() == (error_size == 64 * 1024
+                 ? objstore::ExactObjectOutcome::NOT_FOUND_404
+                 : objstore::ExactObjectOutcome::PERMANENT_ERROR) &&
+                 file.outcome() == (error_size == 64 * 1024
+                 ? objstore::ExactFileOutcome::NOT_FOUND_404
+                 : objstore::ExactFileOutcome::PERMANENT_ERROR) &&
+                 fs::file_size(destination.path()) == 0,
+             "error response bound depends on the object payload limit");
+    }
+  }
+}
+
+void test_http_exact_get_results(const char *endpoint) {
+  Aws::Client::ClientConfiguration configuration;
+  configuration.region = "us-east-1";
+  configuration.endpointOverride = endpoint;
+  configuration.connectTimeoutMs = 2000;
+  configuration.requestTimeoutMs = 5000;
+  const Aws::Auth::AWSCredentials credentials("http-test", "http-test");
+  Aws::S3::S3Client client(credentials, configuration,
+      Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never, false);
+  objstore::S3ObjectStore store("us-east-1", std::move(client));
+  TempFile destination("");
+  for (const std::string key : {"missing-key", "missing-bucket", "forbidden",
+                                "one-byte", "oversized"}) {
+    const auto memory = store.get_object_exact("bucket", key, 1);
+    const auto file = store.get_object_to_file_exact(
+        "bucket", key, destination.path().string(), 1);
+    if (key == "missing-key") {
+      expect(memory.outcome() == objstore::ExactObjectOutcome::NOT_FOUND_404 &&
+                 file.outcome() == objstore::ExactFileOutcome::NOT_FOUND_404,
+             "HTTP missing key did not remain 404 under a one-byte limit");
+    } else if (key == "one-byte") {
+      expect(memory.is_found() && memory.body() == "x" && file.is_applied() &&
+                 read_file(destination.path()) == "x",
+             "HTTP exact one-byte object failed");
+      std::ofstream reset(destination.path(), std::ios::binary | std::ios::trunc);
+    } else {
+      expect(memory.outcome() == objstore::ExactObjectOutcome::PERMANENT_ERROR &&
+                 file.outcome() == objstore::ExactFileOutcome::PERMANENT_ERROR,
+             "HTTP bucket/access/oversized response was not rejected");
+    }
+    expect(fs::file_size(destination.path()) == 0,
+           "HTTP failure retained destination bytes");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -698,6 +779,9 @@ int main() {
     test_exact_streaming_get_destination_validation();
     test_exact_streaming_get_without_body_buffer();
     test_bounded_exact_streaming_get_results();
+    test_bounded_error_responses();
+    if (const char *endpoint = std::getenv("WESQL_S3_TEST_ENDPOINT"))
+      test_http_exact_get_results(endpoint);
     std::cout << "S3 conditional ObjectStore tests passed\n";
   } catch (const std::exception &error) {
     std::cerr << "S3 conditional ObjectStore test failed: " << error.what()

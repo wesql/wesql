@@ -236,10 +236,76 @@ constexpr char kExactObjectResponseAllocationTag[] =
     "ExactObjectResponseStream";
 constexpr char kExactFileResponseAllocationTag[] = "ExactFileResponseStream";
 
-struct BoundedExactObjectState {
+// The SDK reads error XML from the same stream used for successful objects.
+// Keep a bounded readable prefix independently of the caller's payload limit.
+struct ExactGetResponseState {
+  static constexpr size_t kErrorBodyMaxBytes = 64 * 1024;
+
+  void reset() {
+    prefix.clear();
+    bytes_received = 0;
+  }
+
+  bool complete_error_body() const { return bytes_received == prefix.size(); }
+
+  std::string prefix;
+  uint64_t bytes_received{0};
+};
+
+class ExactGetResponseStreambuf : public std::streambuf {
+ public:
+  explicit ExactGetResponseStreambuf(
+      std::shared_ptr<ExactGetResponseState> response)
+      : response_(std::move(response)) {}
+
+ protected:
+  std::streamsize record_response(const char *data, std::streamsize count) {
+    const size_t captured = static_cast<size_t>(std::min<uint64_t>(
+        static_cast<uint64_t>(count),
+        ExactGetResponseState::kErrorBodyMaxBytes - response_->prefix.size()));
+    response_->prefix.append(data, captured);
+    response_->bytes_received += static_cast<uint64_t>(count);
+    return static_cast<std::streamsize>(captured);
+  }
+
+  int_type underflow() override {
+    if (gptr() != nullptr) return traits_type::eof();
+    char *begin = response_->prefix.data();
+    setg(begin, begin, begin + response_->prefix.size());
+    return gptr() == egptr() ? traits_type::eof()
+                            : traits_type::to_int_type(*gptr());
+  }
+
+  pos_type seekoff(off_type offset, std::ios_base::seekdir direction,
+                   std::ios_base::openmode mode) override {
+    if (mode == std::ios_base::out && direction == std::ios_base::cur &&
+        offset == 0)
+      return pos_type(response_->bytes_received);
+    if (mode != std::ios_base::in) return pos_type(off_type(-1));
+    const off_type size = static_cast<off_type>(response_->prefix.size());
+    const off_type base = direction == std::ios_base::beg ? 0 :
+        direction == std::ios_base::end ? size :
+        gptr() == nullptr ? 0 : gptr() - eback();
+    if (offset < -base || offset > size - base)
+      return pos_type(off_type(-1));
+    char *begin = response_->prefix.data();
+    setg(begin, begin + base + offset, begin + size);
+    return pos_type(base + offset);
+  }
+
+  pos_type seekpos(pos_type position, std::ios_base::openmode mode) override {
+    return seekoff(off_type(position), std::ios_base::beg, mode);
+  }
+
+ private:
+  std::shared_ptr<ExactGetResponseState> response_;
+};
+
+struct BoundedExactObjectState : ExactGetResponseState {
   explicit BoundedExactObjectState(uint64_t limit) : max_bytes(limit) {}
 
   void reset() {
+    ExactGetResponseState::reset();
     body.clear();
     limit_exceeded = false;
     write_failed = false;
@@ -251,11 +317,11 @@ struct BoundedExactObjectState {
   bool write_failed{false};
 };
 
-class BoundedExactObjectStreambuf final : public std::streambuf {
+class BoundedExactObjectStreambuf final : public ExactGetResponseStreambuf {
  public:
   explicit BoundedExactObjectStreambuf(
       std::shared_ptr<BoundedExactObjectState> state)
-      : state_(std::move(state)) {}
+      : ExactGetResponseStreambuf(state), state_(std::move(state)) {}
 
  protected:
   std::streamsize xsputn(const char *data, std::streamsize count) override {
@@ -266,7 +332,9 @@ class BoundedExactObjectStreambuf final : public std::streambuf {
     const uint64_t requested = static_cast<uint64_t>(count);
     const uint64_t accepted = std::min(remaining, requested);
     uint64_t offset = 0;
+    std::streamsize diagnostic_bytes = 0;
     try {
+      diagnostic_bytes = record_response(data, count);
       while (offset < accepted) {
         const size_t chunk = static_cast<size_t>(std::min<uint64_t>(
             accepted - offset, kExactObjectReadChunkBytes));
@@ -278,7 +346,7 @@ class BoundedExactObjectStreambuf final : public std::streambuf {
       return static_cast<std::streamsize>(offset);
     }
     if (accepted != requested) state_->limit_exceeded = true;
-    return static_cast<std::streamsize>(accepted);
+    return std::max(static_cast<std::streamsize>(accepted), diagnostic_bytes);
   }
 
   int_type overflow(int_type value) override {
@@ -293,11 +361,12 @@ class BoundedExactObjectStreambuf final : public std::streambuf {
   std::shared_ptr<BoundedExactObjectState> state_;
 };
 
-struct BoundedExactFileState {
+struct BoundedExactFileState : ExactGetResponseState {
   BoundedExactFileState(std::filesystem::path destination, uint64_t limit)
       : path(std::move(destination)), max_bytes(limit) {}
 
   void reset() {
+    ExactGetResponseState::reset();
     bytes_written = 0;
     limit_exceeded = false;
     write_failed = false;
@@ -310,11 +379,11 @@ struct BoundedExactFileState {
   bool write_failed{false};
 };
 
-class BoundedExactFileStreambuf final : public std::streambuf {
+class BoundedExactFileStreambuf final : public ExactGetResponseStreambuf {
  public:
   explicit BoundedExactFileStreambuf(
       std::shared_ptr<BoundedExactFileState> state)
-      : state_(std::move(state)) {
+      : ExactGetResponseStreambuf(state), state_(std::move(state)) {
     if (file_.open(state_->path,
                    std::ios_base::out | std::ios_base::binary |
                        std::ios_base::trunc) == nullptr) {
@@ -345,6 +414,13 @@ class BoundedExactFileStreambuf final : public std::streambuf {
     const uint64_t remaining = state_->max_bytes - state_->bytes_written;
     const uint64_t requested = static_cast<uint64_t>(count);
     const uint64_t accepted = std::min(remaining, requested);
+    std::streamsize diagnostic_bytes = 0;
+    try {
+      diagnostic_bytes = record_response(data, count);
+    } catch (const std::bad_alloc &) {
+      state_->write_failed = true;
+      return 0;
+    }
     if (accepted != requested) state_->limit_exceeded = true;
     const std::streamsize written =
         file_.sputn(data, static_cast<std::streamsize>(accepted));
@@ -352,7 +428,7 @@ class BoundedExactFileStreambuf final : public std::streambuf {
       state_->write_failed = true;
     }
     if (written > 0) state_->bytes_written += static_cast<uint64_t>(written);
-    return written;
+    return state_->write_failed ? written : std::max(written, diagnostic_bytes);
   }
 
   int_type overflow(int_type value) override {
@@ -739,6 +815,11 @@ ExactObjectResult S3ObjectStore::get_object_exact(
   });
 
   Aws::S3::Model::GetObjectOutcome outcome = do_get_object(request);
+  if (!outcome.IsSuccess() && response_state->complete_error_body() &&
+      !response_state->write_failed &&
+      aws_http_status(outcome.GetError()) >= 300) {
+    return exact_get_failure(outcome.GetError());
+  }
   if (response_state->limit_exceeded) {
     return ExactObjectResult::permanent_error(Status(
         Errors::SE_UNEXPECTED, EFBIG,
@@ -749,7 +830,13 @@ ExactObjectResult S3ObjectStore::get_object_exact(
         Errors::SE_IO_ERROR, ENOMEM,
         "unable to buffer bounded exact GET response body"));
   }
-  if (!outcome.IsSuccess()) return exact_get_failure(outcome.GetError());
+  if (!outcome.IsSuccess()) {
+    if (aws_http_status(outcome.GetError()) >= 300 &&
+        !response_state->complete_error_body())
+      return ExactObjectResult::permanent_error(Status(
+          Errors::SE_UNEXPECTED, EFBIG, "exact GET error body exceeds limit"));
+    return exact_get_failure(outcome.GetError());
+  }
 
   auto &result = outcome.GetResult();
   const long long content_length = result.GetContentLength();
@@ -823,6 +910,12 @@ ExactFileResult S3ObjectStore::get_object_to_file_exact(
   });
 
   Aws::S3::Model::GetObjectOutcome outcome = do_get_object(request);
+  if (!outcome.IsSuccess() && response_state->complete_error_body() &&
+      !response_state->write_failed &&
+      aws_http_status(outcome.GetError()) >= 300) {
+    return exact_file_failure_after_truncate(
+        destination, exact_file_get_failure(outcome.GetError()));
+  }
   if (response_state->limit_exceeded) {
     return exact_file_failure_after_truncate(
         destination, ExactFileResult::permanent_error(Status(
@@ -836,6 +929,12 @@ ExactFileResult S3ObjectStore::get_object_to_file_exact(
                          "unable to stream bounded exact GET response file")));
   }
   if (!outcome.IsSuccess()) {
+    if (aws_http_status(outcome.GetError()) >= 300 &&
+        !response_state->complete_error_body())
+      return exact_file_failure_after_truncate(
+          destination, ExactFileResult::permanent_error(Status(
+              Errors::SE_UNEXPECTED, EFBIG,
+              "exact file GET error body exceeds limit")));
     return exact_file_failure_after_truncate(
         destination, exact_file_get_failure(outcome.GetError()));
   }
