@@ -35,6 +35,9 @@
 #include "sql/binlog.h"
 #include "sql/binlog_reader.h"
 #include "sql/current_thd.h"
+#include "sql/dd/dd.h"
+#include "sql/dd/dictionary.h"
+#include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
 #include "sql/log_event.h"
 #include "sql/mysqld.h"
 #include "sql/remote_commit/evidence.h"
@@ -45,6 +48,7 @@
 #include "sql/rpl_gtid.h"
 #include "sql/rpl_log_encryption.h"
 #include "sql/sql_class.h"
+#include "sql/sql_lex.h"
 #include "sql/transaction_info.h"
 
 extern ulong srv_flush_log_at_trx_commit;
@@ -2310,6 +2314,31 @@ bool may_initialize_system_tables(const THD *thd) {
   // The first snapshot will cover this work in the unpublished empty root.
   return thd->system_thread == SYSTEM_THREAD_DD_INITIALIZE &&
          may_run_startup_bootstrap_snapshot_worker();
+}
+
+bool may_rebuild_startup_dictionary_cache(const THD *thd) {
+  if (!enabled() || opt_initialize || thd == nullptr ||
+      thd->system_thread != SYSTEM_THREAD_DD_INITIALIZE ||
+      thd->lex == nullptr || thd->lex->sql_command != SQLCOM_CREATE_TABLE ||
+      thd->lex->create_info == nullptr ||
+      (thd->lex->create_info->options & HA_LEX_CREATE_TMP_TABLE) != 0)
+    return false;
+  const auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  const Table_ref *table = thd->lex->query_tables;
+  const dd::Dictionary *dictionary = dd::get_dictionary();
+  if (context.get_stage() != dd::bootstrap::Stage::FETCHED_PROPERTIES ||
+      !context.is_restart() || dictionary == nullptr || table == nullptr ||
+      table->next_global != nullptr || table->db == nullptr ||
+      table->table_name == nullptr ||
+      !dictionary->is_dd_table_name(table->db, table->table_name))
+    return false;
+
+  // mysql_create_table_no_lock uses no_ha_table for these registered names;
+  // Storage_adapter::store only core_store()s before CREATED_TABLES.
+  std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
+  std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
+  return takeover_recovery_worker_authorized_locked() ||
+         installed_reexec_pre_recovery_authorized_locked();
 }
 
 Scoped_startup_pfs_initialization::Scoped_startup_pfs_initialization(THD *thd) {

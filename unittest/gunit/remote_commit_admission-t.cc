@@ -20,6 +20,8 @@
 
 #include "mysqld_error.h"
 #include "scope_guard.h"
+#include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
+#include "sql/dd/impl/system_registry.h"
 #include "sql/handler.h"
 #include "sql/mysqld.h"
 #include "sql/partition_info.h"
@@ -1523,6 +1525,102 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
   ASSERT_FALSE(rc::activate_installed_root(activation)) << rc::startup_error();
   EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       ExistingRootDictionaryCacheCreateIsNotAMutationGrant) {
+  auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  const auto saved_context = context;
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] {
+    context = saved_context;
+    opt_initialize = saved_initialize;
+  });
+  opt_initialize = false;
+  context.set_stage(dd::bootstrap::Stage::FETCHED_PROPERTIES);
+  context.set_actual_dd_version(dd::DD_VERSION);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  if (dd::System_tables::instance()->find_type("mysql", "dd_properties") == nullptr)
+    dd::System_tables::instance()->add_inert_dd_tables();
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  thd.lex->sql_command = SQLCOM_CREATE_TABLE;
+  thd.lex->no_write_to_binlog = true;
+  HA_CREATE_INFO create_info;
+  thd.lex->create_info = &create_info;
+  Table_ref table;
+  table.db = "mysql";
+  table.table_name = "dd_properties";
+  thd.lex->query_tables = &table;
+  auto clear_lex = create_scope_guard([&] {
+    thd.lex->query_tables = nullptr;
+    thd.lex->create_info = nullptr;
+  });
+  initialize(true);
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  ASSERT_FALSE(rc::activate_installed_root(activation)) << rc::startup_error();
+  const auto expect_cache_only = [&] {
+    EXPECT_TRUE(rc::may_rebuild_startup_dictionary_cache(&thd));
+    EXPECT_FALSE(rc::enforce_sql_command_admission(&thd));
+    EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+    EXPECT_FALSE(rc::commit_admission_open_for_test());
+    EXPECT_EQ(0U, rc::commit_admission_count_for_test());
+  };
+  expect_cache_only();
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(nullptr));
+  for (const auto kind : {NON_SYSTEM_THREAD, SYSTEM_THREAD_BACKGROUND,
+                          SYSTEM_THREAD_DD_RESTART,
+                          SYSTEM_THREAD_INIT_FILE,
+                          SYSTEM_THREAD_SERVER_UPGRADE}) {
+    thd.system_thread = kind;
+    EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  }
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  for (const auto stage : {dd::bootstrap::Stage::CREATED_TABLESPACES,
+                           dd::bootstrap::Stage::CREATED_TABLES,
+                           dd::bootstrap::Stage::SYNCED,
+                           dd::bootstrap::Stage::FINISHED}) {
+    context.set_stage(stage);
+    EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  }
+  context.set_stage(dd::bootstrap::Stage::FETCHED_PROPERTIES);
+  context.set_actual_dd_version(dd::DD_VERSION - 1);
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  context.set_actual_dd_version(dd::DD_VERSION);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID - 1);
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  opt_initialize = true;
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  opt_initialize = false;
+  thd.lex->sql_command = SQLCOM_DROP_TABLE;
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  thd.lex->sql_command = SQLCOM_CREATE_TABLE;
+  table.db = "user_schema";
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  table.db = "mysql";
+  table.table_name = "user_table";
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  table.table_name = "dd_properties";
+  table.next_global = &table;
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  table.next_global = nullptr;
+  create_info.options |= HA_LEX_CREATE_TMP_TABLE;
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  create_info.options &= ~HA_LEX_CREATE_TMP_TABLE;
+  rc::reset_commit_admission_for_test(true);
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  rc::reset_commit_admission_for_test(false);
+  expect_cache_only();
+  rc::shutdown();
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  expect_cache_only();
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,
