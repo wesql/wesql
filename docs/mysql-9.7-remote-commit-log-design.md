@@ -1544,6 +1544,11 @@ INITIALIZING、普通准入关闭且排空时完成 DD 工作；其结果由首�
 这不向客户端、init-file、系统升级线程或接管/已安装根授予同一例外。
 进入普通准入、关闭或其他启动角色后，能力立即失效。
 
+InnoDB 编译内 PFS 建表调用单独创建 `Auto_THD`，其原始类型为 BACKGROUND。
+仅在上述 bootstrap 快照能力成立时，这一次调用的作用域临时将其标为
+DD_INITIALIZE，每次提交仍重新检查生命周期。作用域退出（包括错误返回）
+后恢复 BACKGROUND，再由 Auto_THD 销毁；其他后台线程不获得此授权。
+
 初始化预检不要求尚不存在的 binlog cursor，也不申请 SmartEngine 快照。
 它在全局读锁下前后两次检查 DD、初始账号及权限、复制仓库、prepared 和空
 GTID 集；同时要求 SmartEngine 未加载、对应目录不存在、TC 与 binlog 文件

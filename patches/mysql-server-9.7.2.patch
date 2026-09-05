@@ -4275,6 +4275,26 @@ index dce77679993fb118df92497ec9ef36c42b32f7cd..0f6116f879ea328290f9614e8947ec99
  
    /** Initialize state while applying cloned data
    @param[in]    state_desc      snapshot state descriptor
+diff --git a/storage/innobase/log/log0pfs.cc b/storage/innobase/log/log0pfs.cc
+index c928e2a5c2da5770443fc998bded91a60502ec4c..b98f9990f526745312205e69b8459cde4c028241 100644
+--- a/storage/innobase/log/log0pfs.cc
++++ b/storage/innobase/log/log0pfs.cc
+@@ -47,3 +47,7 @@
++#ifdef WESQL
++#include "sql/remote_commit/server_hooks.h"
++#endif
++
+ SERVICE_TYPE_NO_CONST(pfs_plugin_table_v1) * pfs_table{};
+ SERVICE_TYPE_NO_CONST(pfs_plugin_column_tiny_v1) * pfs_col_tinyint{};
+ SERVICE_TYPE_NO_CONST(pfs_plugin_column_integer_v1) * pfs_col_integer{};
+@@ -330,3 +334,7 @@ bool log_pfs_create_tables() {
++#ifdef WESQL
++  wesql::remote_commit::Scoped_startup_pfs_initialization initialization(thd);
++#endif
++
+   /*
+     Set tx_read_only to false to allow installing PFS tables even
+     if the server is started with --transaction-read-only=true.
 diff --git a/strings/ctype-simple.cc b/strings/ctype-simple.cc
 index 77b6c09fd719cec91da4a4e743b5bc02a28ca0d7..4675aaf285d6b36718d166bda6be212561a3b936 100644
 --- a/strings/ctype-simple.cc

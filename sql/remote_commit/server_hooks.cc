@@ -2312,6 +2312,18 @@ bool may_initialize_system_tables(const THD *thd) {
          may_run_startup_bootstrap_snapshot_worker();
 }
 
+Scoped_startup_pfs_initialization::Scoped_startup_pfs_initialization(THD *thd) {
+  if (thd != nullptr && thd->system_thread == SYSTEM_THREAD_BACKGROUND &&
+      !opt_initialize && may_run_startup_bootstrap_snapshot_worker()) {
+    m_thd = thd;
+    m_thd->system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  }
+}
+
+Scoped_startup_pfs_initialization::~Scoped_startup_pfs_initialization() {
+  if (m_thd != nullptr) m_thd->system_thread = SYSTEM_THREAD_BACKGROUND;
+}
+
 bool may_run_startup_bootstrap_snapshot_worker() {
   if (!enabled()) return false;
   std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);

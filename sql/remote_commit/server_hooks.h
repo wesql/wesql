@@ -265,6 +265,21 @@ bool may_initialize_empty_root();
 // worker. Client admission stays closed; takeover/installed roles are excluded.
 bool may_initialize_system_tables(const THD *thd);
 
+// Only for the fresh Auto_THD in InnoDB's compiled startup PFS table creation.
+// Restore its BACKGROUND tag before Auto_THD destroys the internal thread.
+class Scoped_startup_pfs_initialization {
+ public:
+  explicit Scoped_startup_pfs_initialization(THD *thd);
+  ~Scoped_startup_pfs_initialization();
+  Scoped_startup_pfs_initialization(const Scoped_startup_pfs_initialization &) =
+      delete;
+  Scoped_startup_pfs_initialization &operator=(
+      const Scoped_startup_pfs_initialization &) = delete;
+
+ private:
+  THD *m_thd{nullptr};
+};
+
 // True only after a fresh bootstrap snapshot/export worker adopted the exact
 // parent epoch while HEAD was still absent. It never grants native replay,
 // remote publication, or write admission.

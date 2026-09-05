@@ -1410,6 +1410,101 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,
+       BootstrapPfsPermissionIsScopedAndRechecksLifecycle) {
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] { opt_initialize = saved_initialize; });
+  opt_initialize = false;
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_BACKGROUND;
+  initialize(false);
+  epoch_proof.head_body.clear();
+  epoch_proof.head_etag.clear();
+  epoch_proof.head_generation = 0;
+  adopt(rc::StartupEpochAdoptionRole::BOOTSTRAP_SNAPSHOT);
+
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  const auto compiled_pfs_call = [&] {
+    rc::Scoped_startup_pfs_initialization scope(&thd);
+    EXPECT_EQ(SYSTEM_THREAD_DD_INITIALIZE, thd.system_thread);
+    ASSERT_TRUE(rc::may_initialize_system_tables(&thd));
+    thd.lex->sql_command = SQLCOM_CREATE_TABLE;
+    thd.lex->no_write_to_binlog = true;
+    EXPECT_FALSE(rc::enforce_sql_command_admission(&thd));
+    EXPECT_FALSE(rc::begin_commit_admission(&thd, true));
+    rc::check_commit_authorization(&thd, true);
+    rc::consume_commit_authorization(&thd, true, true, true);
+    rc::end_commit_admission(&thd, false);
+    EXPECT_FALSE(rc::commit_admission_open_for_test());
+    EXPECT_EQ(0U, rc::commit_admission_count_for_test());
+    rc::reset_commit_admission_for_test(true);
+    EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+    rc::reset_commit_admission_for_test(false);
+    EXPECT_TRUE(rc::may_initialize_system_tables(&thd));
+    return;
+  };
+  compiled_pfs_call();
+  EXPECT_EQ(SYSTEM_THREAD_BACKGROUND, thd.system_thread);
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  {
+    rc::Scoped_startup_pfs_initialization scope(&thd);
+    ASSERT_TRUE(rc::may_initialize_system_tables(&thd));
+    rc::shutdown();
+    EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  }
+  EXPECT_EQ(SYSTEM_THREAD_BACKGROUND, thd.system_thread);
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       BootstrapPfsScopeExcludesClientsPreflightAndPublishedRoots) {
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] { opt_initialize = saved_initialize; });
+  opt_initialize = false;
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_BACKGROUND;
+  const auto expect_denied = [&] {
+    const auto original_kind = thd.system_thread;
+    {
+      rc::Scoped_startup_pfs_initialization scope(&thd);
+      EXPECT_EQ(original_kind, thd.system_thread);
+      EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+    }
+    EXPECT_EQ(original_kind, thd.system_thread);
+  };
+  rc::Scoped_startup_pfs_initialization null_scope(nullptr);
+  initialize(false);
+  expect_denied();
+  epoch_proof.head_body.clear();
+  epoch_proof.head_etag.clear();
+  epoch_proof.head_generation = 0;
+  adopt(rc::StartupEpochAdoptionRole::BOOTSTRAP_SNAPSHOT);
+  for (const auto kind : {NON_SYSTEM_THREAD, SYSTEM_THREAD_DD_RESTART,
+                          SYSTEM_THREAD_SERVER_INITIALIZE,
+                          SYSTEM_THREAD_INIT_FILE,
+                          SYSTEM_THREAD_SERVER_UPGRADE}) {
+    thd.system_thread = kind;
+    expect_denied();
+  }
+  thd.system_thread = SYSTEM_THREAD_BACKGROUND;
+  opt_initialize = true;
+  expect_denied();
+  opt_initialize = false;
+  rc::reset_commit_admission_for_test(true);
+  expect_denied();
+  rc::reset_commit_admission_for_test(false);
+
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  expect_denied();
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  expect_denied();
+  ASSERT_FALSE(rc::activate_installed_root(activation)) << rc::startup_error();
+  expect_denied();
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
        PublishedRootRolesDoNotGetBootstrapDictionaryMutation) {
   const bool saved_initialize = opt_initialize;
   auto restore = create_scope_guard([&] { opt_initialize = saved_initialize; });
