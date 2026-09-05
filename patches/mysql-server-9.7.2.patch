@@ -4422,3 +4422,42 @@ index c689ab915a26f4bb168dddd654962fe7a3028a5b..5e04ee58c508414aa75301f4c2656dbf
    test_flags |= TEST_SIGINT;
    test_flags |= TEST_NO_TEMP_TABLES;
    test_flags &= ~TEST_CORE_ON_SIGNAL;
+diff --git a/sql/dd/impl/bootstrap/bootstrapper.cc b/sql/dd/impl/bootstrap/bootstrapper.cc
+--- a/sql/dd/impl/bootstrap/bootstrapper.cc
++++ b/sql/dd/impl/bootstrap/bootstrapper.cc
+@@ -72,4 +72,7 @@
+ #include "sql/mysqld.h"
+ #include "sql/sd_notify.h"  // sysd::notify
+ #include "sql/thd_raii.h"
++#ifdef WESQL
++#include "sql/remote_commit/server_hooks.h"
++#endif
+ #include "storage/perfschema/pfs_dd_version.h"  // PFS_DD_VERSION
+@@ -623,5 +626,17 @@
+ // Re-populate character sets and collations upon normal restart.
+ bool repopulate_charsets_and_collations(THD *thd) {
++#ifdef WESQL
++  if (wesql::remote_commit::may_validate_startup_dictionary_contents(thd)) {
++    std::string error;
++    if (wesql::remote_commit::validate_startup_dictionary_contents(thd, &error)) {
++      LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG, error.c_str());
++      return dd::end_transaction(thd, true);
++    }
++    bootstrap::DD_bootstrap_ctx::instance().set_stage(
++        bootstrap::Stage::POPULATED);
++    return dd::end_transaction(thd, false);
++  }
++#endif
+   /*
+     We must check if the DDSE is started in a way that makes the DD
+     read only. For now, we only support InnoDB as SE for the DD. The call
+diff --git a/sql/dd/impl/types/collation_impl.h b/sql/dd/impl/types/collation_impl.h
+--- a/sql/dd/impl/types/collation_impl.h
++++ b/sql/dd/impl/types/collation_impl.h
+@@ -105,2 +105,6 @@
++#ifdef WESQL
++  enum_pad_attribute pad_attribute() const { return m_pad_attribute; }
++#endif
++
+   // Fix "inherits ... via dominance" warnings
+   Entity_object_impl *impl() override { return Entity_object_impl::impl(); }

@@ -36,6 +36,7 @@
 #include "sql/binlog_reader.h"
 #include "sql/current_thd.h"
 #include "sql/dd/dd.h"
+#include "sql/dd/cache/dictionary_client.h"
 #include "sql/dd/dictionary.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
 #include "sql/item.h"
@@ -46,6 +47,7 @@
 #include "sql/remote_commit/segment_sealer.h"
 #include "sql/remote_commit/snapshot_publisher.h"
 #include "sql/remote_commit/sql_command_policy.h"
+#include "sql/remote_commit/startup_dictionary.h"
 #include "sql/rpl_gtid.h"
 #include "sql/rpl_log_encryption.h"
 #include "sql/set_var.h"
@@ -2324,10 +2326,15 @@ bool may_rebuild_startup_dictionary_cache(const THD *thd) {
       thd->lex == nullptr)
     return false;
   const auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
-  if (context.get_stage() != dd::bootstrap::Stage::FETCHED_PROPERTIES ||
-      !context.is_restart())
+  if (!context.is_restart()) return false;
+  if (thd->lex->sql_command == SQLCOM_FLUSH) {
+    if (context.get_stage() != dd::bootstrap::Stage::SYNCED ||
+        thd->lex->type != REFRESH_TABLES ||
+        thd->lex->query_tables != nullptr || thd->lex->no_write_to_binlog)
+      return false;
+  } else if (context.get_stage() != dd::bootstrap::Stage::FETCHED_PROPERTIES) {
     return false;
-  if (thd->lex->sql_command == SQLCOM_CREATE_TABLE) {
+  } else if (thd->lex->sql_command == SQLCOM_CREATE_TABLE) {
     const Table_ref *table = thd->lex->query_tables;
     const dd::Dictionary *dictionary = dd::get_dictionary();
     if (thd->lex->create_info == nullptr ||
@@ -2361,6 +2368,45 @@ bool may_rebuild_startup_dictionary_cache(const THD *thd) {
   std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
   return takeover_recovery_worker_authorized_locked() ||
          installed_reexec_pre_recovery_authorized_locked();
+}
+
+bool may_validate_startup_dictionary_contents(const THD *thd) {
+  if (!enabled() || opt_initialize || thd == nullptr ||
+      thd->system_thread != SYSTEM_THREAD_DD_INITIALIZE)
+    return false;
+  const auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  if (context.get_stage() != dd::bootstrap::Stage::SYNCED ||
+      !context.is_restart())
+    return false;
+  std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
+  std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
+  return takeover_recovery_worker_authorized_locked() ||
+         installed_reexec_pre_recovery_authorized_locked();
+}
+
+bool validate_startup_dictionary_contents(THD *thd, std::string *error) {
+  if (!may_validate_startup_dictionary_contents(thd)) {
+    if (error != nullptr) *error = "startup dictionary validation is unauthorized";
+    return true;
+  }
+  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  std::vector<const dd::Charset *> charsets;
+  std::vector<const dd::Collation *> collations;
+  if (thd->dd_client()->fetch_global_components(&charsets) ||
+      thd->dd_client()->fetch_global_components(&collations)) {
+    if (error != nullptr) *error = "cannot read snapshot dictionary character sets";
+    return true;
+  }
+  if (!startup_character_sets_match(charsets, collations, all_charsets)) {
+    if (error != nullptr)
+      *error = "snapshot dictionary character sets differ from compiled server";
+    return true;
+  }
+  if (!may_validate_startup_dictionary_contents(thd)) {
+    if (error != nullptr) *error = "startup dictionary validation authority changed";
+    return true;
+  }
+  return false;
 }
 
 Scoped_startup_pfs_initialization::Scoped_startup_pfs_initialization(THD *thd) {

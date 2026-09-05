@@ -1568,6 +1568,14 @@ FETCHED_PROPERTIES。只允许单个已注册 DD 表的非临时 CREATE TABLE，
 仅执行 `core_store`，因此重建的是缓存。该能力不接入 begin/check/consume 提交
 入口，不授予持久提交；已有 published-root 提交拒绝规则继续生效。
 
+同一版本重启在 SYNCED 阶段另允许不带表名、附加刷新标志或 NO_WRITE_TO_BINLOG
+的 `FLUSH TABLES`，只供 DD 同步后重新打开缓存。该阶段的字符集重填改为只读验证：
+读取完整 character_sets/collations 集合，按当前编译定义比对主键、名称、默认排序
+规则、字符最大长度、注释、字符集关联、compiled、sort_length 和 pad_attribute。
+缺行、多行、重复主键或字段不同均拒绝启动；匹配后进入 POPULATED 并结束只读事务。
+验证前后均重查已采用的启动授权，不对已有快照执行 INSERT/UPDATE/DELETE，也不
+扩大任何提交入口。bootstrap 初始构建仍走上游正常填充。
+
 初始化预检不要求尚不存在的 binlog cursor，也不申请 SmartEngine 快照。
 它在全局读锁下前后两次检查 DD、初始账号及权限、复制仓库、prepared 和空
 GTID 集；同时要求 SmartEngine 未加载、对应目录不存在、TC 与 binlog 文件

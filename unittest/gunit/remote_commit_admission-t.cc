@@ -22,6 +22,8 @@
 #include "scope_guard.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
 #include "sql/dd/impl/system_registry.h"
+#include "sql/dd/impl/types/charset_impl.h"
+#include "sql/dd/impl/types/collation_impl.h"
 #include "sql/handler.h"
 #include "sql/item.h"
 #include "sql/mysqld.h"
@@ -33,6 +35,7 @@
 #include "sql/remote_commit/segment_sealer.h"
 #include "sql/remote_commit/server_hooks.h"
 #include "sql/remote_commit/sql_admission.h"
+#include "sql/remote_commit/startup_dictionary.h"
 #include "sql/rpl_gtid.h"
 #include "sql/set_var.h"
 #include "sql/sql_lex.h"
@@ -1725,6 +1728,164 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   ASSERT_FALSE(recovered.add_prepared_xa_transaction(&transaction));
   EXPECT_TRUE(recovered.recover_prepared_xa_transactions());
   EXPECT_TRUE(recovered.recover_prepared_xa_transactions());
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       SyncedDictionaryAllowsOnlyCacheFlushAndReadOnlyValidation) {
+  auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  const auto saved_context = context;
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] {
+    context = saved_context;
+    opt_initialize = saved_initialize;
+  });
+  opt_initialize = false;
+  context.set_stage(dd::bootstrap::Stage::SYNCED);
+  context.set_actual_dd_version(dd::DD_VERSION);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  thd.lex->sql_command = SQLCOM_FLUSH;
+  thd.lex->type = REFRESH_TABLES;
+  const auto expect_allowed = [&] {
+    EXPECT_TRUE(rc::may_rebuild_startup_dictionary_cache(&thd));
+    EXPECT_TRUE(rc::may_validate_startup_dictionary_contents(&thd));
+    EXPECT_FALSE(rc::enforce_sql_command_admission(&thd));
+    EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+    EXPECT_FALSE(rc::commit_admission_open_for_test());
+    EXPECT_EQ(0U, rc::commit_admission_count_for_test());
+  };
+  initialize(true);
+  EXPECT_FALSE(rc::may_validate_startup_dictionary_contents(&thd));
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  EXPECT_FALSE(rc::may_validate_startup_dictionary_contents(&thd));
+  ASSERT_FALSE(rc::activate_installed_root(activation));
+  expect_allowed();
+  const ulong rejected_flags[] = {REFRESH_LOG,
+                                  REFRESH_TABLES | REFRESH_READ_LOCK,
+                                  REFRESH_TABLES | REFRESH_FOR_EXPORT};
+  for (const auto flags : rejected_flags) {
+    thd.lex->type = flags;
+    EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  }
+  thd.lex->type = REFRESH_TABLES;
+  thd.lex->no_write_to_binlog = true;
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  thd.lex->no_write_to_binlog = false;
+  Table_ref table;
+  thd.lex->query_tables = &table;
+  EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  thd.lex->query_tables = nullptr;
+  for (const auto kind : {NON_SYSTEM_THREAD, SYSTEM_THREAD_BACKGROUND,
+                          SYSTEM_THREAD_SERVER_UPGRADE}) {
+    thd.system_thread = kind;
+    EXPECT_FALSE(rc::may_validate_startup_dictionary_contents(&thd));
+    EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  }
+  thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
+  for (const auto stage : {dd::bootstrap::Stage::FETCHED_PROPERTIES,
+                           dd::bootstrap::Stage::POPULATED,
+                           dd::bootstrap::Stage::FINISHED}) {
+    context.set_stage(stage);
+    EXPECT_FALSE(rc::may_validate_startup_dictionary_contents(&thd));
+    EXPECT_FALSE(rc::may_rebuild_startup_dictionary_cache(&thd));
+  }
+  context.set_stage(dd::bootstrap::Stage::SYNCED);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID - 1);
+  EXPECT_FALSE(rc::may_validate_startup_dictionary_contents(&thd));
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  opt_initialize = true;
+  EXPECT_FALSE(rc::may_validate_startup_dictionary_contents(&thd));
+  opt_initialize = false;
+  rc::reset_commit_admission_for_test(true);
+  EXPECT_FALSE(rc::may_validate_startup_dictionary_contents(&thd));
+  rc::reset_commit_admission_for_test(false);
+  rc::shutdown();
+  EXPECT_FALSE(rc::may_validate_startup_dictionary_contents(&thd));
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  expect_allowed();
+}
+
+TEST(RemoteCommitStartupDictionary, RejectsRowSetAndEveryPersistedFieldMismatch) {
+  CHARSET_INFO primary = my_charset_latin1;
+  CHARSET_INFO secondary = my_charset_latin1_bin;
+  primary.state = MY_CS_PRIMARY | MY_CS_AVAILABLE | MY_CS_COMPILED;
+  secondary.state = MY_CS_AVAILABLE | MY_CS_COMPILED;
+  const CHARSET_INFO *compiled[] = {&primary, &secondary};
+  dd::Charset_impl charset;
+  charset.set_id(8);
+  charset.set_name("latin1");
+  charset.set_default_collation_id(8);
+  charset.set_mb_max_length(1);
+  charset.set_comment("cp1252 West European");
+  dd::Collation_impl swedish;
+  swedish.set_id(8);
+  swedish.set_name("latin1_swedish_ci");
+  swedish.set_charset_id(8);
+  swedish.set_is_compiled(true);
+  swedish.set_sort_length(1);
+  swedish.set_pad_attribute(dd::Collation::PA_PAD_SPACE);
+  dd::Collation_impl binary;
+  binary.set_id(47);
+  binary.set_name("latin1_bin");
+  binary.set_charset_id(8);
+  binary.set_is_compiled(true);
+  binary.set_sort_length(1);
+  binary.set_pad_attribute(dd::Collation::PA_PAD_SPACE);
+  std::vector<const dd::Charset *> charsets{&charset};
+  std::vector<const dd::Collation *> collations{&swedish, &binary};
+  const auto matches = [&] {
+    return rc::startup_character_sets_match(charsets, collations, compiled);
+  };
+  ASSERT_TRUE(matches());
+  for (int field = 0; field != 5; ++field) {
+    if (field == 0) charset.set_id(9);
+    if (field == 1) charset.set_name("other");
+    if (field == 2) charset.set_default_collation_id(47);
+    if (field == 3) charset.set_mb_max_length(2);
+    if (field == 4) charset.set_comment("changed");
+    EXPECT_FALSE(matches()) << field;
+    charset.set_id(8);
+    charset.set_name("latin1");
+    charset.set_default_collation_id(8);
+    charset.set_mb_max_length(1);
+    charset.set_comment("cp1252 West European");
+  }
+  for (int field = 0; field != 6; ++field) {
+    if (field == 0) binary.set_id(48);
+    if (field == 1) binary.set_name("other");
+    if (field == 2) binary.set_charset_id(47);
+    if (field == 3) binary.set_is_compiled(false);
+    if (field == 4) binary.set_sort_length(2);
+    if (field == 5) binary.set_pad_attribute(dd::Collation::PA_NO_PAD);
+    EXPECT_FALSE(matches()) << field;
+    binary.set_id(47);
+    binary.set_name("latin1_bin");
+    binary.set_charset_id(8);
+    binary.set_is_compiled(true);
+    binary.set_sort_length(1);
+    binary.set_pad_attribute(dd::Collation::PA_PAD_SPACE);
+  }
+  collations.pop_back();
+  EXPECT_FALSE(matches());
+  collations.push_back(&binary);
+  collations.push_back(&swedish);
+  EXPECT_FALSE(matches());
+  collations.back() = nullptr;
+  EXPECT_FALSE(matches());
+  collations.pop_back();
+  charsets.clear();
+  EXPECT_FALSE(matches());
+  charsets.push_back(&charset);
+  charsets.push_back(&charset);
+  EXPECT_FALSE(matches());
+  charsets.pop_back();
+  secondary.state = 0;
+  EXPECT_FALSE(matches());
+  collations.pop_back();
+  EXPECT_TRUE(matches());
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,

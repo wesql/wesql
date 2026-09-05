@@ -270,6 +270,10 @@ bool may_initialize_system_tables(const THD *thd);
 // storage is enabled. No commit grant.
 bool may_rebuild_startup_dictionary_cache(const THD *thd);
 
+// Same-version published roots validate the stored charset rows without writes.
+bool may_validate_startup_dictionary_contents(const THD *thd);
+bool validate_startup_dictionary_contents(THD *thd, std::string *error);
+
 // Only for the fresh Auto_THD in InnoDB's compiled startup PFS table creation.
 // Restore its BACKGROUND tag before Auto_THD destroys the internal thread.
 class Scoped_startup_pfs_initialization {
