@@ -1747,6 +1747,7 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   thd.system_thread = SYSTEM_THREAD_DD_INITIALIZE;
   thd.lex->sql_command = SQLCOM_FLUSH;
   thd.lex->type = REFRESH_TABLES;
+  thd.lex->no_write_to_binlog = false;
   const auto expect_allowed = [&] {
     EXPECT_TRUE(rc::may_rebuild_startup_dictionary_cache(&thd));
     EXPECT_TRUE(rc::may_validate_startup_dictionary_contents(&thd));
