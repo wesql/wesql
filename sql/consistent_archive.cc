@@ -1239,9 +1239,13 @@ int Consistent_archive::archive_consistent_snapshot_cleanup(bool failed) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("archive_consistent_snapshot_cleanup"));
   DBUG_EXECUTE_IF("fault_injection_consistent_snapshot_cleanup", { return 1; });
+  remove_file(m_mysql_innodb_clone_dir);
+#ifndef WITH_SMARTENGINE
+  (void)failed;
+  return 0;
+#else
   THD *thd = m_thd;
   plugin_ref plugin;
-  remove_file(m_mysql_innodb_clone_dir);
   plugin = my_plugin_lock_by_name(nullptr, {STRING_WITH_LEN("smartengine")},
                                   MYSQL_STORAGE_ENGINE_PLUGIN);
   if (plugin == nullptr) {
@@ -1259,6 +1263,7 @@ int Consistent_archive::archive_consistent_snapshot_cleanup(bool failed) {
     m_se_snapshot_id = 0;
   }
   return 0;
+#endif
 }
 
 /**
@@ -1482,6 +1487,11 @@ bool Consistent_archive::archive_smartengine() {
   DBUG_TRACE;
   DBUG_PRINT("info", ("archive_smartengine"));
   DBUG_EXECUTE_IF("fault_injection_smartengine_archive", { return true; });
+#ifndef WITH_SMARTENGINE
+  LogErr(ERROR_LEVEL, ER_CONSISTENT_SNAPSHOT_ARCHIVE_SMARTENGINE_LOG,
+         "SmartEngine support is not built");
+  return true;
+#else
   THD *thd = m_thd;
   uint64_t backup_snapshot_id = 0;
   std::string binlog_file;
@@ -1536,6 +1546,7 @@ bool Consistent_archive::archive_smartengine() {
   m_se_snapshot_id = backup_snapshot_id;
 
   return false;
+#endif
 }
 
 /**
@@ -1554,6 +1565,10 @@ bool Consistent_archive::archive_smartengine() {
 bool Consistent_archive::release_se_snapshot(uint64_t backup_snapshot_id) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("release_se_snapshot"));
+#ifndef WITH_SMARTENGINE
+  (void)backup_snapshot_id;
+  return false;
+#else
   THD *thd = m_thd;
   plugin_ref plugin;
   std::string err_msg;
@@ -1581,6 +1596,7 @@ bool Consistent_archive::release_se_snapshot(uint64_t backup_snapshot_id) {
   }
   plugin_unlock(nullptr, plugin);
   return false;
+#endif
 }
 
 /**
@@ -3740,6 +3756,11 @@ int Consistent_archive::show_se_backup_snapshot(
     THD *thd, std::vector<uint64_t> &backup_ids) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("show_se_backup_snapshot"));
+#ifndef WITH_SMARTENGINE
+  (void)thd;
+  (void)backup_ids;
+  return false;
+#else
   plugin_ref plugin;
 
   plugin = my_plugin_lock_by_name(nullptr, {STRING_WITH_LEN("smartengine")},
@@ -3757,6 +3778,7 @@ int Consistent_archive::show_se_backup_snapshot(
   }
   plugin_unlock(nullptr, plugin);
   return false;
+#endif
 }
 
 /**

@@ -1,5 +1,6 @@
 /* Copyright (c) 2026, ApeCloud Inc Holding Limited. */
 
+#include "sql/remote_commit/policy.h"
 #include "sql/sys_vars.h"
 
 #include <climits>
@@ -20,6 +21,64 @@ static Sys_var_bool Sys_binlog_archive(
     "binlog_archive", "Enable binlog archive",
     READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive), CMD_LINE(OPT_ARG),
     DEFAULT(true));
+static Sys_var_bool Sys_binlog_archive_remote_commit(
+    "binlog_archive_remote_commit",
+    "Require a verified remote HEAD decision before engine commit and client "
+    "acknowledgement",
+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive_remote_commit),
+    CMD_LINE(OPT_ARG), DEFAULT(false));
+static Sys_var_ulonglong Sys_binlog_archive_remote_commit_max_segment_bytes(
+    "binlog_archive_remote_commit_max_segment_bytes",
+    "Maximum immutable native binlog segment size in remote commit mode",
+    READ_ONLY NON_PERSIST
+        GLOBAL_VAR(opt_binlog_archive_remote_commit_max_segment_bytes),
+    CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(wesql::remote_commit::kSegmentEnvelopeBytes + 1,
+                wesql::remote_commit::kDefaultMaxSegmentBytes),
+    DEFAULT(wesql::remote_commit::kDefaultMaxSegmentBytes), BLOCK_SIZE(1));
+static Sys_var_charptr Sys_binlog_archive_remote_commit_server_uuid(
+    "binlog_archive_remote_commit_server_uuid",
+    "Declared server UUID for remote commit takeover",
+    READ_ONLY NON_PERSIST
+        GLOBAL_VAR(opt_binlog_archive_remote_commit_server_uuid),
+    CMD_LINE(REQUIRED_ARG), IN_SYSTEM_CHARSET, DEFAULT(nullptr));
+static Sys_var_charptr Sys_binlog_archive_remote_commit_startup_config_sha256(
+    "binlog_archive_remote_commit_startup_config_sha256",
+    "SHA-256 of the credential-free declarative startup configuration",
+    READ_ONLY NON_PERSIST
+        GLOBAL_VAR(opt_binlog_archive_remote_commit_startup_config_sha256),
+    CMD_LINE(REQUIRED_ARG), IN_SYSTEM_CHARSET, DEFAULT(nullptr));
+static Sys_var_charptr Sys_binlog_archive_remote_commit_server_build(
+    "binlog_archive_remote_commit_server_build",
+    "Declared server build identity for remote commit",
+    READ_ONLY NON_PERSIST
+        GLOBAL_VAR(opt_binlog_archive_remote_commit_server_build),
+    CMD_LINE(REQUIRED_ARG), IN_SYSTEM_CHARSET, DEFAULT(nullptr));
+static Sys_var_charptr
+    Sys_binlog_archive_remote_commit_plugin_component_set_sha256(
+        "binlog_archive_remote_commit_plugin_component_set_sha256",
+        "SHA-256 of the declared plugin and component set",
+        READ_ONLY NON_PERSIST GLOBAL_VAR(
+            opt_binlog_archive_remote_commit_plugin_component_set_sha256),
+        CMD_LINE(REQUIRED_ARG), IN_SYSTEM_CHARSET, DEFAULT(nullptr));
+static Sys_var_charptr Sys_binlog_archive_remote_commit_keyring_config_sha256(
+    "binlog_archive_remote_commit_keyring_config_sha256",
+    "SHA-256 of the credential-free keyring configuration",
+    READ_ONLY NON_PERSIST
+        GLOBAL_VAR(opt_binlog_archive_remote_commit_keyring_config_sha256),
+    CMD_LINE(REQUIRED_ARG), IN_SYSTEM_CHARSET, DEFAULT(nullptr));
+static Sys_var_charptr Sys_binlog_archive_remote_commit_tls_config_sha256(
+    "binlog_archive_remote_commit_tls_config_sha256",
+    "SHA-256 of the credential-free TLS configuration",
+    READ_ONLY NON_PERSIST
+        GLOBAL_VAR(opt_binlog_archive_remote_commit_tls_config_sha256),
+    CMD_LINE(REQUIRED_ARG), IN_SYSTEM_CHARSET, DEFAULT(nullptr));
+static Sys_var_charptr Sys_binlog_archive_remote_commit_binary_fingerprint(
+    "binlog_archive_remote_commit_binary_fingerprint",
+    "SHA-256 of the declared server binary and plugin identity",
+    READ_ONLY NON_PERSIST
+        GLOBAL_VAR(opt_binlog_archive_remote_commit_binary_fingerprint),
+    CMD_LINE(REQUIRED_ARG), IN_SYSTEM_CHARSET, DEFAULT(nullptr));
 static Sys_var_charptr Sys_binlog_archive_dir(
     "binlog_archive_dir", "Local directory for binlog archive",
     READ_ONLY NON_PERSIST GLOBAL_VAR(opt_binlog_archive_dir),

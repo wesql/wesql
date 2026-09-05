@@ -20,6 +20,7 @@
 #include <string>
 
 #include "objstore.h"
+#include "objstore/remote_extent.h"
 #include "util/increment_number_allocator.h"
 #include "util/status.h"
 #include "util/sync_point.h"
@@ -333,17 +334,35 @@ int ObjectExtentSpace::recycle(const std::string prefix, const ExtentId extent_i
     SE_LOG(WARN, "unexpected error, can not find extent in inused set",
            K(extent_id.offset), K(ret));
   } else {
-    std::string extent_key = prefix + make_extent_key(extent_id.offset);
-    ::objstore::Status st =
-        objstore_->delete_object(extent_bucket_, extent_key);
-    if (!st.is_succ()) {
-      ret = Status::kObjStoreError;
-      SE_LOG(WARN, "fail to recyle extent", K(ret), K(extent_bucket_), K(extent_key),
-             KE(st.error_code()), K(st.error_message()));
-    } else {
+    std::string extent_key;
+    std::string validation_error;
+    if (!remote_extent::object_key(prefix, extent_id, &extent_key,
+                                   &validation_error)) {
+      ret = Status::kCorruption;
+      SE_LOG(ERROR, "fail to derive recycled extent key", K(ret),
+             K(validation_error), K(extent_id), K(prefix));
+      if (remote_extent::enabled())
+        remote_extent::enter_fenced(validation_error);
+    } else if (remote_extent::enabled()) {
+      // Immutable v2 bodies are never physically deleted. Recycle only
+      // releases this process's logical ownership of the ExtentId.
       inused_extent_set_.erase(extent_id.offset);
       --total_extent_count_;
       --used_extent_count_;
+      SE_LOG(DEBUG, "logically recycled immutable remote extent", K(extent_id),
+             K(extent_key));
+    } else {
+      const ::objstore::Status st =
+          objstore_->delete_object(extent_bucket_, extent_key);
+      if (!st.is_succ()) {
+        ret = Status::kObjStoreError;
+        SE_LOG(WARN, "fail to recyle extent", K(ret), K(extent_bucket_),
+               K(extent_key), KE(st.error_code()), K(st.error_message()));
+      } else {
+        inused_extent_set_.erase(extent_id.offset);
+        --total_extent_count_;
+        --used_extent_count_;
+      }
     }
   }
 

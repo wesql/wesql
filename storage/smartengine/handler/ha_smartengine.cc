@@ -66,6 +66,7 @@
 #include "write_batch/write_batch_with_index.h"
 #include "schema/record_format.h"
 #include "storage/storage_logger.h"
+#include "objstore/remote_extent.h"
 
 #ifdef HAVE_ASAN
 #ifndef HAVE_purify
@@ -2973,6 +2974,7 @@ bool ha_smartengine::skip_unique_check() const
 
 bool ha_smartengine::commit_in_the_middle()
 {
+  if (storage::remote_extent::enabled()) return false;
   return true; /* THDVAR(table->in_use, bulk_load) ||
          THDVAR(table->in_use, commit_in_the_middle); */
 }

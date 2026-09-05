@@ -16,9 +16,11 @@
 
 #include "mysys/objstore/s3.h"
 #include "aws/s3/S3Errors.h"
+#include "mysys/objstore/s3_error.h"
 
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentials.h>
+#include <aws/core/utils/stream/ResponseStream.h>
 #include <aws/s3/S3Client.h>
 #include <aws/s3/model/CreateBucketRequest.h>
 #include <aws/s3/model/DeleteBucketRequest.h>
@@ -29,10 +31,13 @@
 #include <aws/s3/model/ListObjectsV2Request.h>
 #include <aws/s3/model/PutObjectRequest.h>
 #include <errno.h>
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -78,6 +83,298 @@ Errors aws_error_to_objstore_error(const Aws::S3::S3Error &aws_error) {
       return Errors::CLOUD_PROVIDER_UNRECOVERABLE_ERROR;
   }
 }
+
+int aws_http_status(const Aws::S3::S3Error &error) {
+  return static_cast<int>(error.GetResponseCode());
+}
+
+Status exact_operation_status(const Aws::S3::S3Error &error,
+                              Errors error_code) {
+  int provider_code = aws_http_status(error);
+  if (provider_code == 0) {
+    provider_code = static_cast<int>(error.GetErrorType());
+  }
+  return Status(error_code, provider_code, error.GetMessage());
+}
+
+s3_detail::ObjectErrorKind object_error_kind(const Aws::S3::S3Error &error) {
+  switch (error.GetErrorType()) {
+    case Aws::S3::S3Errors::NO_SUCH_KEY:
+      return s3_detail::ObjectErrorKind::NO_SUCH_KEY;
+    case Aws::S3::S3Errors::NO_SUCH_BUCKET:
+      return s3_detail::ObjectErrorKind::NO_SUCH_BUCKET;
+    default:
+      return s3_detail::ObjectErrorKind::OTHER;
+  }
+}
+
+ExactObjectResult exact_get_failure(const Aws::S3::S3Error &error) {
+  const ExactObjectOutcome outcome = s3_detail::classify_exact_get_failure(
+      aws_http_status(error), error.ShouldRetry(), object_error_kind(error));
+  switch (outcome) {
+    case ExactObjectOutcome::NOT_FOUND_404:
+      return ExactObjectResult::not_found(
+          exact_operation_status(error, Errors::SE_NO_SUCH_KEY));
+    case ExactObjectOutcome::TRANSIENT_UNAVAILABLE:
+      return ExactObjectResult::transient_unavailable(exact_operation_status(
+          error, Errors::CLOUD_PROVIDER_ERROR_RETRY_LIMIT_EXCEEDED));
+    case ExactObjectOutcome::PERMANENT_ERROR: {
+      Errors error_code = aws_error_to_objstore_error(error);
+      if (object_error_kind(error) ==
+          s3_detail::ObjectErrorKind::NO_SUCH_BUCKET) {
+        error_code = Errors::SE_NO_SUCH_BUCKET;
+      } else if (error_code ==
+                 Errors::CLOUD_PROVIDER_ERROR_RETRY_LIMIT_EXCEEDED) {
+        error_code = Errors::CLOUD_PROVIDER_UNRECOVERABLE_ERROR;
+      }
+      return ExactObjectResult::permanent_error(
+          exact_operation_status(error, error_code));
+    }
+    case ExactObjectOutcome::FOUND:
+    case ExactObjectOutcome::UNSUPPORTED:
+      break;
+  }
+  return ExactObjectResult::permanent_error(Status(
+      Errors::SE_UNEXPECTED, 0, "invalid exact GET failure classification"));
+}
+
+ExactFileResult exact_file_get_failure(const Aws::S3::S3Error &error) {
+  const ExactObjectResult classified = exact_get_failure(error);
+  switch (classified.outcome()) {
+    case ExactObjectOutcome::NOT_FOUND_404:
+      return ExactFileResult::not_found(classified.status());
+    case ExactObjectOutcome::TRANSIENT_UNAVAILABLE:
+      return ExactFileResult::transient_unavailable(classified.status());
+    case ExactObjectOutcome::PERMANENT_ERROR:
+      return ExactFileResult::permanent_error(classified.status());
+    case ExactObjectOutcome::UNSUPPORTED:
+      return ExactFileResult::unsupported();
+    case ExactObjectOutcome::FOUND:
+      break;
+  }
+  return ExactFileResult::permanent_error(Status(
+      Errors::SE_UNEXPECTED, 0, "invalid exact file GET failure classification"));
+}
+
+Status truncate_exact_file(const std::filesystem::path &path) {
+  errno = 0;
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output.is_open()) {
+    return Status(Errors::SE_IO_ERROR, errno == 0 ? EIO : errno,
+                  "unable to truncate failed exact GET destination");
+  }
+  output.close();
+  if (!output) {
+    return Status(Errors::SE_IO_ERROR, errno == 0 ? EIO : errno,
+                  "unable to close truncated exact GET destination");
+  }
+
+  std::error_code filesystem_error;
+  const std::uintmax_t size =
+      std::filesystem::file_size(path, filesystem_error);
+  if (filesystem_error || size != 0) {
+    return Status(Errors::SE_IO_ERROR,
+                  filesystem_error ? filesystem_error.value() : EIO,
+                  "failed exact GET destination is not empty");
+  }
+  return Status();
+}
+
+ExactFileResult exact_file_failure_after_truncate(
+    const std::filesystem::path &path, ExactFileResult failure) {
+  Status truncated = truncate_exact_file(path);
+  if (!truncated.is_succ()) {
+    return ExactFileResult::permanent_error(std::move(truncated));
+  }
+  return failure;
+}
+
+ConditionalPutResult conditional_put_failure(const Aws::S3::S3Error &error) {
+  const ConditionalPutOutcome outcome =
+      s3_detail::classify_conditional_put_failure(aws_http_status(error),
+                                                  error.ShouldRetry());
+  switch (outcome) {
+    case ConditionalPutOutcome::CONFLICT_409:
+      return ConditionalPutResult::conflict_409(
+          exact_operation_status(error, Errors::SE_OBJECT_CONFLICT));
+    case ConditionalPutOutcome::PRECONDITION_FAILED_412:
+      return ConditionalPutResult::precondition_failed_412(
+          exact_operation_status(error, Errors::SE_OBJECT_PRECONDITION_FAILED));
+    case ConditionalPutOutcome::TRANSPORT_UNKNOWN:
+      return ConditionalPutResult::transport_unknown(exact_operation_status(
+          error, Errors::CLOUD_PROVIDER_ERROR_RETRY_LIMIT_EXCEEDED));
+    case ConditionalPutOutcome::PERMANENT_ERROR: {
+      Errors error_code = aws_error_to_objstore_error(error);
+      if (error_code == Errors::CLOUD_PROVIDER_ERROR_RETRY_LIMIT_EXCEEDED ||
+          error_code == Errors::SE_OBJECT_FORBID_OVERWRITE) {
+        error_code = Errors::CLOUD_PROVIDER_UNRECOVERABLE_ERROR;
+      }
+      return ConditionalPutResult::permanent_error(
+          exact_operation_status(error, error_code));
+    }
+    case ConditionalPutOutcome::APPLIED:
+    case ConditionalPutOutcome::UNSUPPORTED:
+      break;
+  }
+  return ConditionalPutResult::permanent_error(Status(
+      Errors::SE_UNEXPECTED, 0, "invalid conditional PUT classification"));
+}
+
+void set_put_condition(Aws::S3::Model::PutObjectRequest &request,
+                       const ConditionalPutCondition &condition) {
+  if (condition.mode() == ConditionalPutMode::CREATE_ONLY) {
+    request.SetAdditionalCustomHeaderValue("If-None-Match", "*");
+  } else {
+    request.SetAdditionalCustomHeaderValue(
+        "If-Match",
+        Aws::String(condition.etag().data(), condition.etag().size()));
+  }
+}
+
+constexpr size_t kExactObjectReadChunkBytes = 64 * 1024;
+constexpr char kExactObjectResponseAllocationTag[] =
+    "ExactObjectResponseStream";
+constexpr char kExactFileResponseAllocationTag[] = "ExactFileResponseStream";
+
+struct BoundedExactObjectState {
+  explicit BoundedExactObjectState(uint64_t limit) : max_bytes(limit) {}
+
+  void reset() {
+    body.clear();
+    limit_exceeded = false;
+    write_failed = false;
+  }
+
+  uint64_t max_bytes;
+  std::string body;
+  bool limit_exceeded{false};
+  bool write_failed{false};
+};
+
+class BoundedExactObjectStreambuf final : public std::streambuf {
+ public:
+  explicit BoundedExactObjectStreambuf(
+      std::shared_ptr<BoundedExactObjectState> state)
+      : state_(std::move(state)) {}
+
+ protected:
+  std::streamsize xsputn(const char *data, std::streamsize count) override {
+    if (count <= 0) return count;
+
+    const uint64_t remaining =
+        state_->max_bytes - static_cast<uint64_t>(state_->body.size());
+    const uint64_t requested = static_cast<uint64_t>(count);
+    const uint64_t accepted = std::min(remaining, requested);
+    uint64_t offset = 0;
+    try {
+      while (offset < accepted) {
+        const size_t chunk = static_cast<size_t>(std::min<uint64_t>(
+            accepted - offset, kExactObjectReadChunkBytes));
+        state_->body.append(data + offset, chunk);
+        offset += chunk;
+      }
+    } catch (const std::bad_alloc &) {
+      state_->write_failed = true;
+      return static_cast<std::streamsize>(offset);
+    }
+    if (accepted != requested) state_->limit_exceeded = true;
+    return static_cast<std::streamsize>(accepted);
+  }
+
+  int_type overflow(int_type value) override {
+    if (traits_type::eq_int_type(value, traits_type::eof())) {
+      return traits_type::not_eof(value);
+    }
+    const char byte = traits_type::to_char_type(value);
+    return xsputn(&byte, 1) == 1 ? value : traits_type::eof();
+  }
+
+ private:
+  std::shared_ptr<BoundedExactObjectState> state_;
+};
+
+struct BoundedExactFileState {
+  BoundedExactFileState(std::filesystem::path destination, uint64_t limit)
+      : path(std::move(destination)), max_bytes(limit) {}
+
+  void reset() {
+    bytes_written = 0;
+    limit_exceeded = false;
+    write_failed = false;
+  }
+
+  std::filesystem::path path;
+  uint64_t max_bytes;
+  uint64_t bytes_written{0};
+  bool limit_exceeded{false};
+  bool write_failed{false};
+};
+
+class BoundedExactFileStreambuf final : public std::streambuf {
+ public:
+  explicit BoundedExactFileStreambuf(
+      std::shared_ptr<BoundedExactFileState> state)
+      : state_(std::move(state)) {
+    if (file_.open(state_->path,
+                   std::ios_base::out | std::ios_base::binary |
+                       std::ios_base::trunc) == nullptr) {
+      state_->write_failed = true;
+    }
+  }
+
+  ~BoundedExactFileStreambuf() override { close(); }
+
+  bool close() {
+    if (!file_.is_open()) return !state_->write_failed;
+    const bool synced = file_.pubsync() == 0;
+    const bool closed = file_.close() != nullptr;
+    if (!synced || !closed) {
+      state_->write_failed = true;
+    }
+    return !state_->write_failed;
+  }
+
+ protected:
+  std::streamsize xsputn(const char *data, std::streamsize count) override {
+    if (count <= 0) return count;
+    if (!file_.is_open()) {
+      state_->write_failed = true;
+      return 0;
+    }
+
+    const uint64_t remaining = state_->max_bytes - state_->bytes_written;
+    const uint64_t requested = static_cast<uint64_t>(count);
+    const uint64_t accepted = std::min(remaining, requested);
+    if (accepted != requested) state_->limit_exceeded = true;
+    const std::streamsize written =
+        file_.sputn(data, static_cast<std::streamsize>(accepted));
+    if (written < 0 || static_cast<uint64_t>(written) != accepted) {
+      state_->write_failed = true;
+    }
+    if (written > 0) state_->bytes_written += static_cast<uint64_t>(written);
+    return written;
+  }
+
+  int_type overflow(int_type value) override {
+    if (traits_type::eq_int_type(value, traits_type::eof())) {
+      return traits_type::not_eof(value);
+    }
+    const char byte = traits_type::to_char_type(value);
+    return xsputn(&byte, 1) == 1 ? value : traits_type::eof();
+  }
+
+  int sync() override {
+    if (!file_.is_open() || file_.pubsync() != 0) {
+      state_->write_failed = true;
+      return -1;
+    }
+    return 0;
+  }
+
+ private:
+  std::shared_ptr<BoundedExactFileState> state_;
+  std::filebuf file_;
+};
 
 }  // namespace
 
@@ -407,6 +704,293 @@ Status S3ObjectStore::get_object(const std::string_view &bucket,
   }
 
   return Status();
+}
+
+ExactObjectResult S3ObjectStore::get_object_exact(
+    const std::string_view &bucket, const std::string_view &key) {
+  return get_object_exact(bucket, key, std::numeric_limits<uint64_t>::max());
+}
+
+ExactObjectResult S3ObjectStore::get_object_exact(
+    const std::string_view &bucket, const std::string_view &key,
+    uint64_t max_bytes) {
+  if (bucket.empty() || bucket.find('\0') != std::string_view::npos ||
+      !is_valid_key(key) || key.find('\0') != std::string_view::npos) {
+    return ExactObjectResult::permanent_error(
+        Status(Errors::SE_INVALID, EINVAL, "invalid bucket or key"));
+  }
+  if (max_bytes == 0) {
+    return ExactObjectResult::permanent_error(Status(
+        Errors::SE_INVALID, EINVAL, "exact GET byte limit must be positive"));
+  }
+
+  Aws::S3::Model::GetObjectRequest request;
+  request.SetBucket(Aws::String(bucket.data(), bucket.size()));
+  request.SetKey(Aws::String(key.data(), key.size()));
+  const auto response_state =
+      std::make_shared<BoundedExactObjectState>(max_bytes);
+  request.SetResponseStreamFactory([response_state]() -> Aws::IOStream * {
+    response_state->reset();
+    Aws::UniquePtr<std::streambuf> buffer(
+        Aws::New<BoundedExactObjectStreambuf>(
+            kExactObjectResponseAllocationTag, response_state));
+    return Aws::New<Aws::Utils::Stream::DefaultUnderlyingStream>(
+        kExactObjectResponseAllocationTag, std::move(buffer));
+  });
+
+  Aws::S3::Model::GetObjectOutcome outcome = do_get_object(request);
+  if (response_state->limit_exceeded) {
+    return ExactObjectResult::permanent_error(Status(
+        Errors::SE_UNEXPECTED, EFBIG,
+        "exact GET response body exceeds configured byte limit"));
+  }
+  if (response_state->write_failed) {
+    return ExactObjectResult::permanent_error(Status(
+        Errors::SE_IO_ERROR, ENOMEM,
+        "unable to buffer bounded exact GET response body"));
+  }
+  if (!outcome.IsSuccess()) return exact_get_failure(outcome.GetError());
+
+  auto &result = outcome.GetResult();
+  const long long content_length = result.GetContentLength();
+  if (content_length < 0) {
+    return ExactObjectResult::permanent_error(
+        Status(Errors::SE_UNEXPECTED, EIO,
+               "exact GET returned a negative content length"));
+  }
+  if (static_cast<uint64_t>(content_length) > max_bytes) {
+    return ExactObjectResult::permanent_error(Status(
+        Errors::SE_UNEXPECTED, EFBIG,
+        "exact GET content length exceeds configured byte limit"));
+  }
+  if (static_cast<uint64_t>(content_length) !=
+      static_cast<uint64_t>(response_state->body.size())) {
+    return ExactObjectResult::permanent_error(
+        Status(Errors::SE_UNEXPECTED, EIO,
+               "exact GET content length does not match response body"));
+  }
+
+  return ExactObjectResult::found(
+      std::move(response_state->body),
+      std::string(result.GetETag().data(), result.GetETag().size()));
+}
+
+ExactFileResult S3ObjectStore::get_object_to_file_exact(
+    const std::string_view &bucket, const std::string_view &key,
+    const std::string_view &output_file_path) {
+  return get_object_to_file_exact(bucket, key, output_file_path,
+                                  std::numeric_limits<uint64_t>::max());
+}
+
+ExactFileResult S3ObjectStore::get_object_to_file_exact(
+    const std::string_view &bucket, const std::string_view &key,
+    const std::string_view &output_file_path, uint64_t max_bytes) {
+  if (bucket.empty() || bucket.find('\0') != std::string_view::npos ||
+      !is_valid_key(key) || key.find('\0') != std::string_view::npos ||
+      output_file_path.empty() ||
+      output_file_path.find('\0') != std::string_view::npos) {
+    return ExactFileResult::permanent_error(
+        Status(Errors::SE_INVALID, EINVAL, "invalid bucket, key, or output path"));
+  }
+  if (max_bytes == 0) {
+    return ExactFileResult::permanent_error(Status(
+        Errors::SE_INVALID, EINVAL,
+        "exact file GET byte limit must be positive"));
+  }
+
+  const fs::path destination{std::string(output_file_path)};
+  std::error_code filesystem_error;
+  const fs::file_status status = fs::symlink_status(destination, filesystem_error);
+  if (filesystem_error || !fs::is_regular_file(status) || fs::is_symlink(status) ||
+      fs::file_size(destination, filesystem_error) != 0 || filesystem_error) {
+    return ExactFileResult::permanent_error(Status(
+        Errors::SE_INVALID, filesystem_error ? filesystem_error.value() : EINVAL,
+        "exact file GET destination is not an existing empty regular file"));
+  }
+
+  Aws::S3::Model::GetObjectRequest request;
+  request.SetBucket(Aws::String(bucket.data(), bucket.size()));
+  request.SetKey(Aws::String(key.data(), key.size()));
+  const auto response_state =
+      std::make_shared<BoundedExactFileState>(destination, max_bytes);
+  request.SetResponseStreamFactory([response_state]() -> Aws::IOStream * {
+    response_state->reset();
+    Aws::UniquePtr<std::streambuf> buffer(
+        Aws::New<BoundedExactFileStreambuf>(
+            kExactFileResponseAllocationTag, response_state));
+    return Aws::New<Aws::Utils::Stream::DefaultUnderlyingStream>(
+        kExactFileResponseAllocationTag, std::move(buffer));
+  });
+
+  Aws::S3::Model::GetObjectOutcome outcome = do_get_object(request);
+  if (response_state->limit_exceeded) {
+    return exact_file_failure_after_truncate(
+        destination, ExactFileResult::permanent_error(Status(
+                         Errors::SE_UNEXPECTED, EFBIG,
+                         "exact file GET response exceeds configured byte limit")));
+  }
+  if (response_state->write_failed) {
+    return exact_file_failure_after_truncate(
+        destination, ExactFileResult::permanent_error(Status(
+                         Errors::SE_IO_ERROR, EIO,
+                         "unable to stream bounded exact GET response file")));
+  }
+  if (!outcome.IsSuccess()) {
+    return exact_file_failure_after_truncate(
+        destination, exact_file_get_failure(outcome.GetError()));
+  }
+
+  auto &result = outcome.GetResult();
+  Aws::IOStream &output = result.GetBody();
+  output.flush();
+  const bool flush_succeeded = static_cast<bool>(output);
+  auto *output_buffer =
+      dynamic_cast<BoundedExactFileStreambuf *>(output.rdbuf());
+  const bool close_succeeded =
+      output_buffer != nullptr && output_buffer->close();
+  if (!flush_succeeded || !close_succeeded || response_state->write_failed) {
+    return exact_file_failure_after_truncate(
+        destination, ExactFileResult::permanent_error(Status(
+                         Errors::SE_IO_ERROR, EIO,
+                         "unable to close exact GET response file")));
+  }
+
+  const long long content_length = result.GetContentLength();
+  const std::uintmax_t file_size = fs::file_size(destination, filesystem_error);
+  if (content_length < 0 ||
+      (content_length >= 0 &&
+       static_cast<uint64_t>(content_length) > max_bytes) ||
+      filesystem_error ||
+      static_cast<uint64_t>(content_length) !=
+          static_cast<uint64_t>(file_size) ||
+      static_cast<uint64_t>(file_size) != response_state->bytes_written) {
+    return exact_file_failure_after_truncate(
+        destination,
+        ExactFileResult::permanent_error(Status(
+            Errors::SE_UNEXPECTED,
+            filesystem_error ? filesystem_error.value() : EIO,
+            "exact file GET content length does not match streamed bytes")));
+  }
+
+  const auto &etag = result.GetETag();
+  ExactFileResult exact = ExactFileResult::applied(
+      static_cast<uint64_t>(content_length),
+      std::string(etag.data(), etag.size()));
+  if (!exact.is_applied()) {
+    return exact_file_failure_after_truncate(destination, std::move(exact));
+  }
+  return exact;
+}
+
+ConditionalPutResult S3ObjectStore::put_object_conditional(
+    const std::string_view &bucket, const std::string_view &key,
+    const std::string_view &data, const ConditionalPutCondition &condition) {
+  if (!condition.is_valid()) {
+    return ConditionalPutResult::permanent_error(Status(
+        Errors::SE_INVALID, EINVAL, "invalid conditional PUT condition"));
+  }
+  if (bucket.empty() || bucket.find('\0') != std::string_view::npos ||
+      !is_valid_key(key) || key.find('\0') != std::string_view::npos) {
+    return ConditionalPutResult::permanent_error(
+        Status(Errors::SE_INVALID, EINVAL, "invalid bucket or key"));
+  }
+  if (data.size() >
+          static_cast<size_t>(std::numeric_limits<long long>::max()) ||
+      data.size() >
+          static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+    return ConditionalPutResult::permanent_error(
+        Status(Errors::SE_INVALID, EOVERFLOW, "object is too large"));
+  }
+
+  Aws::S3::Model::PutObjectRequest request;
+  request.SetBucket(Aws::String(bucket.data(), bucket.size()));
+  request.SetKey(Aws::String(key.data(), key.size()));
+  request.SetContentLength(static_cast<long long>(data.size()));
+  set_put_condition(request, condition);
+
+  const std::shared_ptr<Aws::IOStream> data_stream =
+      Aws::MakeShared<Aws::StringStream>("SStreamAllocationTag");
+  if (!data_stream || !*data_stream) {
+    return ConditionalPutResult::permanent_error(Status(
+        Errors::SE_IO_ERROR, ENOMEM, "unable to create object data stream"));
+  }
+  data_stream->write(data.data(), static_cast<std::streamsize>(data.size()));
+  data_stream->flush();
+  data_stream->clear();
+  data_stream->seekg(0);
+  if (!*data_stream) {
+    return ConditionalPutResult::permanent_error(Status(
+        Errors::SE_IO_ERROR, EIO, "unable to prepare object data stream"));
+  }
+  request.SetBody(data_stream);
+
+  // One SDK invocation is one logical attempt. The SDK rewinds this seekable
+  // stream for its internal transport retries; callers disambiguate the result.
+  Aws::S3::Model::PutObjectOutcome outcome = do_put_object(request);
+  if (!outcome.IsSuccess()) {
+    return conditional_put_failure(outcome.GetError());
+  }
+  const auto &etag = outcome.GetResult().GetETag();
+  return ConditionalPutResult::applied(std::string(etag.data(), etag.size()));
+}
+
+ConditionalPutResult S3ObjectStore::put_object_from_file_conditional(
+    const std::string_view &bucket, const std::string_view &key,
+    const std::string_view &data_file_path,
+    const ConditionalPutCondition &condition) {
+  if (!condition.is_valid()) {
+    return ConditionalPutResult::permanent_error(Status(
+        Errors::SE_INVALID, EINVAL, "invalid conditional PUT condition"));
+  }
+  if (bucket.empty() || bucket.find('\0') != std::string_view::npos ||
+      !is_valid_key(key) || key.find('\0') != std::string_view::npos ||
+      data_file_path.find('\0') != std::string_view::npos) {
+    return ConditionalPutResult::permanent_error(Status(
+        Errors::SE_INVALID, EINVAL, "invalid bucket, key, or input file path"));
+  }
+
+  const fs::path input_path{std::string(data_file_path)};
+  std::error_code error;
+  if (!fs::is_regular_file(input_path, error)) {
+    const int error_code = error ? error.value() : EINVAL;
+    return ConditionalPutResult::permanent_error(Status(
+        Errors::SE_IO_ERROR, error_code, "unable to open input object file"));
+  }
+  const std::uintmax_t file_size = fs::file_size(input_path, error);
+  if (error) {
+    return ConditionalPutResult::permanent_error(
+        Status(Errors::SE_IO_ERROR, error.value(),
+               "unable to stat input object file"));
+  }
+  if (file_size >
+      static_cast<std::uintmax_t>(std::numeric_limits<long long>::max())) {
+    return ConditionalPutResult::permanent_error(
+        Status(Errors::SE_INVALID, EOVERFLOW, "object file is too large"));
+  }
+
+  Aws::S3::Model::PutObjectRequest request;
+  request.SetBucket(Aws::String(bucket.data(), bucket.size()));
+  request.SetKey(Aws::String(key.data(), key.size()));
+  request.SetContentLength(static_cast<long long>(file_size));
+  set_put_condition(request, condition);
+
+  const std::string input_path_string = input_path.string();
+  const std::shared_ptr<Aws::IOStream> input = Aws::MakeShared<Aws::FStream>(
+      "IOStreamAllocationTag", input_path_string.c_str(),
+      std::ios_base::in | std::ios_base::binary);
+  if (!input || !*input) {
+    return ConditionalPutResult::permanent_error(
+        Status(Errors::SE_IO_ERROR, EIO, "unable to open input object file"));
+  }
+  request.SetBody(input);
+
+  // A caller-controlled retry reopens the file and constructs a fresh request.
+  Aws::S3::Model::PutObjectOutcome outcome = do_put_object(request);
+  if (!outcome.IsSuccess()) {
+    return conditional_put_failure(outcome.GetError());
+  }
+  const auto &etag = outcome.GetResult().GetETag();
+  return ConditionalPutResult::applied(std::string(etag.data(), etag.size()));
 }
 
 Status S3ObjectStore::get_object(const std::string_view &bucket,
