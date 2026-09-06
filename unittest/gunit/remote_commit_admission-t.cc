@@ -38,6 +38,7 @@
 #include "sql/remote_commit/protocol_codec.h"
 #include "sql/remote_commit/evidence.h"
 #include "sql/remote_commit/publisher.h"
+#include "sql/remote_commit/runtime_snapshot_service.h"
 #include "sql/remote_commit/segment_sealer.h"
 #include "sql/remote_commit/server_hooks.h"
 #include "sql/remote_commit/sql_admission.h"
@@ -185,6 +186,42 @@ TEST(RemoteCommitStartupBinlog, ExistingCursorAppendsWithoutOverwritingPrefix) {
   EXPECT_EQ(appended.size(), position.pos);
   EXPECT_EQ(appended.size(), binlog.get_binlog_end_pos());
   EXPECT_EQ(original_index, read_test_file(index));
+}
+
+TEST(RemoteCommitRuntimeSnapshotService, CreatesOnlyFreshPrivateDirectory) {
+  namespace rc = wesql::remote_commit;
+  Scoped_temp_directory directory;
+  ASSERT_FALSE(directory.path().empty());
+  const auto root = directory.path() / ".snapshot-service";
+  std::string error;
+  const auto create = [&](const fs::path &path) {
+    return rc::create_runtime_snapshot_service_root_for_test(path, &error);
+  };
+  ASSERT_FALSE(create(root)) << error;
+  EXPECT_TRUE(fs::is_directory(root));
+  EXPECT_EQ(fs::perms::owner_all, fs::status(root).permissions() & fs::perms::all);
+  write_test_file(root / "sentinel", "preserve");
+  EXPECT_TRUE(create(root));
+  EXPECT_EQ("preserve", read_test_file(root / "sentinel"));
+  const auto file = directory.path() / "file";
+  write_test_file(file, "preserve");
+  EXPECT_TRUE(create(file));
+  EXPECT_TRUE(create(file / "child"));
+  EXPECT_EQ("preserve", read_test_file(file));
+  const auto link = directory.path() / "link";
+  fs::create_directory_symlink(root, link);
+  EXPECT_TRUE(create(link));
+  EXPECT_TRUE(create(link / "child"));
+  EXPECT_FALSE(fs::exists(root / "child"));
+  const auto dangling = directory.path() / "dangling";
+  fs::create_directory_symlink(directory.path() / "absent", dangling);
+  EXPECT_TRUE(create(dangling));
+  EXPECT_TRUE(fs::is_symlink(dangling));
+  EXPECT_TRUE(create(directory.path() / "missing-parent" / "child"));
+  EXPECT_TRUE(create({}));
+  EXPECT_TRUE(create("relative-root"));
+  EXPECT_TRUE(create(directory.path() / "unused" / ".." / "child"));
+  EXPECT_FALSE(fs::exists(directory.path() / "child"));
 }
 
 TEST(RemoteCommitSegmentSealer, ConcurrentAppendKeepsExactValidatedRange) {

@@ -25,6 +25,11 @@ void stop_runtime_snapshot_service();
 
 bool runtime_snapshot_service_ready();
 
+#ifdef WESQL_TEST
+bool create_runtime_snapshot_service_root_for_test(
+    const std::filesystem::path &root, std::string *error);
+#endif
+
 }  // namespace wesql::remote_commit
 
 #endif  // SQL_REMOTE_COMMIT_RUNTIME_SNAPSHOT_SERVICE_INCLUDED

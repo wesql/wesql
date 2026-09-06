@@ -64,10 +64,12 @@ bool fsync_directory(const fs::path &path) {
 
 bool create_service_root(const fs::path &root, std::string *error) {
   std::error_code filesystem_error;
+  const fs::file_status status = fs::symlink_status(root, filesystem_error);
+  const bool absent = status.type() == fs::file_type::not_found &&
+                      (!filesystem_error ||
+                       filesystem_error == std::errc::no_such_file_or_directory);
   if (root.empty() || !root.is_absolute() || root.lexically_normal() != root ||
-      root.filename().empty() ||
-      fs::exists(fs::symlink_status(root, filesystem_error)) ||
-      filesystem_error) {
+      root.filename().empty() || !absent) {
     return set_error(error,
                      "runtime snapshot service root is not a fresh absolute path");
   }
@@ -170,6 +172,14 @@ void request_shutdown_locked() {
 }
 
 }  // namespace
+
+#ifdef WESQL_TEST
+bool create_runtime_snapshot_service_root_for_test(const fs::path &root,
+                                                  std::string *error) {
+  if (error != nullptr) error->clear();
+  return create_service_root(root, error);
+}
+#endif
 
 bool start_runtime_snapshot_service(const fs::path &service_root,
                                     std::string *error) {
