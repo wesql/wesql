@@ -53,9 +53,17 @@ namespace smartengine
 {
 using namespace util;
 
-#ifdef WESQL
 namespace {
 
+bool use_legacy_objstore_lease_lock()
+{
+  // Remote extents are immutable; writer epoch and HEAD CAS fence publication.
+  // A legacy exclusive lease would prevent takeover of a paused old writer.
+  return opt_objstore_lease_lock_timeout > 0 &&
+         !storage::remote_extent::enabled();
+}
+
+#ifdef WESQL
 bool remote_commit_enabled() { return wesql::remote_commit::enabled(); }
 
 bool load_remote_commit_runtime(storage::remote_extent::RuntimeConfig *config)
@@ -94,8 +102,8 @@ class RemoteExtentProviderGuard {
   bool armed_{true};
 };
 
-}  // namespace
 #endif
+}  // namespace
 
 /**Storage Engine initialization function, invoked when plugin is loaded.*/
 static int se_init_func(void *const p)
@@ -127,14 +135,14 @@ static int se_init_func(void *const p)
   se_bg_thread.init(se_signal_bg_psi_mutex_key, se_signal_bg_psi_cond_key);
   se_drop_idx_thread.init(se_signal_drop_idx_psi_mutex_key,
                            se_signal_drop_idx_psi_cond_key);
-  if (opt_objstore_lease_lock_timeout > 0) {
+  if (use_legacy_objstore_lease_lock()) {
     se_renewal_objstore_lease_lock_thread.init(se_renewal_objstore_lease_lock_psi_mutex_key,
                                              se_renewal_objstore_lease_lock_psi_cond_key);
   }
 #else
   se_bg_thread.init();
   se_drop_idx_thread.init();
-  if (opt_objstore_lease_lock_timeout > 0) {
+  if (use_legacy_objstore_lease_lock()) {
     se_renewal_objstore_lease_lock_thread.init();
   }
 #endif
@@ -364,7 +372,7 @@ static int se_init_func(void *const p)
 
     db::GlobalContext::set_env(main_opts.env);
 
-    if (opt_objstore_lease_lock_timeout > 0) {
+    if (use_legacy_objstore_lease_lock()) {
       int ret = se_renewal_objstore_lease_lock_thread.create_thread(RENEW_LEASE_LOCK_THREAD_NAME
 #ifdef HAVE_PSI_INTERFACE
                                                                   ,
@@ -532,7 +540,7 @@ static int se_done_func(void *const p)
   se_bg_thread.signal(true);
 
   if (opt_table_on_objstore && opt_serverless) {
-    if (opt_objstore_lease_lock_timeout > 0) {
+    if (use_legacy_objstore_lease_lock()) {
       // Signal the renewal object store lease lock thread to stop.
       se_renewal_objstore_lease_lock_thread.signal(true);
       // Wait for the renewal object store lease lock thread to finish.

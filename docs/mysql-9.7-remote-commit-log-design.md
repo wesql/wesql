@@ -728,7 +728,9 @@ compile-time 校验，启动自检不允许任何 `UNCLASSIFIED`。`SET`、`RESE
 
 ### 4.2 首次创建
 
-现有 lease 可保留为单写 admission/liveness 提示，但不作为 IO fence。task #34 的
+v2 remote 模式不启动或等待 SmartEngine 的旧独占 lease；暂停的旧 writer 不能靠
+续租阻止新 epoch 接管。不可变 extent、精确 epoch/HEAD 复核和 HEAD CAS 共同控制
+发布，不能把 lease 当作 IO fence。非 remote 模式仍按原 timeout 使用旧 lease。task #34 的
 P0 产品入口只接受 freshly initialized `EMPTY_SOURCE`：没有用户数据、legacy live
 extent、旧 TC/binlog decision、外部 replication repository、internal prepared XID 或
 external XA。检查必须在创建第一个远端对象前以 mutation-free 方式完成；任一集合
@@ -773,7 +775,7 @@ EMPTY_SOURCE 并使用新的 snapshot ID 重做。HEAD CAS 成功后的崩溃已
 
 ### 4.3 已有流接管
 
-1. 取得 lease admission 并保持 SQL write admission closed，GET HEAD body+ETag 与
+1. 保持 SQL write admission closed，GET HEAD body+ETag 与
    WRITER_EPOCH；先校验两个固定对象的 size/schema/stream 和 epoch 关系，不把本地
    datadir 作为恢复输入。按 HEAD ref exact GET 当前 snapshot manifest，仅用其已验证
    server UUID/fingerprints 和 stream 执行 7.3 target 分类；FOREIGN_OR_CORRUPT 在
@@ -1276,7 +1278,7 @@ parent；崩溃后 target 只能是 absent 或完整新 root。
 
 ### 7.4 启动恢复顺序
 
-1. 加载并校验外部声明式配置、凭证和 keyring，取得 lease admission但保持 write
+1. 加载并校验外部声明式配置、凭证和 keyring，保持 write
    admission closed；GET epoch 与 HEAD body+ETag，验证
    `HEAD.writer.epoch <= epoch`。exact GET 当前 snapshot manifest 并按 7.3 对 target
    做只读分类，FOREIGN_OR_CORRUPT 立即退出；之后才用 epoch 的 exact ETag CAS 到
