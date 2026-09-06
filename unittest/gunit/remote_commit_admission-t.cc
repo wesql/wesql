@@ -2583,9 +2583,12 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   const auto base = directory.path() / "binlog";
   const auto index = directory.path() / "binlog.index";
   Tsid_map map(nullptr);
+  Gtid_set previous_gtids(&map, nullptr);
   Gtid_set expected(&map, nullptr);
-  ASSERT_EQ(RETURN_STATUS_OK, expected.add_gtid_text(
+  ASSERT_EQ(RETURN_STATUS_OK, previous_gtids.add_gtid_text(
       "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:1-4"));
+  ASSERT_EQ(RETURN_STATUS_OK, expected.add_gtid_text(
+      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:1-5"));
   StringBuffer_ostream<1024> bytes;
   ASSERT_FALSE(bytes.write(reinterpret_cast<const uchar *>(BINLOG_MAGIC),
                            BIN_LOG_HEADER_SIZE));
@@ -2593,10 +2596,29 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   format.common_footer->checksum_alg =
       mysql::binlog::event::BINLOG_CHECKSUM_ALG_CRC32;
   ASSERT_FALSE(format.write(&bytes));
-  Previous_gtids_log_event previous(&expected);
+  Previous_gtids_log_event previous(&previous_gtids);
   previous.common_footer->checksum_alg =
       mysql::binlog::event::BINLOG_CHECKSUM_ALG_CRC32;
   ASSERT_FALSE(previous.write(&bytes));
+  Gtid tail_gtid{};
+  global_tsid_lock->wrlock();
+  const auto parsed = tail_gtid.parse(
+      global_tsid_map, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:5");
+  global_tsid_lock->unlock();
+  ASSERT_EQ(mysql::utils::Return_status::ok, parsed);
+  Gtid_specification spec;
+  spec.set(tail_gtid);
+  Gtid_log_event gtid_event(1, true, 0, 1, false, 1, 1, spec,
+                            MYSQL_VERSION_ID, MYSQL_VERSION_ID);
+  Query_log_event begin(initializer.thd(), "BEGIN", 5, true, false, false, 0);
+  Xid_log_event commit(initializer.thd(), 701);
+  for (Log_event *event : {static_cast<Log_event *>(&gtid_event),
+                           static_cast<Log_event *>(&begin),
+                           static_cast<Log_event *>(&commit)}) {
+    event->common_footer->checksum_alg =
+        mysql::binlog::event::BINLOG_CHECKSUM_ALG_CRC32;
+    ASSERT_FALSE(event->write(&bytes));
+  }
   write_test_file(path, std::string_view(bytes.ptr(), bytes.length()));
   write_test_file(index, path.string() + "\n");
 
@@ -2613,7 +2635,9 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
     ASSERT_FALSE(binlog.init_gtid_sets(&all, &lost, true, true, nullptr,
                                       nullptr, true));
     EXPECT_EQ(includes_terminal, all.equals(&expected));
+    EXPECT_EQ(includes_terminal, lost.equals(&previous_gtids));
     EXPECT_EQ(!includes_terminal, all.is_empty());
+    EXPECT_EQ(!includes_terminal, lost.is_empty());
   };
 
   initialize(true);
@@ -2861,6 +2885,134 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   EXPECT_TRUE(shutdown_finished.load());
   EXPECT_FALSE(rc::commit_admission_reopening_for_test());
   EXPECT_FALSE(rc::commit_admission_open_for_test());
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       RecoveryRestoresOnlyAuthenticatedSnapshotGtidsOnce) {
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  THD *const thd = initializer.thd();
+  thd->system_thread = SYSTEM_THREAD_BACKGROUND;
+  auto cleanup = create_scope_guard([&] {
+    thd->system_thread = NON_SYSTEM_THREAD;
+    initializer.TearDown();
+  });
+  std::string error;
+  rc::RecoveryPlan candidate;
+  auto &manifest = candidate.snapshot;
+  manifest.snapshot_id = snapshot.id;
+  manifest.writer = head.writer;
+  manifest.cursor = cursor;
+  manifest.log_anchor.cursor = cursor;
+  manifest.server_identity.server_uuid = marker.server_uuid;
+  manifest.deployment_fingerprints = {
+      std::string(64, 'a'), "gtid-baseline-test", std::string(64, 'b'),
+      std::string(64, 'c'), std::string(64, 'd')};
+  ASSERT_TRUE(rc::gtid_digest(marker.server_uuid + ":1-4",
+                              &manifest.gtid_executed, &error));
+  manifest.binlog_seed.file = cursor.file;
+  manifest.binlog_seed.cursor = cursor;
+  manifest.binlog_seed.size = cursor.pos;
+  manifest.binlog_seed.sha256 = std::string(64, 'a');
+  ASSERT_TRUE(rc::binlog_seed_object_key(
+      stream, snapshot.id, cursor, manifest.binlog_seed.sha256,
+      &manifest.binlog_seed.key, &error)) << error;
+  ASSERT_TRUE(rc::serialize_snapshot_manifest(
+      stream, manifest, &candidate.snapshot_object.body, &error)) << error;
+  snapshot.manifest_size = candidate.snapshot_object.body.size();
+  ASSERT_TRUE(rc::sha256_hex(candidate.snapshot_object.body,
+                             &snapshot.manifest_sha256, &error));
+  ASSERT_TRUE(rc::snapshot_manifest_key(stream, snapshot.id,
+      snapshot.manifest_sha256, &snapshot.manifest_key, &error));
+  head.snapshot = snapshot;
+  ASSERT_TRUE(rc::serialize_head(stream, head, &head_body, &error)) << error;
+  epoch_proof.head_body = head_body;
+  candidate.head = head;
+  candidate.head_object = {head_body, head_etag};
+
+  // Reproduce a stock cross-file scan preloading an unapplied tail GTID.
+  global_tsid_lock->wrlock();
+  auto *executed = const_cast<Gtid_set *>(gtid_state->get_executed_gtids());
+  executed->clear();
+  const auto seeded = executed->add_gtid_text(
+      (marker.server_uuid + ":1-5").c_str());
+  Gtid_set baseline(global_tsid_map, global_tsid_lock);
+  const auto parsed = baseline.add_gtid_text(
+      manifest.gtid_executed.canonical.c_str());
+  global_tsid_lock->unlock();
+  ASSERT_EQ(RETURN_STATUS_OK, seeded);
+  ASSERT_EQ(RETURN_STATUS_OK, parsed);
+  const auto check_baseline = [&](bool expected) {
+    global_tsid_lock->wrlock();
+    const bool equal = executed->equals(&baseline);
+    global_tsid_lock->unlock();
+    EXPECT_EQ(expected, equal);
+  };
+
+  initialize(true);
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  thd->system_thread = NON_SYSTEM_THREAD;
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+  thd->system_thread = SYSTEM_THREAD_BACKGROUND;
+  rc::reset_commit_admission_for_test(true);
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+  rc::reset_commit_admission_for_test(false);
+  auto wrong = candidate;
+  wrong.head_object.etag += "changed";
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(wrong, &error));
+  wrong = candidate;
+  wrong.snapshot_object.body += " ";
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(wrong, &error));
+  wrong = candidate;
+  ASSERT_TRUE(rc::gtid_digest(marker.server_uuid + ":1-5",
+                              &wrong.snapshot.gtid_executed, &error));
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(wrong, &error));
+  check_baseline(false);
+  ASSERT_TRUE(rc::restore_recovery_snapshot_gtids(candidate, &error)) << error;
+  check_baseline(true);
+  EXPECT_EQ(nullptr, thd->open_tables);
+  EXPECT_FALSE(thd->get_transaction()->is_active(Transaction_ctx::STMT));
+  EXPECT_FALSE(thd->get_transaction()->is_active(Transaction_ctx::SESSION));
+
+  // A later replayed transaction cannot be erased by calling restore again.
+  global_tsid_lock->wrlock();
+  const auto replayed = executed->add_gtid_text(
+      (marker.server_uuid + ":5").c_str());
+  global_tsid_lock->unlock();
+  ASSERT_EQ(RETURN_STATUS_OK, replayed);
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+  check_baseline(false);
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+  check_baseline(false);
+
+  // An empty snapshot must also remove speculative startup cache contents.
+  ASSERT_TRUE(rc::gtid_digest("", &manifest.gtid_executed, &error));
+  ASSERT_TRUE(rc::serialize_snapshot_manifest(
+      stream, manifest, &candidate.snapshot_object.body, &error)) << error;
+  head.snapshot.manifest_size = candidate.snapshot_object.body.size();
+  ASSERT_TRUE(rc::sha256_hex(candidate.snapshot_object.body,
+                             &head.snapshot.manifest_sha256, &error));
+  ASSERT_TRUE(rc::snapshot_manifest_key(stream, snapshot.id,
+      head.snapshot.manifest_sha256, &head.snapshot.manifest_key, &error));
+  ASSERT_TRUE(rc::serialize_head(stream, head, &head_body, &error));
+  epoch_proof.head_body = head_body;
+  candidate.head = head;
+  candidate.head_object = {head_body, head_etag};
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  ASSERT_TRUE(rc::restore_recovery_snapshot_gtids(candidate, &error)) << error;
+  global_tsid_lock->wrlock();
+  const bool empty = executed->is_empty() &&
+      gtid_state->get_lost_gtids()->is_empty() &&
+      gtid_state->get_gtids_only_in_table()->is_empty() &&
+      gtid_state->get_previous_gtids_logged()->is_empty();
+  global_tsid_lock->unlock();
+  EXPECT_TRUE(empty);
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,

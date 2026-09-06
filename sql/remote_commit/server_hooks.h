@@ -27,6 +27,7 @@ namespace wesql::remote_commit {
 struct OrderToken;
 struct AckReadyEvent;
 struct CommitBinding;
+struct RecoveryPlan;
 struct PreparedSnapshotPublication;
 struct SnapshotPublication;
 class SnapshotPublisher;
@@ -335,6 +336,11 @@ bool startup_existing_binlog_boundary(std::string *file, uint64_t *pos);
 // creating an empty one. Its GTIDs must participate in stock initialization.
 // A takeover worker must not treat its pending replay tail as executed.
 bool may_read_installed_terminal_binlog_gtids();
+
+// Restore only the authenticated snapshot baseline, once, before the worker
+// applies (snapshot, HEAD]. Discards speculative stock binlog GTID caches.
+bool restore_recovery_snapshot_gtids(const RecoveryPlan &candidate,
+                                     std::string *error);
 
 // True only for one exact CLOSED-admission startup role: installed re-exec
 // after pre-recovery activation, bootstrap snapshot worker, or takeover

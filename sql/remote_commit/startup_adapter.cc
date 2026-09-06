@@ -1132,6 +1132,7 @@ bool build_base_worker_completion(std::string *error) {
                    "root");
     }
     candidate = &*g_adapter.worker_candidate;
+    if (!restore_recovery_snapshot_gtids(*candidate, error)) return false;
     ObservationPreparedVerifier verifier({
         StartupCoordinatorRoute::TAKEOVER, request.root, request.deployment,
         false, candidate, nullptr});

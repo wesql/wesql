@@ -1356,6 +1356,15 @@ INSTALLED_REEXEC_PRE_RECOVERY 授权且准入 CLOSED/drained 时，启动 GTID �
 索引末项，随后仍与发布快照的 GTID/digest 比较。普通启动沿用跳过新建空末文件
 的规则；takeover worker 不借此把尚待回放的尾部事务提前标成 executed。
 
+takeover worker 在开始 bounded replay 前，从当前精确 HEAD 引用的 snapshot
+manifest 恢复内存 GTID 基线。必须重新核对 HEAD body/ETag、快照字节数/SHA、
+解析结果、snapshot ID 和 cursor，且仍持有采用的 epoch、准入 CLOSED/drained、
+没有事务授权或 owned GTID。一次性恢复替换 stock startup 可能从多个 binlog
+文件预读的 executed 集合，并清空派生的内存缓存；它不调用会写表的
+`Gtid_state::clear()`。后续逐事务回放只增加 `(snapshot, HEAD]` 中已实际提交
+的 GTID。即使回放区间为空也必须恢复基线；重复调用、失权、普通运行或
+installed re-exec 均拒绝。安装后仍独立从 binlog 重建并校验完整集合。
+
 P0 禁止 `P/` 下的远端自动 GC。旧 purge 命令不得删除 HEAD、epoch、manifest、
 segment、v2 snapshot 或 immutable SmartEngine extent；孤儿和历史对象暂时保留。
 恢复 reader pin、保留代数和

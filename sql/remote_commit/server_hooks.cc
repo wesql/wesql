@@ -51,6 +51,7 @@
 #include "sql/plugin_table.h"
 #include "sql/remote_commit/evidence.h"
 #include "sql/remote_commit/publisher.h"
+#include "sql/remote_commit/recovery.h"
 #include "sql/remote_commit/segment_sealer.h"
 #include "sql/remote_commit/snapshot_publisher.h"
 #include "sql/remote_commit/sql_command_policy.h"
@@ -167,6 +168,7 @@ struct RuntimeState {
   StartupPhase startup_phase{StartupPhase::UNINITIALIZED};
   StartupRoute startup_route{StartupRoute::DISABLED};
   bool startup_epoch_adopted{false};
+  bool recovery_snapshot_gtids_restored{false};
   StartupEpochAdoptionRole startup_epoch_adoption_role{
       StartupEpochAdoptionRole::TAKEOVER_RECOVERY};
   std::optional<StartupEpochProof> adopted_startup_proof;
@@ -1907,6 +1909,7 @@ bool initialize(bool bootstrap_preflight) {
   g_runtime.running = false;
   g_runtime.bootstrap_preflight = bootstrap_preflight;
   g_runtime.startup_epoch_adopted = false;
+  g_runtime.recovery_snapshot_gtids_restored = false;
   g_runtime.startup_epoch_adoption_role =
       StartupEpochAdoptionRole::TAKEOVER_RECOVERY;
   g_runtime.adopted_startup_proof.reset();
@@ -2602,6 +2605,70 @@ bool may_read_installed_terminal_binlog_gtids() {
   return installed_reexec_pre_recovery_authorized_locked();
 }
 
+bool restore_recovery_snapshot_gtids(const RecoveryPlan &candidate,
+                                     std::string *error) {
+  if (!enabled() || opt_initialize || global_tsid_lock == nullptr ||
+      global_tsid_map == nullptr || gtid_state == nullptr)
+    return fail_with(error, "recovery snapshot GTID state is unavailable");
+  THD *const thd = current_thd;
+  if (thd != nullptr &&
+      (thd->system_thread != SYSTEM_THREAD_BACKGROUND ||
+       !thd->owned_gtid_is_empty() ||
+       thd->get_transaction()->is_active(Transaction_ctx::STMT) ||
+       thd->get_transaction()->is_active(Transaction_ctx::SESSION)))
+    return fail_with(error, "recovery snapshot GTID restore has an active THD");
+
+  global_tsid_lock->wrlock();
+  auto unlock_gtids = create_scope_guard([] { global_tsid_lock->unlock(); });
+  std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
+  std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
+  if (!takeover_recovery_worker_authorized_locked() ||
+      g_runtime.recovery_snapshot_gtids_restored ||
+      !g_runtime.authorizations.empty() ||
+      !gtid_state->get_owned_gtids()->is_empty() ||
+      gtid_state->get_anonymous_ownership_count() != 0)
+    return fail_with(error, "recovery snapshot GTID restore is not authorized");
+
+  const PublisherState &state = g_runtime.publisher->state();
+  if (candidate.head_object.body != state.head_object->body ||
+      candidate.head_object.etag != state.head_object->etag ||
+      candidate.head != *state.head)
+    return fail_with(error, "recovery snapshot GTID HEAD differs from authority");
+  const SnapshotRef &reference = state.head->snapshot;
+  std::string snapshot_sha;
+  SnapshotManifest snapshot;
+  if (candidate.snapshot_object.body.size() != reference.manifest_size ||
+      !sha256_hex(candidate.snapshot_object.body, &snapshot_sha, error) ||
+      snapshot_sha != reference.manifest_sha256 ||
+      !parse_snapshot_manifest(candidate.snapshot_object.body, g_runtime.stream,
+                               reference.manifest_key, &snapshot, error) ||
+      snapshot != candidate.snapshot || snapshot.snapshot_id != reference.id ||
+      snapshot.cursor != reference.cursor)
+    return fail_with(error, "recovery snapshot GTID manifest differs from HEAD");
+
+  Gtid_set baseline(global_tsid_map, global_tsid_lock);
+  if (baseline.add_gtid_text(snapshot.gtid_executed.canonical.c_str()) !=
+          RETURN_STATUS_OK ||
+      gtid_state->ensure_sidno() != RETURN_STATUS_OK)
+    return fail_with(error, "cannot allocate recovery snapshot GTID baseline");
+
+  // Stock startup can read pending tails from earlier materialized files.
+  // These are not applied yet. Reset only worker memory; Gtid_state::clear
+  // would also mutate the derived mysql.gtid_executed table.
+  g_runtime.recovery_snapshot_gtids_restored = true;
+  auto *executed = const_cast<Gtid_set *>(gtid_state->get_executed_gtids());
+  executed->clear();
+  const_cast<Gtid_set *>(gtid_state->get_lost_gtids())->clear();
+  const_cast<Gtid_set *>(gtid_state->get_gtids_only_in_table())->clear();
+  auto *previous =
+      const_cast<Gtid_set *>(gtid_state->get_previous_gtids_logged());
+  previous->clear();
+  if (executed->add_gtid_set(&baseline) != RETURN_STATUS_OK ||
+      previous->add_gtid_set(&baseline) != RETURN_STATUS_OK)
+    return fail_with(error, "cannot restore recovery snapshot GTID baseline");
+  return true;
+}
+
 bool may_bypass_stock_binlog_recovery() {
   if (!enabled()) return false;
   std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
@@ -2662,6 +2729,7 @@ void deinitialize() {
     g_runtime.startup_phase = StartupPhase::UNINITIALIZED;
     g_runtime.startup_route = StartupRoute::DISABLED;
     g_runtime.startup_epoch_adopted = false;
+    g_runtime.recovery_snapshot_gtids_restored = false;
     g_runtime.startup_epoch_adoption_role =
         StartupEpochAdoptionRole::TAKEOVER_RECOVERY;
     g_runtime.adopted_startup_proof.reset();
@@ -4395,6 +4463,7 @@ bool initialize_startup_lifecycle_for_test(ConditionalIo *conditional_io,
   g_runtime.running = false;
   g_runtime.bootstrap_preflight = bootstrap_preflight;
   g_runtime.startup_phase = StartupPhase::HEAD_PROBED;
+  g_runtime.recovery_snapshot_gtids_restored = false;
   g_runtime.startup_route = g_runtime.publisher->state().head.has_value()
                                 ? StartupRoute::TAKEOVER
                                 : StartupRoute::BOOTSTRAP;
@@ -4447,6 +4516,7 @@ void reset_startup_lifecycle_for_test() {
   g_runtime.startup_phase = StartupPhase::UNINITIALIZED;
   g_runtime.startup_route = StartupRoute::DISABLED;
   g_runtime.startup_epoch_adopted = false;
+  g_runtime.recovery_snapshot_gtids_restored = false;
   g_runtime.startup_epoch_adoption_role =
       StartupEpochAdoptionRole::TAKEOVER_RECOVERY;
   g_runtime.adopted_startup_proof.reset();
