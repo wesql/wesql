@@ -20,6 +20,7 @@
 
 #include "mysqld_error.h"
 #include "scope_guard.h"
+#include "sql/binlog.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
 #include "sql/dd/impl/system_registry.h"
 #include "sql/dd/impl/types/charset_impl.h"
@@ -29,6 +30,7 @@
 #include "sql/dd/impl/types/tablespace_impl.h"
 #include "sql/handler.h"
 #include "sql/item.h"
+#include "sql/log_event.h"
 #include "sql/mysqld.h"
 #include "sql/partition_info.h"
 #include "sql/plugin_table.h"
@@ -127,6 +129,59 @@ std::string read_test_file(const fs::path &path) {
   std::ifstream input(path, std::ios::binary);
   return {std::istreambuf_iterator<char>(input),
           std::istreambuf_iterator<char>()};
+}
+
+TEST(RemoteCommitStartupBinlog, ExistingCursorAppendsWithoutOverwritingPrefix) {
+  Scoped_temp_directory directory;
+  ASSERT_FALSE(directory.path().empty());
+  const auto path = directory.path() / "binlog.000001";
+  const auto base = directory.path() / "binlog";
+  const auto index = directory.path() / "binlog.index";
+  std::string original(BINLOG_MAGIC, BIN_LOG_HEADER_SIZE);
+  original.append(154, '\0');
+  original.back() = 'x';
+  write_test_file(path, original);
+  write_test_file(index, path.string() + "\n");
+
+  const bool saved_remote = opt_binlog_archive_remote_commit;
+  opt_binlog_archive_remote_commit = true;
+  auto restore = create_scope_guard([&] {
+    opt_binlog_archive_remote_commit = saved_remote;
+  });
+  uint sync_period = 1;
+  MYSQL_BIN_LOG binlog(&sync_period);
+  binlog.set_psi_keys(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0);
+  binlog.init_pthread_objects();
+  auto cleanup = create_scope_guard([&] { binlog.cleanup(); });
+  ASSERT_FALSE(binlog.open_index_file(index.c_str(), base.c_str(), true));
+  mysql_mutex_lock(binlog.get_log_lock());
+  auto unlock = create_scope_guard([&] {
+    mysql_mutex_unlock(binlog.get_log_lock());
+  });
+  EXPECT_TRUE(binlog.open_remote_existing_binlog(
+      base.c_str(), "binlog.000002", original.size(), 1024 * 1024));
+  EXPECT_TRUE(binlog.open_remote_existing_binlog(
+      base.c_str(), "binlog.000001", original.size() - 1, 1024 * 1024));
+  EXPECT_TRUE(binlog.open_remote_existing_binlog(
+      base.c_str(), "binlog.000001", original.size() + 1, 1024 * 1024));
+  EXPECT_EQ(original, read_test_file(path));
+  ASSERT_FALSE(binlog.open_remote_existing_binlog(
+      base.c_str(), "binlog.000001", original.size(), 1024 * 1024));
+  Log_info position;
+  ASSERT_EQ(0, binlog.get_current_log(&position, false));
+  EXPECT_EQ(original.size(), position.pos);
+  EXPECT_EQ(original.size(), fs::file_size(path));
+  original[BIN_LOG_HEADER_SIZE + FLAGS_OFFSET] = LOG_EVENT_BINLOG_IN_USE_F;
+  EXPECT_EQ(original, read_test_file(path));
+  Format_description_log_event event;
+  ASSERT_FALSE(binlog.write_event_to_binlog_and_sync(&event));
+  ASSERT_EQ(0, binlog.get_current_log(&position, false));
+  const auto appended = read_test_file(path);
+  ASSERT_GT(appended.size(), original.size());
+  EXPECT_EQ(original, appended.substr(0, original.size()));
+  EXPECT_EQ(appended.size(), position.pos);
+  EXPECT_EQ(appended.size(), binlog.get_binlog_end_pos());
 }
 
 TEST(RemoteCommitSegmentSealer, ConcurrentAppendKeepsExactValidatedRange) {

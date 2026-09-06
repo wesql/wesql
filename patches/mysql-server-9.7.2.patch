@@ -1003,7 +1003,7 @@ index fd78ea1260cbd37a1548d700f6963e84230d7377..72bb058e6e0fc5588efdcac7ab3a4e3e
  IF(WIN32)
    # Silence warnings about: needs to have dll-interface
 diff --git a/sql/binlog.cc b/sql/binlog.cc
-index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b7f0cf60a 100644
+index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03cea5edd38 100644
 --- a/sql/binlog.cc
 +++ b/sql/binlog.cc
 @@ -51,6 +51,8 @@
@@ -1028,7 +1028,22 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
  #include "sql/binlog_ostream.h"
  #include "sql/binlog_reader.h"
  #include "sql/create_field.h"
-@@ -716,6 +724,39 @@ class binlog_cache_data {
+@@ -496,6 +504,14 @@ class MYSQL_BIN_LOG::Binlog_ofile : public Basic_ostream {
+     return false;
+   }
+
++#ifdef WESQL
++  bool seek_existing(my_off_t offset) {
++    if (m_pipeline_head == nullptr || m_pipeline_head->seek(offset)) return true;
++    m_position = offset;
++    return false;
++  }
++#endif
++
+   bool flush() { return m_pipeline_head->flush(); }
+   bool sync() { return m_pipeline_head->sync(); }
+   bool flush_and_sync() { return flush() || sync(); }
+@@ -716,6 +732,39 @@ class binlog_cache_data {
  
    my_off_t get_byte_position() const { return m_cache.length(); }
  
@@ -1068,7 +1083,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
    void cache_state_checkpoint(my_off_t pos_to_checkpoint) {
      // We only need to store the cache state for pos > 0
      if (pos_to_checkpoint) {
-@@ -1271,6 +1312,40 @@ static binlog_cache_mngr *thd_get_cache_mngr(const THD *thd) {
+@@ -1271,6 +1320,40 @@ static binlog_cache_mngr *thd_get_cache_mngr(const THD *thd) {
    return (binlog_cache_mngr *)thd_get_ha_data(thd, binlog_hton);
  }
  
@@ -1109,7 +1124,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
  /**
    Checks if the BINLOG_CACHE_SIZE's value is greater than MAX_BINLOG_CACHE_SIZE.
    If this happens, the BINLOG_CACHE_SIZE is set to MAX_BINLOG_CACHE_SIZE.
-@@ -3540,7 +3615,16 @@ void MYSQL_BIN_LOG::cleanup() {
+@@ -3540,7 +3623,16 @@ void MYSQL_BIN_LOG::cleanup() {
    DBUG_TRACE;
    if (inited) {
      inited = false;
@@ -1127,7 +1142,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
            true /*need_lock_index=true*/);
      mysql_mutex_destroy(&LOCK_log);
      m_binlog_index_monitor.cleanup();
-@@ -5043,6 +5127,70 @@ err:
+@@ -5043,6 +5135,84 @@ err:
    return true;
  }
  
@@ -1140,6 +1155,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
 +  mysql_mutex_assert_owner(get_log_lock());
 +  if (!wesql::remote_commit::enabled() || log_name == nullptr ||
 +      log_name[0] == '\0' || expected_file.empty() || expected_pos < 4 ||
++      is_relay_log || name != nullptr || m_binlog_file->is_open() ||
 +      fs::path(expected_file).filename().string() != expected_file ||
 +      !m_binlog_index_monitor.is_inited_index_file()) {
 +    LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
@@ -1165,31 +1181,44 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
 +    return true;
 +  }
 +
-+  {
-+    std::unique_ptr<Binlog_ofile> existing(
-+        Binlog_ofile::open_existing(key_file_binlog, terminal.c_str(),
-+                                    MYF(MY_WME)));
-+    uchar in_use = LOG_EVENT_BINLOG_IN_USE_F;
-+    if (existing == nullptr ||
-+        existing->update(&in_use, 1,
-+                         BIN_LOG_HEADER_SIZE + FLAGS_OFFSET) ||
-+        existing->flush_and_sync()) {
-+      LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
-+             "remote startup cannot mark the authenticated binlog active");
-+      return true;
-+    }
++  auto existing = Binlog_ofile::open_existing(
++      m_key_file_log, terminal.c_str(), MYF(MY_WME | MY_NABP | MY_WAIT_IF_FULL));
++  uchar in_use = LOG_EVENT_BINLOG_IN_USE_F;
++  if (existing == nullptr || existing->is_encrypted() ||
++      existing->update(&in_use, 1, BIN_LOG_HEADER_SIZE + FLAGS_OFFSET) ||
++      existing->flush_and_sync()) {
++    LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
++           "remote startup cannot mark the authenticated binlog active");
++    return true;
 +  }
 +
-+  if (open(m_key_file_log, log_name, terminal.c_str(), 0) ||
-+      m_binlog_file->position() != expected_pos) {
++  if (existing->seek_existing(expected_pos) ||
++      existing->position() != expected_pos) {
 +    LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
 +           "remote startup cannot reopen the authenticated binlog cursor");
 +    return true;
 +  }
 +
++  std::unique_ptr<char, decltype(&my_free)> restored_name(
++      my_strdup(key_memory_MYSQL_LOG_name, log_name, MYF(MY_WME)), &my_free);
++  if (!restored_name ||
++      init_and_set_log_file_name(log_name, terminal.c_str(), 0))
++    return true;
++
++  // Preserve the authenticated stream and its append position; open() creates
++  // a new-log stream at offset zero even when the path already exists.
++  mysql_mutex_lock(&LOCK_sync);
++  delete m_binlog_file;
++  m_binlog_file = existing.release();
++  mysql_mutex_unlock(&LOCK_sync);
++  name = restored_name.release();
++  db[0] = 0;
++  m_log_file_key = m_key_file_log;
++  write_error = false;
 +  max_size = max_size_arg;
 +  bytes_written = 0;
 +  m_dependency_tracker.rotate();
++  atomic_log_state = LOG_OPENED;
 +  update_binlog_end_pos();
 +  return false;
 +}
@@ -1198,7 +1227,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
  int MYSQL_BIN_LOG::get_current_log(Log_info *linfo,
                                     bool need_lock_log /*true*/) {
    if (need_lock_log) mysql_mutex_lock(&LOCK_log);
-@@ -5333,6 +5481,9 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
+@@ -5333,6 +5503,9 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
    int no_of_threads_locking_log = 0;
    bool exit_loop = false;
    Log_info log_info;
@@ -1208,7 +1237,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
    THD *thd = current_thd;
    DBUG_TRACE;
    DBUG_PRINT("info", ("to_log= %s", to_log));
-@@ -5357,6 +5508,37 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
+@@ -5357,6 +5530,37 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
      goto err;
    }
  
@@ -1246,7 +1275,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
    /*
      File name exists in index file; delete until we find this file
      or a file that is used.
-@@ -5366,6 +5548,18 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
+@@ -5366,6 +5570,18 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
  
    while ((compare_log_name(to_log, log_info.log_file_name) ||
            (exit_loop = included))) {
@@ -1265,7 +1294,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
      if (is_active(log_info.log_file_name)) {
        if (!auto_purge)
          push_warning_printf(
-@@ -6896,6 +7090,31 @@ int MYSQL_BIN_LOG::open_binlog(const char *opt_name) {
+@@ -6896,6 +7112,31 @@ int MYSQL_BIN_LOG::open_binlog(const char *opt_name) {
      return 1;
    }
  
@@ -1297,7 +1326,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
    if (using_heuristic_recover()) {
      /* generate a new binlog to mask a corrupted one */
      mysql_mutex_lock(&LOCK_log);
-@@ -7056,6 +7275,11 @@ int MYSQL_BIN_LOG::prepare(THD *thd, bool all) {
+@@ -7056,6 +7297,11 @@ int MYSQL_BIN_LOG::prepare(THD *thd, bool all) {
  
    assert(opt_bin_log);
  
@@ -1309,7 +1338,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
    /*
      Set HA_IGNORE_DURABILITY to not flush the prepared record of the
      transaction to the log of storage engine (for example, InnoDB
-@@ -7133,6 +7357,13 @@ TC_LOG::enum_result MYSQL_BIN_LOG::commit(THD *thd, bool all) {
+@@ -7133,6 +7379,13 @@ TC_LOG::enum_result MYSQL_BIN_LOG::commit(THD *thd, bool all) {
                         (ulonglong)thd, YESNO(all), (ulonglong)xid,
                         (ulonglong)cache_mngr));
  
@@ -1323,7 +1352,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
    Scope_guard guard_applier_wait_enabled(
        [&thd]() { thd->disable_low_level_commit_ordering(); });
  
-@@ -7446,7 +7677,7 @@ void MYSQL_BIN_LOG::init_thd_variables(THD *thd, bool all, bool skip_commit) {
+@@ -7446,7 +7699,7 @@ void MYSQL_BIN_LOG::init_thd_variables(THD *thd, bool all, bool skip_commit) {
  }
  
  THD *MYSQL_BIN_LOG::fetch_and_process_flush_stage_queue(
@@ -1332,7 +1361,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
    /*
      Fetch the entire flush queue and empty it, so that the next batch
      has a leader. We must do this before invoking ha_flush_logs(...)
-@@ -7468,15 +7699,16 @@ THD *MYSQL_BIN_LOG::fetch_and_process_flush_stage_queue(
+@@ -7468,15 +7721,16 @@ THD *MYSQL_BIN_LOG::fetch_and_process_flush_stage_queue(
    Commit_stage_manager::get_instance().unlock_queue(
        Commit_stage_manager::BINLOG_FLUSH_STAGE);
  
@@ -1352,7 +1381,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
  
    /*
      The transactions are flushed to the disk and so threads
-@@ -7499,7 +7731,14 @@ int MYSQL_BIN_LOG::process_flush_stage_queue(my_off_t *total_bytes_var,
+@@ -7499,7 +7753,14 @@ int MYSQL_BIN_LOG::process_flush_stage_queue(my_off_t *total_bytes_var,
    int flush_error = 1;
    mysql_mutex_assert_owner(&LOCK_log);
  
@@ -1368,7 +1397,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
    DBUG_EXECUTE_IF("crash_after_flush_engine_log", DBUG_SUICIDE(););
    CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_write_binlog");
    assign_automatic_gtids_to_flush_group(first_seen);
-@@ -7896,6 +8135,9 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -7896,6 +8157,9 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
    DBUG_TRACE;
    int flush_error = 0, sync_error = 0;
    my_off_t total_bytes = 0;
@@ -1378,7 +1407,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
  
    CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_assign_session_to_bgc_ticket");
    thd->rpl_thd_ctx.binlog_group_commit_ctx().assign_ticket();
-@@ -7956,7 +8198,16 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -7956,7 +8220,16 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
    my_off_t flush_end_pos = 0;
    bool update_binlog_end_pos_after_sync;
    if (unlikely(!is_open())) {
@@ -1396,7 +1425,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
      leave_mutex_before_commit_stage = &LOCK_log;
      /*
        binary log is closed, flush stage and sync stage should be
-@@ -7990,7 +8241,14 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -7990,7 +8263,14 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
        flush_error = ER_ERROR_ON_WRITE;
      }
  
@@ -1412,7 +1441,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
  
      DBUG_EXECUTE_IF("crash_commit_after_log", DBUG_SUICIDE(););
    }
-@@ -8041,7 +8299,11 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -8041,7 +8321,11 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
      sync_error = result.first;
    }
  
@@ -1425,7 +1454,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
      THD *tmp_thd = final_queue;
      const char *binlog_file = nullptr;
      my_off_t pos = 0;
-@@ -8060,6 +8322,23 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -8060,6 +8344,23 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
  
    DEBUG_SYNC(thd, "bgc_after_sync_stage_before_commit_stage");
  
@@ -1449,7 +1478,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
    leave_mutex_before_commit_stage = &LOCK_sync;
    /*
      Stage #3: Commit all transactions in order.
-@@ -8080,10 +8359,19 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -8080,10 +8381,19 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
    */
  commit_stage:
    /* Clone needs binlog commit order. */
@@ -1470,7 +1499,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
        DBUG_PRINT("return", ("Thread ID: %u, commit_error: %d", thd->thread_id(),
                              thd->commit_error));
        return finish_commit(thd);
-@@ -8094,7 +8382,11 @@ commit_stage:
+@@ -8094,7 +8404,11 @@ commit_stage:
      DBUG_EXECUTE_IF("semi_sync_3-way_deadlock",
                      DEBUG_SYNC(thd, "before_process_commit_stage_queue"););
  
@@ -1483,7 +1512,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
        sync_error = call_after_sync_hook(commit_queue);
  
      /*
-@@ -8114,16 +8406,35 @@ commit_stage:
+@@ -8114,16 +8428,35 @@ commit_stage:
      */
      process_commit_stage_queue(thd, commit_queue);
  
@@ -1519,7 +1548,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..1e3b0df5f85e7d65f2b00140f6179e7b
      THD *after_commit_queue =
          Commit_stage_manager::get_instance().fetch_queue_acquire_lock(
              Commit_stage_manager::AFTER_COMMIT_STAGE);
-@@ -8150,8 +8461,19 @@ commit_stage:
+@@ -8150,8 +8483,19 @@ commit_stage:
        Binlog_group_commit_ctx::aggregate_rotate_settings(final_queue);
  
    DEBUG_SYNC(thd, "before_signal_done");
