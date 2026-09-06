@@ -1,5 +1,5 @@
 diff --git a/sql/resourcegroups/resource_group_mgr.cc b/sql/resourcegroups/resource_group_mgr.cc
-index e10a351ab13bc3f593091bf3342ad5ee0f6b7bfe..766e6309351466f44e75f7caf456ade3ccb268f1 100644
+index e10a351ab13bc3f593091bf3342ad5ee0f6b7bfe..4a5199dfe9ddfb1655460c69880b301c5029309d 100644
 --- a/sql/resourcegroups/resource_group_mgr.cc
 +++ b/sql/resourcegroups/resource_group_mgr.cc
 @@ -53,6 +53,11 @@
@@ -92,6 +92,25 @@ index e10a351ab13bc3f593091bf3342ad5ee0f6b7bfe..766e6309351466f44e75f7caf456ade3
    if (persist_resource_group(thd, *res_grp_mgr->usr_default_resource_group(),
                               usr_default_in_dd))
      return true;
+@@ -228,6 +276,10 @@ Resource_group *Resource_group_mgr::deserialize_resource_group(
+     return nullptr;
+   }
+
++#ifdef WESQL
++  *vcpu_range_vector =
++      wesql::remote_commit::startup_resource_group_cpu_ranges(cpu_id_mask);
++#else
+   int bit_start = -1, bit_end = -1;
+   for (uint i = 0; i < cpu_id_mask.size(); i++) {
+     if (cpu_id_mask[i])
+@@ -237,6 +289,7 @@ Resource_group *Resource_group_mgr::deserialize_resource_group(
+       bit_start = bit_end = -1;
+     }
+   }
++#endif
+
+   auto resource_group_ptr = create_and_add_in_resource_group_hash(
+       name_cstr, resource_group->resource_group_type(),
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 86a1e2b8da0b493e9f8d2b880a153ec3067c08ab..15c358f69daf7ce81d9e65cbdb1297a2f45225b8 100644
 --- a/CMakeLists.txt

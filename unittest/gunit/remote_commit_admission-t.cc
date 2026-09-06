@@ -1878,6 +1878,49 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
 }
 
+TEST(RemoteCommitStartupDictionary, ResourceGroupCpuRangesPreserveTheHighestBit) {
+  namespace rc = wesql::remote_commit;
+  constexpr size_t highest = dd::CPU_MASK_SIZE - 1;
+  const auto roundtrip = [&](const std::bitset<dd::CPU_MASK_SIZE> &mask) {
+    auto ranges = rc::startup_resource_group_cpu_ranges(mask);
+    dd::Resource_group_impl stored;
+    stored.set_cpu_id_mask(ranges);
+    EXPECT_EQ(mask, stored.cpu_id_mask());
+    return ranges;
+  };
+  std::bitset<dd::CPU_MASK_SIZE> mask;
+  EXPECT_TRUE(roundtrip(mask).empty());
+  for (size_t bit = 0; bit <= highest; ++bit) {
+    mask.reset();
+    mask.set(bit);
+    const auto ranges = roundtrip(mask);
+    ASSERT_EQ(1U, ranges.size());
+    EXPECT_EQ(bit, ranges[0].m_start);
+    EXPECT_EQ(bit, ranges[0].m_end);
+  }
+  mask.set(highest - 1);
+  mask.set(highest - 2);
+  auto ranges = roundtrip(mask);
+  ASSERT_EQ(1U, ranges.size());
+  EXPECT_EQ(highest - 2, ranges[0].m_start);
+  EXPECT_EQ(highest, ranges[0].m_end);
+  mask.set(0);
+  mask.set(2);
+  ranges = roundtrip(mask);
+  ASSERT_EQ(3U, ranges.size());
+  EXPECT_EQ(0U, ranges[0].m_start);
+  EXPECT_EQ(0U, ranges[0].m_end);
+  EXPECT_EQ(2U, ranges[1].m_start);
+  EXPECT_EQ(2U, ranges[1].m_end);
+  EXPECT_EQ(highest - 2, ranges[2].m_start);
+  EXPECT_EQ(highest, ranges[2].m_end);
+  mask.set();
+  ranges = roundtrip(mask);
+  ASSERT_EQ(1U, ranges.size());
+  EXPECT_EQ(0U, ranges[0].m_start);
+  EXPECT_EQ(highest, ranges[0].m_end);
+}
+
 TEST(RemoteCommitStartupDictionary, DefaultResourceGroupsMatchEveryStoredField) {
   namespace rc = wesql::remote_commit;
   using resourcegroups::Type;

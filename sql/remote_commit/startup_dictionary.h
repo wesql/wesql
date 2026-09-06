@@ -6,6 +6,7 @@
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "mysql/strings/m_ctype.h"
 #include "sql/dd/impl/types/collation_impl.h"
@@ -16,6 +17,22 @@
 #include "sql/dd/types/tablespace_file.h"
 
 namespace wesql::remote_commit {
+
+inline std::vector<resourcegroups::Range> startup_resource_group_cpu_ranges(
+    const std::bitset<dd::CPU_MASK_SIZE> &mask) {
+  std::vector<resourcegroups::Range> ranges;
+  size_t start = mask.size();
+  // The terminal sentinel emits a range that reaches the highest CPU bit.
+  for (size_t bit = 0; bit <= mask.size(); ++bit) {
+    if (bit < mask.size() && mask[bit]) {
+      if (start == mask.size()) start = bit;
+    } else if (start != mask.size()) {
+      ranges.emplace_back(start, bit - 1);
+      start = mask.size();
+    }
+  }
+  return ranges;
+}
 
 inline bool startup_default_resource_group_matches(
     const dd::Resource_group *group, bool system) {
