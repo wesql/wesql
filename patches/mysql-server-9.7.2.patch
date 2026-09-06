@@ -4690,3 +4690,38 @@ diff --git a/sql/dd/impl/types/collation_impl.h b/sql/dd/impl/types/collation_im
 +
    // Fix "inherits ... via dominance" warnings
    Entity_object_impl *impl() override { return Entity_object_impl::impl(); }
+diff --git a/sql/rpl_gtid_persist.cc b/sql/rpl_gtid_persist.cc
+--- a/sql/rpl_gtid_persist.cc
++++ b/sql/rpl_gtid_persist.cc
+@@ -53,6 +53,9 @@
+ #include "sql/log.h"
+ #include "sql/mysqld.h"  // gtid_executed_compression_period
+ #include "sql/query_options.h"
++#ifdef WESQL
++#include "sql/remote_commit/server_hooks.h"
++#endif
+ #include "sql/replication.h"  // THD_ENTER_COND
+ #include "sql/sql_base.h"     // MYSQL_OPEN_IGNORE_GLOBAL_READ_LOCK
+ #include "sql/sql_const.h"
+@@ -400,6 +403,12 @@
+
+ int Gtid_table_persistor::save(const Gtid_set *gtid_set, bool compress) {
+   DBUG_TRACE;
++#ifdef WESQL
++  // Remote roots recover GTIDs from authenticated binlog bytes, including the
++  // snapshot seed's Previous-GTIDs. Do not create an unlogged cache transaction
++  // for the background persister, startup repair, rotation, or shutdown.
++  if (wesql::remote_commit::enabled()) return 0;
++#endif
+   int ret = 0;
+   int error = 0;
+   TABLE *table = nullptr;
+@@ -502,5 +511,8 @@
+
+ int Gtid_table_persistor::compress(THD *thd) {
+   DBUG_TRACE;
++#ifdef WESQL
++  if (wesql::remote_commit::enabled()) return 0;
++#endif
+   int error = 0;
+   bool is_complete = false;

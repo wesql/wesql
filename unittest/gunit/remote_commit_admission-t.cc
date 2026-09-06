@@ -44,6 +44,7 @@
 #include "sql/remote_commit/sql_admission.h"
 #include "sql/remote_commit/startup_dictionary.h"
 #include "sql/rpl_gtid.h"
+#include "sql/rpl_gtid_persist.h"
 #include "sql/set_var.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_parse.h"
@@ -186,6 +187,29 @@ TEST(RemoteCommitStartupBinlog, ExistingCursorAppendsWithoutOverwritingPrefix) {
   EXPECT_EQ(appended.size(), position.pos);
   EXPECT_EQ(appended.size(), binlog.get_binlog_end_pos());
   EXPECT_EQ(original_index, read_test_file(index));
+}
+
+TEST(RemoteCommitGtidCache, SetPersistenceAndCompressionDoNotOpenTransactions) {
+  const bool saved_remote = opt_binlog_archive_remote_commit;
+  opt_binlog_archive_remote_commit = true;
+  auto restore = create_scope_guard([&] {
+    opt_binlog_archive_remote_commit = saved_remote;
+  });
+  Tsid_map map(nullptr);
+  Gtid_set gtids(&map, nullptr);
+  const char *text = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:1-17";
+  ASSERT_EQ(RETURN_STATUS_OK, gtids.add_gtid_text(text));
+  Gtid_set expected(&map, nullptr);
+  ASSERT_EQ(RETURN_STATUS_OK, expected.add_gtid_text(text));
+  Gtid_table_persistor persistor;
+  ASSERT_EQ(nullptr, current_thd);
+  for (const bool compress : {false, true}) {
+    EXPECT_EQ(0, persistor.save(&gtids, compress));
+    EXPECT_TRUE(gtids.equals(&expected));
+    EXPECT_EQ(nullptr, current_thd);
+  }
+  EXPECT_EQ(0, persistor.compress(nullptr));
+  EXPECT_EQ(nullptr, current_thd);
 }
 
 TEST(RemoteCommitRuntimeSnapshotService, CreatesOnlyFreshPrivateDirectory) {

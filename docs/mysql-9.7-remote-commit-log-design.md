@@ -1331,6 +1331,13 @@ snapshot、本地 cache 或 legacy index。
 
 ## 8. purge 和 GC
 
+远端模式不再维护 `mysql.gtid_executed` 派生表：GTID 集合由认证的 snapshot
+binlog seed（包含 Previous-GTIDs 及截至 cut 的原始事件）和已提交 segment 重建，
+并与 snapshot 的 canonical GTID/digest 核对。`Gtid_table_persistor::save(Gtid_set)`
+与 `compress()` 在此模式下不创建表事务，覆盖后台落表、启动补写、rotation 和
+关闭时补写；内存 GTID 集合和正常 binlog 事件仍照常更新。单个 THD 的 GTID 保存
+入口及 engine commit 授权检查不因此获得例外。普通模式继续原有派生表持久化。
+
 P0 禁止 `P/` 下的远端自动 GC。旧 purge 命令不得删除 HEAD、epoch、manifest、
 segment、v2 snapshot 或 immutable SmartEngine extent；孤儿和历史对象暂时保留。
 恢复 reader pin、保留代数和
