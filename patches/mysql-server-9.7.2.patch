@@ -1124,7 +1124,21 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
  /**
    Checks if the BINLOG_CACHE_SIZE's value is greater than MAX_BINLOG_CACHE_SIZE.
    If this happens, the BINLOG_CACHE_SIZE is set to MAX_BINLOG_CACHE_SIZE.
-@@ -3540,7 +3623,16 @@ void MYSQL_BIN_LOG::cleanup() {
+@@ -1799,7 +1882,12 @@ int MYSQL_BIN_LOG::gtid_end_transaction(THD *thd) {
+   if (thd->owned_gtid.sidno > 0) {
+     assert(thd->variables.gtid_next.type == ASSIGNED_GTID);
+
+-    if (!opt_bin_log || (thd->slave_thread && !opt_log_replica_updates)) {
++    if (wesql::remote_commit::may_complete_recovery_gtid(thd)) {
++      // Authenticated native replay must not publish another transaction or
++      // persist its derived GTID table. Engine authorization remains separate.
++      gtid_state->update_on_commit(thd);
++    } else if (!opt_bin_log ||
++               (thd->slave_thread && !opt_log_replica_updates)) {
+       /*
+         If the binary log is disabled for this thread (either by
+         log_bin=0 or sql_log_bin=0 or by log_replica_updates=0 for a
+@@ -3540,7 +3628,16 @@ void MYSQL_BIN_LOG::cleanup() {
    DBUG_TRACE;
    if (inited) {
      inited = false;

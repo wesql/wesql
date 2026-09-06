@@ -71,7 +71,7 @@ TEST(RemoteCommitNativeRecovery, SerialQueryContextAndThdLifecycle) {
     std::string error;
     ASSERT_TRUE(wesql::remote_commit::exercise_native_recovery_query_context_for_test(&error))
         << error;
-    EXPECT_EQ(original, current_thd);
+    ASSERT_EQ(original, current_thd);
     EXPECT_EQ(original_system_thread, current_thd->system_thread);
     EXPECT_EQ(nullptr, current_thd->rli_slave);
   }
@@ -2795,6 +2795,109 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   EXPECT_TRUE(shutdown_finished.load());
   EXPECT_FALSE(rc::commit_admission_reopening_for_test());
   EXPECT_FALSE(rc::commit_admission_open_for_test());
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       RecoveryGtidCompletionRequiresExactThdAndTransactionAuthority) {
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  THD *const thd = initializer.thd();
+  const auto saved_mode = global_gtid_mode.get();
+  const bool saved_binlog = opt_bin_log;
+  const bool saved_replica_updates = opt_log_replica_updates;
+  auto cleanup = create_scope_guard([&] {
+    rc::discard_recovery_commit_authorization(thd);
+    if (!thd->owned_gtid_is_empty()) gtid_state->update_on_rollback(thd);
+    thd->system_thread = NON_SYSTEM_THREAD;
+    thd->slave_thread = false;
+    global_gtid_mode.set(saved_mode);
+    opt_bin_log = saved_binlog;
+    opt_log_replica_updates = saved_replica_updates;
+    initializer.TearDown();
+  });
+  global_gtid_mode.set(Gtid_mode::ON);
+  opt_bin_log = true;
+  opt_log_replica_updates = true;
+  thd->system_thread = SYSTEM_THREAD_SLAVE_SQL;
+  thd->slave_thread = true;
+  thd->variables.sql_log_bin = false;
+  thd->variables.option_bits &= ~OPTION_BIN_LOG;
+
+  const char *canonical_gtid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:701";
+  Gtid gtid{};
+  global_tsid_lock->wrlock();
+  const auto parsed = gtid.parse(global_tsid_map, canonical_gtid);
+  const auto grown = gtid_state->ensure_sidno();
+  global_tsid_lock->unlock();
+  ASSERT_EQ(mysql::utils::Return_status::ok, parsed);
+  ASSERT_EQ(RETURN_STATUS_OK, grown);
+  global_tsid_lock->rdlock();
+  gtid_state->lock_sidno(gtid.sidno);
+  const auto acquired = gtid_state->acquire_ownership(thd, gtid);
+  gtid_state->unlock_sidno(gtid.sidno);
+  global_tsid_lock->unlock();
+  ASSERT_EQ(RETURN_STATUS_OK, acquired);
+  thd->variables.gtid_next.set(gtid);
+
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  std::string error;
+  std::string head_sha;
+  rc::GtidSetDigest digest;
+  ASSERT_TRUE(rc::sha256_hex(head_body, &head_sha, &error));
+  ASSERT_TRUE(rc::gtid_digest(canonical_gtid, &digest, &error));
+  rc::CommitBinding binding{stream.stream_id, head.generation, head_sha,
+                            cursor.file, cursor.pos, digest.sha256,
+                            std::string(64, 'f')};
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
+  ASSERT_FALSE(rc::install_recovery_commit_authorization(thd, binding, &error))
+      << error;
+  EXPECT_TRUE(rc::may_complete_recovery_gtid(thd));
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(nullptr));
+  THD other(false);
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(&other));
+  thd->system_thread = SYSTEM_THREAD_BACKGROUND;
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
+  thd->system_thread = SYSTEM_THREAD_SLAVE_SQL;
+  thd->slave_thread = false;
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
+  thd->slave_thread = true;
+  thd->variables.sql_log_bin = true;
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
+  thd->variables.sql_log_bin = false;
+  thd->variables.option_bits |= OPTION_BIN_LOG;
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
+  thd->variables.option_bits &= ~OPTION_BIN_LOG;
+  thd->variables.gtid_next.gtid.gno++;
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
+  thd->variables.gtid_next.gtid.gno--;
+  rc::discard_recovery_commit_authorization(thd);
+  binding.gtid_sha256 = std::string(64, 'e');
+  ASSERT_FALSE(rc::install_recovery_commit_authorization(thd, binding, &error));
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
+  rc::discard_recovery_commit_authorization(thd);
+  binding.gtid_sha256 = digest.sha256;
+  ASSERT_FALSE(rc::install_recovery_commit_authorization(thd, binding, &error));
+  rc::reset_commit_admission_for_test(true);
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
+  rc::reset_commit_admission_for_test(false);
+  EXPECT_TRUE(rc::may_complete_recovery_gtid(thd));
+
+  // GTID completion must leave the engine guard's one-time token intact.
+  rc::consume_commit_authorization(thd, true, true, true);
+  EXPECT_TRUE(rc::may_complete_recovery_gtid(thd));
+  ASSERT_EQ(0, mysql_bin_log.gtid_end_transaction(thd));
+  EXPECT_TRUE(thd->owned_gtid_is_empty());
+  EXPECT_FALSE(thd->get_transaction()->is_active(Transaction_ctx::STMT));
+  EXPECT_FALSE(thd->get_transaction()->is_active(Transaction_ctx::SESSION));
+  EXPECT_EQ(nullptr, thd->open_tables);
+  global_tsid_lock->wrlock();
+  const bool executed = gtid_state->get_executed_gtids()->contains_gtid(gtid);
+  global_tsid_lock->unlock();
+  EXPECT_TRUE(executed);
+  EXPECT_FALSE(rc::finish_recovery_commit_authorization(thd, true, &error))
+      << error;
+  EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,

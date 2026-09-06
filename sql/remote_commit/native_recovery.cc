@@ -403,6 +403,7 @@ class MysqlNativeRecoveryExecutor final : public NativeRecoveryExecutor {
 
   bool start_session(std::string *error) override {
     if (started_) return fail(error, "native recovery THD was started twice");
+    saved_thd_ = current_thd;
     auto_thd_ = std::make_unique<Auto_THD>();
     THD *thd = auto_thd_->thd;
     if (thd == nullptr) return fail(error, "Auto_THD creation returned null");
@@ -768,10 +769,22 @@ class MysqlNativeRecoveryExecutor final : public NativeRecoveryExecutor {
       thd->system_thread = SYSTEM_THREAD_BACKGROUND;
     }
     auto_thd_.reset();
+    // Auto_THD clears thread locals; it does not restore an enclosing THD.
+    if (saved_thd_ != nullptr) saved_thd_->store_globals();
+#ifdef HAVE_PSI_THREAD_INTERFACE
+    if (PSI_thread *psi = PSI_THREAD_CALL(get_thread)(); psi != nullptr) {
+      PSI_THREAD_CALL(set_thread_THD)(psi, saved_thd_);
+      PSI_THREAD_CALL(set_thread_id)(psi,
+                                    saved_thd_ == nullptr ? 0
+                                                          : saved_thd_->thread_id());
+    }
+#endif
+    saved_thd_ = nullptr;
   }
 
   std::unordered_map<std::string, fs::path> files_;
   uint32_t max_event_bytes_{0};
+  THD *saved_thd_{nullptr};
   std::unique_ptr<Auto_THD> auto_thd_;
   std::unique_ptr<Relay_log_info> rli_;
   std::unique_ptr<Rpl_filter> filter_;

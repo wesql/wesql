@@ -3165,6 +3165,39 @@ void discard_recovery_commit_authorization(THD *thd) {
     g_runtime.authorizations.erase(found);
 }
 
+bool may_complete_recovery_gtid(const THD *thd) {
+  if (!enabled() || thd == nullptr || thd != current_thd ||
+      !thd->slave_thread || thd->system_thread != SYSTEM_THREAD_SLAVE_SQL ||
+      thd->variables.sql_log_bin ||
+      (thd->variables.option_bits & OPTION_BIN_LOG) != 0 ||
+      thd->owned_gtid.sidno <= 0 ||
+      thd->variables.gtid_next.type != ASSIGNED_GTID ||
+      !thd->variables.gtid_next.gtid.equals(thd->owned_gtid) ||
+      thd->is_error())
+    return false;
+
+  std::array<char, Gtid::MAX_TEXT_LENGTH + 1> text{};
+  const int length = thd->owned_gtid.to_string(thd->owned_tsid, text.data());
+  GtidSetDigest digest;
+  std::string error;
+  if (length <= 0 || static_cast<size_t>(length) >= text.size() ||
+      !gtid_digest(std::string_view(text.data(), length), &digest, &error))
+    return false;
+
+  std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
+  std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
+  if (terminal_snapshot_failure_locked() || g_runtime.shutdown_draining ||
+      g_runtime.shutting_down || g_runtime.admission_open ||
+      !g_runtime.admissions.empty() ||
+      g_runtime.clone_cut_phase != CloneCutBarrierPhase::NONE)
+    return false;
+  const auto found = g_runtime.authorizations.find(const_cast<THD *>(thd));
+  return found != g_runtime.authorizations.end() && found->second.required &&
+         found->second.authorization.kind() == AuthorizationKind::RECOVERY &&
+         found->second.binding.gtid_sha256 == digest.sha256 &&
+         recovery_runtime_matches_binding_locked(found->second.binding, &error);
+}
+
 bool begin_commit_admission(THD *thd, bool potentially_durable) {
   if (!enabled() || !potentially_durable) return false;
   if (thd == nullptr) fail_stop("null THD at remote commit admission");

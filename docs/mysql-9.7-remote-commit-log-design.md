@@ -1304,7 +1304,12 @@ parent；崩溃后 target 只能是 absent 或完整新 root。
    authorization 逐事务绑定 manifest GTID/XID。串行 RLI 也必须先初始化
    `Mts_submode_logical_clock`，因为 Query event 的临时表 attach/detach 会调用它；
    不创建并行 worker。submode 归非 fake RLI 所有，清理时先销毁 RLI，再将 THD
-   还原为 BACKGROUND 并销毁 Auto_THD。temp replay 失败或进程崩溃就丢弃
+   还原为 BACKGROUND 并销毁 Auto_THD，随后恢复调用方 THD 及线程观测关联。
+   DDL 的 GTID 收尾仅在当前恢复 THD、
+   禁写 binlog 的会话标志、owned GTID 与逐事务授权 digest、候选 HEAD 和
+   CLOSED/RECOVERING 状态全部匹配时更新内存；不生成额外的空 binlog 事务，
+   也不补写派生 GTID 表。此路径不签发或消费 engine commit 授权，原有提交守卫
+   和回放结束时的单次消费核对仍然必需。temp replay 失败或进程崩溃就丢弃
    temp root 并从 snapshot 重来，不在旧/半成品 root 上补 decision；
 6. replay 后再次要求两类 prepared set 为空，并验证 recovered file:pos、server UUID、
    canonical GTID set+digest、DD、users/grants、空 replication repository 和 SmartEngine

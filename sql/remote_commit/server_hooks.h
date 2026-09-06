@@ -389,6 +389,11 @@ bool finish_recovery_commit_authorization(THD *thd,
                                           std::string *error);
 void discard_recovery_commit_authorization(THD *thd);
 
+// Native replay already owns durable binlog bytes. Only its exact authorized
+// THD/GTID may complete in memory without logging another empty transaction.
+// This does not grant or consume engine commit authorization.
+bool may_complete_recovery_gtid(const THD *thd);
+
 // Snapshot admission uses the same state transition for every potentially
 // durable transaction. begin returns true with no admission when graceful
 // shutdown has closed the gate, so the caller can roll back normally. An
