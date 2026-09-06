@@ -105,8 +105,20 @@ bool enforce_sql_command_admission(THD *thd) {
 
   const enum_sql_command command = thd->lex->sql_command;
   const SqlCommandClass command_class = classify_sql_command(command);
-  if (thd->lex->no_write_to_binlog)
-    return reject(thd, "NO_WRITE_TO_BINLOG is not remote replayable");
+  // The parser initializes this field only for these statement families.
+  // Other commands can retain an earlier value or leave it uninitialized.
+  switch (command) {
+    case SQLCOM_ALTER_TABLE:
+    case SQLCOM_ANALYZE:
+    case SQLCOM_REPAIR:
+    case SQLCOM_OPTIMIZE:
+    case SQLCOM_FLUSH:
+      if (thd->lex->no_write_to_binlog)
+        return reject(thd, "NO_WRITE_TO_BINLOG is not remote replayable");
+      break;
+    default:
+      break;
+  }
   if (reject_external_table_storage(thd, command)) return true;
   if (command == SQLCOM_SET_OPTION) return enforce_set_subtypes(thd);
   if (command == SQLCOM_RESET) return reject_reset_subtype(thd);

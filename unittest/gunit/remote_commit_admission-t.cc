@@ -534,6 +534,7 @@ class RemoteCommitAdmissionTest : public ::testing::Test {
                                    partition_info *part_info = nullptr) {
     LEX *const lex = thd()->lex;
     lex->sql_command = command;
+    lex->no_write_to_binlog = false;
     lex->create_info = create_info;
     lex->part_info = part_info;
 
@@ -552,6 +553,7 @@ class RemoteCommitAdmissionTest : public ::testing::Test {
                                   partition_info *part_info = nullptr) {
     LEX *const lex = thd()->lex;
     lex->sql_command = command;
+    lex->no_write_to_binlog = false;
     lex->create_info = create_info;
     lex->part_info = part_info;
 
@@ -568,6 +570,68 @@ class RemoteCommitAdmissionTest : public ::testing::Test {
   bool m_saved_remote_commit{false};
   TC_LOG *m_saved_tc_log{nullptr};
 };
+
+TEST_F(RemoteCommitAdmissionTest, ParsedCommandsIgnoreUnrelatedBinlogFlag) {
+  const char *queries[] = {
+      "SELECT @@GLOBAL.gtid_executed",
+      "SELECT COUNT(*) FROM mysql.gtid_executed",
+      "XA RECOVER",
+      "SHOW BINARY LOG STATUS",
+      "SHOW BINARY LOGS",
+      "SET @task34_probe=1",
+      "CREATE DATABASE task34_probe",
+      "CREATE TABLE task34_probe.t (id INT PRIMARY KEY)",
+      "INSERT INTO task34_probe.t VALUES (1)",
+      "UPDATE task34_probe.t SET id=2 WHERE id=1",
+      "DELETE FROM task34_probe.t WHERE id=2"};
+  thd()->lex->no_write_to_binlog = true;
+  for (const char *query : queries) {
+    SCOPED_TRACE(query);
+    std::string sql(query);
+    Parser_state parser;
+    ASSERT_FALSE(parser.init(thd(), sql.data(), sql.size()));
+    ASSERT_FALSE(lex_start(thd()));
+    mysql_reset_thd_for_next_command(thd());
+    auto cleanup = create_scope_guard([&] { lex_end(thd()->lex); });
+    ASSERT_FALSE(parse_sql(thd(), &parser, nullptr));
+    ASSERT_TRUE(thd()->lex->no_write_to_binlog);
+    EXPECT_FALSE(wesql::remote_commit::enforce_sql_command_admission(thd()));
+    EXPECT_FALSE(thd()->is_error());
+  }
+}
+
+TEST_F(RemoteCommitAdmissionTest, ParsedBinlogSuppressionRemainsRejected) {
+  const std::pair<const char *, bool> queries[] = {
+      {"ANALYZE NO_WRITE_TO_BINLOG TABLE task34_probe.t", true},
+      {"SELECT @@GLOBAL.gtid_executed", false},
+      {"ANALYZE LOCAL TABLE task34_probe.t", true},
+      {"ANALYZE TABLE task34_probe.t", false},
+      {"ALTER TABLE task34_probe.t REBUILD PARTITION NO_WRITE_TO_BINLOG ALL", true},
+      {"SELECT COUNT(*) FROM mysql.gtid_executed", false},
+      {"ALTER TABLE task34_probe.t REBUILD PARTITION LOCAL ALL", true},
+      {"ALTER TABLE task34_probe.t REBUILD PARTITION ALL", false},
+      {"ALTER TABLE task34_probe.t ADD COLUMN v INT", false},
+      {"FLUSH NO_WRITE_TO_BINLOG TABLES", true},
+      {"XA RECOVER", false},
+      {"REPAIR LOCAL TABLE task34_probe.t", true},
+      {"SHOW BINARY LOG STATUS", false},
+      {"OPTIMIZE NO_WRITE_TO_BINLOG TABLE task34_probe.t", true},
+      {"SHOW BINARY LOGS", false}};
+  for (const auto &[query, rejected] : queries) {
+    SCOPED_TRACE(query);
+    std::string sql(query);
+    Parser_state parser;
+    ASSERT_FALSE(parser.init(thd(), sql.data(), sql.size()));
+    ASSERT_FALSE(lex_start(thd()));
+    mysql_reset_thd_for_next_command(thd());
+    auto cleanup = create_scope_guard([&] { lex_end(thd()->lex); });
+    ASSERT_FALSE(parse_sql(thd(), &parser, nullptr));
+    Server_initializer::set_expected_error(rejected ? ER_NOT_SUPPORTED_YET : 0);
+    auto restore = create_scope_guard([] { Server_initializer::set_expected_error(0); });
+    EXPECT_EQ(rejected, wesql::remote_commit::enforce_sql_command_admission(thd()));
+    EXPECT_FALSE(thd()->is_error());
+  }
+}
 
 TEST_F(RemoteCommitAdmissionTest, StartsBeforeTwoPhasePrepare) {
   Fake_handlerton first;
