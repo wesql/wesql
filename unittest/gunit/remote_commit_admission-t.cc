@@ -2937,16 +2937,19 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   const auto seeded = executed->add_gtid_text(
       (marker.server_uuid + ":1-5").c_str());
   Gtid_set baseline(global_tsid_map, global_tsid_lock);
+  Gtid_set preloaded(global_tsid_map, global_tsid_lock);
   const auto parsed = baseline.add_gtid_text(
       manifest.gtid_executed.canonical.c_str());
+  const auto copied = preloaded.add_gtid_set(executed);
   global_tsid_lock->unlock();
   ASSERT_EQ(RETURN_STATUS_OK, seeded);
   ASSERT_EQ(RETURN_STATUS_OK, parsed);
+  ASSERT_EQ(RETURN_STATUS_OK, copied);
   const auto check_baseline = [&](bool expected) {
     global_tsid_lock->wrlock();
-    const bool equal = executed->equals(&baseline);
+    const bool equal = executed->equals(expected ? &baseline : &preloaded);
     global_tsid_lock->unlock();
-    EXPECT_EQ(expected, equal);
+    EXPECT_TRUE(equal);
   };
 
   initialize(true);
@@ -2969,6 +2972,59 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
                               &wrong.snapshot.gtid_executed, &error));
   EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(wrong, &error));
   check_baseline(false);
+
+  {
+    THD owner(false);
+    owner.set_new_thread_id();
+    Gtid owned{};
+    global_tsid_lock->wrlock();
+    const auto parsed_owned = owned.parse(
+        global_tsid_map, (marker.server_uuid + ":99").c_str());
+    const auto grown = gtid_state->ensure_sidno();
+    global_tsid_lock->unlock();
+    ASSERT_EQ(mysql::utils::Return_status::ok, parsed_owned);
+    ASSERT_EQ(RETURN_STATUS_OK, grown);
+    global_tsid_lock->rdlock();
+    gtid_state->lock_sidno(owned.sidno);
+    const auto acquired = gtid_state->acquire_ownership(&owner, owned);
+    gtid_state->unlock_sidno(owned.sidno);
+    global_tsid_lock->unlock();
+    auto release_owner = create_scope_guard([&] {
+      if (!owner.owned_gtid_is_empty()) gtid_state->update_on_rollback(&owner);
+    });
+    ASSERT_EQ(RETURN_STATUS_OK, acquired);
+    EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+    check_baseline(false);
+  }
+  {
+    const auto saved_mode = global_gtid_mode.get();
+    global_gtid_mode.set(Gtid_mode::OFF);
+    global_tsid_lock->wrlock();
+    gtid_state->acquire_anonymous_ownership();
+    global_tsid_lock->unlock();
+    auto release_anonymous = create_scope_guard([&] {
+      global_tsid_lock->wrlock();
+      gtid_state->release_anonymous_ownership();
+      global_tsid_lock->unlock();
+      global_gtid_mode.set(saved_mode);
+    });
+    EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+    check_baseline(false);
+  }
+  {
+    std::string head_sha;
+    ASSERT_TRUE(rc::sha256_hex(head_body, &head_sha, &error));
+    rc::CommitBinding binding{stream.stream_id, head.generation, head_sha,
+        cursor.file, cursor.pos, manifest.gtid_executed.sha256,
+        std::string(64, 'f')};
+    auto release_authorization = create_scope_guard([&] {
+      rc::discard_recovery_commit_authorization(thd);
+    });
+    ASSERT_FALSE(rc::install_recovery_commit_authorization(thd, binding, &error))
+        << error;
+    EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+    check_baseline(false);
+  }
   ASSERT_TRUE(rc::restore_recovery_snapshot_gtids(candidate, &error)) << error;
   check_baseline(true);
   EXPECT_EQ(nullptr, thd->open_tables);
@@ -2981,6 +3037,9 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
       (marker.server_uuid + ":5").c_str());
   global_tsid_lock->unlock();
   ASSERT_EQ(RETURN_STATUS_OK, replayed);
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+  check_baseline(false);
+  rc::shutdown();
   EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
   check_baseline(false);
   rc::reset_startup_lifecycle_for_test();
