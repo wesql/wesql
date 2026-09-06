@@ -2426,6 +2426,12 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   EXPECT_FALSE(allowed(true));
   rc::reset_commit_admission_for_test(false);
   EXPECT_TRUE(allowed(true));
+  // The admission-only reset replaces the published recovery window.
+  // Rebuild the authenticated lifecycle before exercising a real reopen.
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  ASSERT_FALSE(rc::activate_installed_root(activation));
   ASSERT_FALSE(rc::verify_installed_root_post_engine(full_proof));
   EXPECT_FALSE(allowed(true));
   EXPECT_FALSE(rc::commit_admission_open_for_test());
