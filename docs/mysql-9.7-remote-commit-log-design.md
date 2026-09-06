@@ -1313,8 +1313,16 @@ parent；崩溃后 target 只能是 absent 或完整新 root。
    解歧义后用 candidate ETag CAS HEAD。读回 HEAD/epoch 必须精确等于 intended SNAPSHOT/
    本 writer；该 CAS 同时完成 takeover 和 recovery-window rebase；
 9. 将新 HEAD 和 snapshot 写入 temp marker，按 7.3 分类 target 并完成 atomic install。
-   install 后最后一次 GET HEAD/epoch，复核 marker、file:pos、UUID、GTID、DD、repository、
-   extent live set 和两类 prepared set，全部一致才进入 RUNNING。
+   install 后，协调器再次 GET HEAD/epoch，复核 marker、file:pos、UUID、GTID、DD、
+   repository、extent live set 和两类 prepared set。协调器返回 READY_FOR_ADMISSION
+   只表示这一层验证完成；适配器须重新核对配置的根身份，把完整证据和精确
+   HEAD body/ETag、cursor、GTID/digest 交给 Server 的
+   `verify_installed_root_post_engine()`。该入口重查已采用的 HEAD/epoch 与原生
+   预恢复状态，成功后才转为 ROOT_VERIFIED，此时普通写入仍关闭。随后清理启动
+   控制目录，启动运行期快照服务并确认就绪，最后调用 `open_commit_admission()`
+   进入 RUNNING 并允许网络初始化。顺序必须为“协调器验证 → Server ROOT_VERIFIED
+   → 服务就绪 → 开放准入”；任一验证失败都在启动服务和开放准入之前返回，服务
+   初始化失败也不得开放准入。
 
 任何对象缺失、hash 错、gap/overlap、截断事务、未知版本、错误 epoch 或非法路径都
 fail closed。恢复期间 HEAD 变化只允许按第 7 步在仍持有 epoch 时丢弃全部临时结果并
