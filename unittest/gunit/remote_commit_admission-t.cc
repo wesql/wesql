@@ -141,7 +141,8 @@ TEST(RemoteCommitStartupBinlog, ExistingCursorAppendsWithoutOverwritingPrefix) {
   original.append(154, '\0');
   original.back() = 'x';
   write_test_file(path, original);
-  write_test_file(index, path.string() + "\n");
+  const auto original_index = path.string() + "\n";
+  write_test_file(index, original_index);
 
   const bool saved_remote = opt_binlog_archive_remote_commit;
   opt_binlog_archive_remote_commit = true;
@@ -174,6 +175,7 @@ TEST(RemoteCommitStartupBinlog, ExistingCursorAppendsWithoutOverwritingPrefix) {
   EXPECT_EQ(original.size(), fs::file_size(path));
   original[BIN_LOG_HEADER_SIZE + FLAGS_OFFSET] = LOG_EVENT_BINLOG_IN_USE_F;
   EXPECT_EQ(original, read_test_file(path));
+  EXPECT_EQ(original_index, read_test_file(index));
   Format_description_log_event event;
   ASSERT_FALSE(binlog.write_event_to_binlog_and_sync(&event));
   ASSERT_EQ(0, binlog.get_current_log(&position, false));
@@ -182,6 +184,7 @@ TEST(RemoteCommitStartupBinlog, ExistingCursorAppendsWithoutOverwritingPrefix) {
   EXPECT_EQ(original, appended.substr(0, original.size()));
   EXPECT_EQ(appended.size(), position.pos);
   EXPECT_EQ(appended.size(), binlog.get_binlog_end_pos());
+  EXPECT_EQ(original_index, read_test_file(index));
 }
 
 TEST(RemoteCommitSegmentSealer, ConcurrentAppendKeepsExactValidatedRange) {
