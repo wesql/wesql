@@ -12,6 +12,7 @@
 #include <string_view>
 
 #include "sql/remote_commit/local_install.h"
+#include "sql/remote_commit/fault_injection.h"
 #include "sql/remote_commit/publisher.h"
 #include "sql/remote_commit/protocol_codec.h"
 

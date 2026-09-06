@@ -1,6 +1,7 @@
 /* Copyright (c) 2026, ApeCloud Inc Holding Limited. */
 
 #include "sql/remote_commit/publisher.h"
+#include "sql/remote_commit/fault_injection.h"
 
 #include <algorithm>
 #include <limits>
@@ -618,6 +619,8 @@ PublishResult HeadPublisher::publish(const TransitionManifest &manifest,
                         current_head.detail);
   }
 
+  if (manifest.kind == ManifestKind::LOG_TRANSITION)
+    production_fault_point("remote_commit_pause_after_read_head_before_cas");
   auto head_write =
       state_.head_object.has_value()
           ? store_.compare_and_swap(stream_.remote_prefix + "/HEAD", head_body,

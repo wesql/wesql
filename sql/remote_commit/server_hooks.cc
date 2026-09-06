@@ -2865,9 +2865,13 @@ OrderToken *decide_group(MYSQL_BIN_LOG *binlog, THD *final_queue) {
     first_sequence = *prior_state.head->segment_tip.sequence + 1;
   }
   SealedSegments sealed;
+  production_fault_point("remote_commit_crash_before_segment_put");
+  production_fault_point("remote_commit_writer_fencing");
   PublishResult seal = g_runtime.sealer->seal(
       writer, first_sequence, prior_state.head->segment_tip, ranges, &sealed);
   if (!seal.applied()) fatal_publish("native segment seal", seal);
+  production_fault_point(
+      "remote_commit_crash_after_segment_put_before_head_cas");
 
   const HeadParent parent = exact_parent(*g_runtime.publisher);
   TransitionManifest manifest;
@@ -2920,6 +2924,7 @@ OrderToken *decide_group(MYSQL_BIN_LOG *binlog, THD *final_queue) {
 
   PublishResult publish = g_runtime.publisher->publish(manifest, intended);
   if (!publish.applied()) fatal_publish("LOG manifest/HEAD publication", publish);
+  production_fault_point("remote_commit_pause_after_head_before_visibility");
 
   bool post_publish_visibility_exact = false;
   {

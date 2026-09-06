@@ -150,7 +150,7 @@ index 86a1e2b8da0b493e9f8d2b880a153ec3067c08ab..15c358f69daf7ce81d9e65cbdb1297a2
 @@ -520,6 +520,38 @@ PROJECT(${MYSQL_PROJECT_NAME}
    VERSION ${MAJOR_VERSION}.${MINOR_VERSION}.${PATCH_VERSION})
  SET(CMAKE_CXX_STANDARD 23)
- 
+
 +OPTION(WITH_WESQL "Build WeSQL extensions" ON)
 +OPTION(WITH_WESQL_TEST "Enable WeSQL-only test hooks" OFF)
 +IF(WITH_WESQL)
@@ -187,7 +187,7 @@ index 86a1e2b8da0b493e9f8d2b880a153ec3067c08ab..15c358f69daf7ce81d9e65cbdb1297a2
  # Some have it ON, other OFF, by default.
  # https://cmake.org/cmake/help/latest/variable/BUILD_SHARED_LIBS.html:
 @@ -788,6 +820,10 @@ INCLUDE(CMakePushCheckState)
- 
+
  # Add macros
  INCLUDE(add_custom_target)
 +IF(WITH_WESQL OR WITH_SMARTENGINE)
@@ -207,7 +207,7 @@ index 86a1e2b8da0b493e9f8d2b880a153ec3067c08ab..15c358f69daf7ce81d9e65cbdb1297a2
 +ENDIF()
  # Add RapidJSON library.
  MYSQL_CHECK_RAPIDJSON()
- 
+
 @@ -2923,4 +2963,3 @@ IF(HAVE_WITH_NDBCLUSTER)
    SET(WITH_NDBCLUSTER ${WITH_NDB} CACHE BOOL
      "Deprecated legacy option for MySQL Cluster")
@@ -229,14 +229,14 @@ index 2fab7898cbd5dd57caf8bd9e9bbed50d5364b77a..53a6986eaac829043a69e5a1ea67a072
 @@ -63,12 +63,17 @@ MACRO(GET_MYSQL_VERSION)
      MESSAGE(FATAL_ERROR "MYSQL_VERSION file cannot be parsed.")
    ENDIF()
- 
+
 +  MYSQL_GET_CONFIG_VALUE("WESQL_VERSION" WESQL_VERSION)
    MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_MATURITY" MYSQL_VERSION_MATURITY)
- 
+
    IF(NOT DEFINED MYSQL_VERSION_MATURITY)
      MESSAGE(FATAL_ERROR "MYSQL_VERSION file cannot be parsed, missing version attributes.")
    ENDIF()
- 
+
 +  IF(NOT DEFINED WESQL_VERSION OR WESQL_VERSION STREQUAL "")
 +    MESSAGE(FATAL_ERROR "MYSQL_VERSION file cannot be parsed, missing WESQL_VERSION.")
 +  ENDIF()
@@ -268,7 +268,7 @@ index 1db5512acc9db9a01c0abe085d99561d09947f26..90cdbc86f97df1ecb45e905acd551502
 +#else
  #define HA_ERR_LAST 209
 +#endif
- 
+
  /* Number of different errors */
  #define HA_ERR_ERRORS (HA_ERR_LAST - HA_ERR_FIRST + 1)
 diff --git a/include/mysql/plugin_clone.h b/include/mysql/plugin_clone.h
@@ -278,15 +278,15 @@ index f0d2dfc7c36986e7b458492d60d7372093b7d0c6..0a5c876003ea2762402f32e22642b4ba
 @@ -29,12 +29,32 @@ API for clone plugin
  #ifndef MYSQL_PLUGIN_CLONE_INCLUDED
  #define MYSQL_PLUGIN_CLONE_INCLUDED
- 
+
 +#include <stdint.h>
 +
  #include "plugin.h"
  #include "violite.h"
- 
+
  /** Clone plugin interface version */
  #define MYSQL_CLONE_INTERFACE_VERSION 0x0100
- 
+
 +#ifdef WESQL
 +/**
 +  Synchronous callbacks for one runtime snapshot request using a local clone.
@@ -311,7 +311,7 @@ index f0d2dfc7c36986e7b458492d60d7372093b7d0c6..0a5c876003ea2762402f32e22642b4ba
 @@ -50,6 +70,13 @@ struct Mysql_clone {
    @return error code, 0 on success */
    int (*clone_local)(THD *thd, const char *data_dir);
- 
+
 +#ifdef WESQL
 +  /** Local clone with one synchronous post-copy/pre-end observer. */
 +  int (*clone_local_with_observer)(
@@ -329,14 +329,14 @@ index 9f1641e69ba1d2c37791b243c0f7d5c501cea0aa..911719bf6adbe454c5c7fbcc126b51fa
 @@ -159,6 +159,11 @@ static constexpr uint32_t
  static constexpr uint32_t
         MY_STRXFRM_PAD_TO_MAXLEN = 0x00000080; /* if pad tail(for filesort) */
- 
+
 +#ifdef WITH_SMARTENGINE
 +/* For smartengine packing, do not pad with spaces; keep 8.0.35 no-pad contract. */
 +static constexpr uint32_t MY_STRXFRM_NOPAD_WITH_SPACE = 0x10000000;
 +#endif
 +
  /* clang-format on */
- 
+
  struct MY_UNI_IDX {
 diff --git a/include/mysql_version.h.in b/include/mysql_version.h.in
 index 1170d840c2d59808850a0f710db16c9c2b90b3cc..ac66fcd07e029706eee7f46503277592a85c0dc8 100644
@@ -345,7 +345,7 @@ index 1170d840c2d59808850a0f710db16c9c2b90b3cc..ac66fcd07e029706eee7f46503277592
 @@ -25,6 +25,8 @@
  #define LIBMYSQL_VERSION           "@VERSION@"
  #define LIBMYSQL_VERSION_ID         @MYSQL_VERSION_ID@
- 
+
 +#define WESQL_VERSION              "@WESQL_VERSION@"
 +
  #ifndef LICENSE
@@ -356,9 +356,9 @@ index 37d70b474100986ec224331ffef219fb838c5cdb..b81dfc8fb24ed9d5e046e2a56aad29a5
 --- a/mysys/CMakeLists.txt
 +++ b/mysys/CMakeLists.txt
 @@ -27,6 +27,55 @@ SET(MY_TIME_SOURCES my_time.cc my_systime.cc my_temporal.cc)
- 
+
  ADD_CONVENIENCE_LIBRARY(mytime ${MY_TIME_SOURCES})
- 
+
 +SET(MYSYS_WESQL_LIBRARIES)
 +IF(WITH_WESQL OR WITH_SMARTENGINE)
 +  SET(MY_OBJSTORE_SOURCES
@@ -434,16 +434,16 @@ index a95c87746fb0112a4e6e45c6886d1ecff26a8549..10e9a44fad73ca019d30ce4d1872c4b3
 +    "Unexpected nullptr in SmartEngine handler"
 +#endif
 +};
- 
+
  // clang-format on
- 
+
 diff --git a/mysys/print_version.cc b/mysys/print_version.cc
 index 6108ab487cfc7d1fd1273870ef7f4f7bb12f7351..0482781d4c83fde41358ad4503adb770ae2b01fa 100644
 --- a/mysys/print_version.cc
 +++ b/mysys/print_version.cc
 @@ -66,8 +66,14 @@ void print_version_debug() {
  }
- 
+
  void print_explicit_version(const char *version) {
 +#ifdef WESQL
 +  printf("%s  Ver %s for %s on %s (%s) WeSQL %s\n", my_progname, version,
@@ -454,7 +454,7 @@ index 6108ab487cfc7d1fd1273870ef7f4f7bb12f7351..0482781d4c83fde41358ad4503adb770
           MACHINE_TYPE, MYSQL_COMPILATION_COMMENT_SERVER);
 +#endif
  }
- 
+
  void build_version(const std::string &progname, std::string *destination) {
 diff --git a/plugin/clone/include/clone_local.h b/plugin/clone/include/clone_local.h
 index 935245e2ff4214543756a38000dc9a8d0c8837c1..7f9bd08cb052948ea8e06f76b9e6a863abaae65d 100644
@@ -468,7 +468,7 @@ index 935245e2ff4214543756a38000dc9a8d0c8837c1..7f9bd08cb052948ea8e06f76b9e6a863
 +#include "mysql/plugin_clone.h"
 +#include "mysqld_error.h"
 +#endif
- 
+
  /* Namespace for all clone data types */
  namespace myclone {
 +#ifdef WESQL
@@ -532,11 +532,11 @@ index 935245e2ff4214543756a38000dc9a8d0c8837c1..7f9bd08cb052948ea8e06f76b9e6a863
 +        const Mysql_clone_local_observer *observer = nullptr
 +#endif
 +  );
- 
+
    /** Get clone client for data transfer.
    @return clone client handle */
 @@ -76,6 +132,11 @@ class Local {
- 
+
    /** "Clone Client" object to apply data */
    Client m_clone_client;
 +
@@ -545,7 +545,7 @@ index 935245e2ff4214543756a38000dc9a8d0c8837c1..7f9bd08cb052948ea8e06f76b9e6a863
 +  const Mysql_clone_local_observer *m_observer;
 +#endif
  };
- 
+
  /** Clone Local interface to handle callback from Storage Engines */
 diff --git a/plugin/clone/src/clone_local.cc b/plugin/clone/src/clone_local.cc
 index 67cf5f8ff3e230ad7723a04c7fb6071fee2e24c9..a8969af8133071d86ec726011f72c83fe4df3a98 100644
@@ -554,7 +554,7 @@ index 67cf5f8ff3e230ad7723a04c7fb6071fee2e24c9..a8969af8133071d86ec726011f72c83f
 @@ -35,6 +35,20 @@ Clone Plugin: Local clone implementation
  /* Namespace for all clone data types */
  namespace myclone {
- 
+
 +#ifdef WESQL
 +namespace {
 +
@@ -574,7 +574,7 @@ index 67cf5f8ff3e230ad7723a04c7fb6071fee2e24c9..a8969af8133071d86ec726011f72c83f
  @param[in]	server	shared server handle
 @@ -57,8 +71,20 @@ static void clone_local(Client_Share *share, Server *server, uint32_t index) {
  }
- 
+
  Local::Local(THD *thd, Server *server, Client_Share *share, uint32_t index,
 -             bool is_master)
 -    : m_clone_server(server), m_clone_client(thd, share, index, is_master) {}
@@ -592,13 +592,13 @@ index 67cf5f8ff3e230ad7723a04c7fb6071fee2e24c9..a8969af8133071d86ec726011f72c83f
 +#endif
 +{
 +}
- 
+
  int Local::clone() {
    /* Begin PFS state if no concurrent clone in progress. */
 @@ -122,6 +148,23 @@ int Local::clone_exec() {
      return (error);
    }
- 
+
 +#ifdef WESQL
 +  if (is_master && m_observer != nullptr) {
 +    error = bind_local_clone_observer(thd, server_vector, m_observer);
@@ -621,7 +621,7 @@ index 67cf5f8ff3e230ad7723a04c7fb6071fee2e24c9..a8969af8133071d86ec726011f72c83f
      /* Copy Server locators to Client. */
 @@ -178,7 +221,23 @@ int Local::clone_exec() {
    m_clone_client.wait_for_workers();
- 
+
    /* End clone apply to destination. */
 +#ifdef WESQL
 +  const auto apply_end_error =
@@ -640,7 +640,7 @@ index 67cf5f8ff3e230ad7723a04c7fb6071fee2e24c9..a8969af8133071d86ec726011f72c83f
 +    }
 +  }
 +#endif
- 
+
    /* End clone copy from source. */
    hton_clone_end(thd, server_vector, server_tasks, error);
 diff --git a/plugin/clone/src/clone_plugin.cc b/plugin/clone/src/clone_plugin.cc
@@ -660,12 +660,12 @@ index 08e65c56fd07df1db9f253d6116ac8969f1cf94b..7b0f86afdb5a821c08336cb2699900c1
 +#endif
 +) {
    myclone::Client_Share client_share(nullptr, 0, nullptr, nullptr, data_dir, 0);
- 
+
    myclone::Server server(thd, MYSQL_INVALID_SOCKET);
 @@ -455,13 +461,38 @@ static int plugin_clone_local(THD *thd, const char *data_dir) {
    mysql_service_clone_protocol->mysql_clone_start_statement(
        thd, PSI_NOT_INSTRUMENTED, clone_stmt_local_key);
- 
+
 -  myclone::Local clone_inst(thd, &server, &client_share, 0, true);
 +  myclone::Local clone_inst(thd, &server, &client_share, 0, true
 +#ifdef WESQL
@@ -673,12 +673,12 @@ index 08e65c56fd07df1db9f253d6116ac8969f1cf94b..7b0f86afdb5a821c08336cb2699900c1
 +                            observer
 +#endif
 +  );
- 
+
    auto error = clone_inst.clone();
- 
+
    return (error);
  }
- 
+
 +static int plugin_clone_local(THD *thd, const char *data_dir) {
 +  return plugin_clone_local_impl(thd, data_dir
 +#ifdef WESQL
@@ -710,7 +710,7 @@ index 08e65c56fd07df1db9f253d6116ac8969f1cf94b..7b0f86afdb5a821c08336cb2699900c1
 +    plugin_clone_local_with_observer,
 +#endif
      plugin_clone_remote_client, plugin_clone_remote_server};
- 
+
  /** Size of intermediate buffer for transferring data from source
 diff --git a/share/messages_to_clients.txt b/share/messages_to_clients.txt
 index 03d40b848e71f263e95dc0089707e8c38369fa81..d29c7fac127c91a1aeaf82c934a729086e80e401 100644
@@ -719,7 +719,7 @@ index 03d40b848e71f263e95dc0089707e8c38369fa81..d29c7fac127c91a1aeaf82c934a72908
 @@ -10998,6 +10998,20 @@ ER_JDV_UNEXPECTED_INVALID_VALUE
  #  End of 9.x error messages (server-to-client).
  #
- 
+
 +################################################################################
 +#
 +# Start of WeSQL error messages. 7500 - 7999
@@ -744,7 +744,7 @@ index 8c249fb9f3682e2affbb22fcce9b3416344ccb53..ec952b6aa168e7137534b194c458917b
 @@ -13453,6 +13453,71 @@ ER_WARN_AUDIT_LOG_SYSVAR_ADJUSTED
  ER_WARN_AUDIT_LOG_SYSVAR_DISCARDED
    eng "Variable '%s' value change was discarded, to make pruning slower than rotation."
- 
+
 +################################################################################
 +# WeSQL archive, snapshot, and recovery error log messages.
 +################################################################################
@@ -820,7 +820,7 @@ index fd78ea1260cbd37a1548d700f6963e84230d7377..72bb058e6e0fc5588efdcac7ab3a4e3e
 @@ -667,6 +667,18 @@ SET(SQL_SHARED_SOURCES
    command_mapping.cc
  )
- 
+
 +IF(WITH_WESQL)
 +  LIST(APPEND SQL_SHARED_SOURCES
 +    binlog_archive_command.cc
@@ -990,7 +990,7 @@ index fd78ea1260cbd37a1548d700f6963e84230d7377..72bb058e6e0fc5588efdcac7ab3a4e3e
 +    LINK_LIBRARIES remote_commit_test_support
 +  )
 +ENDIF()
- 
+
  SET (RPL_SOURCE rpl_handler.cc rpl_tblmap.cc rpl_context.cc)
  ADD_DEPENDENCIES(binlog GenError)
 @@ -1125,10 +1284,17 @@ SET (RPL_REPLICA_SRCS
@@ -1008,11 +1008,11 @@ index fd78ea1260cbd37a1548d700f6963e84230d7377..72bb058e6e0fc5588efdcac7ab3a4e3e
 +  TARGET_LINK_LIBRARIES(rpl_replica myobjstore)
 +  TARGET_LINK_LIBRARIES(sql_main myobjstore)
 +ENDIF()
- 
+
  IF(WIN32)
    # Silence warnings about: needs to have dll-interface
 diff --git a/sql/binlog.cc b/sql/binlog.cc
-index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03cea5edd38 100644
+index b277284..64e5b31 100644
 --- a/sql/binlog.cc
 +++ b/sql/binlog.cc
 @@ -51,6 +51,8 @@
@@ -1053,9 +1053,9 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
    bool sync() { return m_pipeline_head->sync(); }
    bool flush_and_sync() { return flush() || sync(); }
 @@ -716,6 +732,39 @@ class binlog_cache_data {
- 
+
    my_off_t get_byte_position() const { return m_cache.length(); }
- 
+
 +#ifdef WESQL
 +  bool remote_admission_encoded_bytes(uint64_t *bytes) {
 +    if (bytes == nullptr) return true;
@@ -1095,7 +1095,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
 @@ -1271,6 +1320,40 @@ static binlog_cache_mngr *thd_get_cache_mngr(const THD *thd) {
    return (binlog_cache_mngr *)thd_get_ha_data(thd, binlog_hton);
  }
- 
+
 +#ifdef WESQL
 +static bool reject_remote_commit_transaction_size(binlog_cache_mngr *cache) {
 +  if (!wesql::remote_commit::enabled() || cache == nullptr) return false;
@@ -1165,7 +1165,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
            true /*need_lock_index=true*/);
      mysql_mutex_destroy(&LOCK_log);
      m_binlog_index_monitor.cleanup();
-@@ -4538,5 +4635,9 @@ bool MYSQL_BIN_LOG::init_gtid_sets(
+@@ -4538,7 +4635,11 @@ bool MYSQL_BIN_LOG::init_gtid_sets(
      last binlog file before the server restarts, so we remove
      its file name from filename_list.
    */
@@ -1176,10 +1176,12 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
 +#endif
 +  )
      filename_list.pop_back();
-@@ -5043,6 +5139,84 @@ err:
+
+   error = 0;
+@@ -5043,6 +5144,84 @@ err:
    return true;
  }
- 
+
 +#ifdef WESQL
 +bool MYSQL_BIN_LOG::open_remote_existing_binlog(
 +    const char *log_name, std::string_view expected_file,
@@ -1261,7 +1263,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
  int MYSQL_BIN_LOG::get_current_log(Log_info *linfo,
                                     bool need_lock_log /*true*/) {
    if (need_lock_log) mysql_mutex_lock(&LOCK_log);
-@@ -5333,6 +5503,9 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
+@@ -5333,6 +5512,9 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
    int no_of_threads_locking_log = 0;
    bool exit_loop = false;
    Log_info log_info;
@@ -1271,10 +1273,10 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
    THD *thd = current_thd;
    DBUG_TRACE;
    DBUG_PRINT("info", ("to_log= %s", to_log));
-@@ -5357,6 +5530,37 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
+@@ -5357,6 +5539,37 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
      goto err;
    }
- 
+
 +#ifdef WESQL
 +  if (opt_serverless && opt_binlog_archive) {
 +    Binlog_archive *binlog_archive = Binlog_archive::get_instance();
@@ -1309,8 +1311,8 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
    /*
      File name exists in index file; delete until we find this file
      or a file that is used.
-@@ -5366,6 +5570,18 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
- 
+@@ -5366,6 +5579,18 @@ int MYSQL_BIN_LOG::purge_logs(const char *to_log, bool included,
+
    while ((compare_log_name(to_log, log_info.log_file_name) ||
            (exit_loop = included))) {
 +#ifdef WESQL
@@ -1328,10 +1330,10 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
      if (is_active(log_info.log_file_name)) {
        if (!auto_purge)
          push_warning_printf(
-@@ -6896,6 +7112,31 @@ int MYSQL_BIN_LOG::open_binlog(const char *opt_name) {
+@@ -6896,6 +7121,31 @@ int MYSQL_BIN_LOG::open_binlog(const char *opt_name) {
      return 1;
    }
- 
+
 +#ifdef WESQL
 +  if (wesql::remote_commit::enabled()) {
 +    const bool installed_root =
@@ -1360,10 +1362,10 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
    if (using_heuristic_recover()) {
      /* generate a new binlog to mask a corrupted one */
      mysql_mutex_lock(&LOCK_log);
-@@ -7056,6 +7297,11 @@ int MYSQL_BIN_LOG::prepare(THD *thd, bool all) {
- 
+@@ -7056,6 +7306,11 @@ int MYSQL_BIN_LOG::prepare(THD *thd, bool all) {
+
    assert(opt_bin_log);
- 
+
 +#ifdef WESQL
 +  if (reject_remote_commit_transaction_size(thd_get_cache_mngr(thd)))
 +    return 1;
@@ -1372,10 +1374,10 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
    /*
      Set HA_IGNORE_DURABILITY to not flush the prepared record of the
      transaction to the log of storage engine (for example, InnoDB
-@@ -7133,6 +7379,13 @@ TC_LOG::enum_result MYSQL_BIN_LOG::commit(THD *thd, bool all) {
+@@ -7133,6 +7388,13 @@ TC_LOG::enum_result MYSQL_BIN_LOG::commit(THD *thd, bool all) {
                         (ulonglong)thd, YESNO(all), (ulonglong)xid,
                         (ulonglong)cache_mngr));
- 
+
 +#ifdef WESQL
 +  // Single-engine transactions do not call prepare(). Rechecking here also
 +  // catches any cache growth between a multi-engine prepare and finalization.
@@ -1385,20 +1387,20 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
 +
    Scope_guard guard_applier_wait_enabled(
        [&thd]() { thd->disable_low_level_commit_ordering(); });
- 
-@@ -7446,7 +7699,7 @@ void MYSQL_BIN_LOG::init_thd_variables(THD *thd, bool all, bool skip_commit) {
+
+@@ -7446,7 +7708,7 @@ void MYSQL_BIN_LOG::init_thd_variables(THD *thd, bool all, bool skip_commit) {
  }
- 
+
  THD *MYSQL_BIN_LOG::fetch_and_process_flush_stage_queue(
 -    const bool check_and_skip_flush_logs) {
 +    const bool check_and_skip_flush_logs, bool *engine_flush_error) {
    /*
      Fetch the entire flush queue and empty it, so that the next batch
      has a leader. We must do this before invoking ha_flush_logs(...)
-@@ -7468,15 +7721,16 @@ THD *MYSQL_BIN_LOG::fetch_and_process_flush_stage_queue(
+@@ -7468,15 +7730,26 @@ THD *MYSQL_BIN_LOG::fetch_and_process_flush_stage_queue(
    Commit_stage_manager::get_instance().unlock_queue(
        Commit_stage_manager::BINLOG_FLUSH_STAGE);
- 
+
 -  if (!check_and_skip_flush_logs ||
 -      (check_and_skip_flush_logs && commit_order_thd != nullptr)) {
 +  bool flush_failed = false;
@@ -1409,16 +1411,26 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
        flushing them to binary log.
      */
 -    ha_flush_logs(true);
++#ifdef WESQL
++    if (wesql::remote_commit::enabled())
++      wesql::remote_commit::production_fault_point(
++          "remote_commit_crash_before_engine_wal_barrier");
++#endif
 +    flush_failed = ha_flush_logs(true);
++#ifdef WESQL
++    if (wesql::remote_commit::enabled() && !flush_failed)
++      wesql::remote_commit::production_fault_point(
++          "remote_commit_crash_after_engine_wal_before_binlog");
++#endif
    }
 +  if (engine_flush_error != nullptr) *engine_flush_error = flush_failed;
- 
+
    /*
      The transactions are flushed to the disk and so threads
-@@ -7499,7 +7753,14 @@ int MYSQL_BIN_LOG::process_flush_stage_queue(my_off_t *total_bytes_var,
+@@ -7499,7 +7772,14 @@ int MYSQL_BIN_LOG::process_flush_stage_queue(my_off_t *total_bytes_var,
    int flush_error = 1;
    mysql_mutex_assert_owner(&LOCK_log);
- 
+
 -  THD *first_seen = fetch_and_process_flush_stage_queue();
 +  bool engine_flush_error = false;
 +  THD *first_seen =
@@ -1431,17 +1443,17 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
    DBUG_EXECUTE_IF("crash_after_flush_engine_log", DBUG_SUICIDE(););
    CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_write_binlog");
    assign_automatic_gtids_to_flush_group(first_seen);
-@@ -7896,6 +8157,9 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -7896,6 +8176,9 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
    DBUG_TRACE;
    int flush_error = 0, sync_error = 0;
    my_off_t total_bytes = 0;
 +#ifdef WESQL
 +  wesql::remote_commit::OrderToken *remote_order_token = nullptr;
 +#endif
- 
+
    CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_assign_session_to_bgc_ticket");
    thd->rpl_thd_ctx.binlog_group_commit_ctx().assign_ticket();
-@@ -7956,7 +8220,16 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -7956,7 +8239,16 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
    my_off_t flush_end_pos = 0;
    bool update_binlog_end_pos_after_sync;
    if (unlikely(!is_open())) {
@@ -1459,10 +1471,10 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
      leave_mutex_before_commit_stage = &LOCK_log;
      /*
        binary log is closed, flush stage and sync stage should be
-@@ -7990,7 +8263,14 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -7990,7 +8282,14 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
        flush_error = ER_ERROR_ON_WRITE;
      }
- 
+
 -    if (!update_binlog_end_pos_after_sync) update_binlog_end_pos();
 +#ifdef WESQL
 +    if (wesql::remote_commit::enabled()) {
@@ -1472,13 +1484,13 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
 +        if (!update_binlog_end_pos_after_sync) {
 +      update_binlog_end_pos();
 +    }
- 
+
      DBUG_EXECUTE_IF("crash_commit_after_log", DBUG_SUICIDE(););
    }
-@@ -8041,7 +8321,11 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -8041,7 +8340,11 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
      sync_error = result.first;
    }
- 
+
 -  if (update_binlog_end_pos_after_sync && flush_error == 0 && sync_error == 0) {
 +  if (update_binlog_end_pos_after_sync && flush_error == 0 && sync_error == 0
 +#ifdef WESQL
@@ -1488,10 +1500,10 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
      THD *tmp_thd = final_queue;
      const char *binlog_file = nullptr;
      my_off_t pos = 0;
-@@ -8060,6 +8344,23 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
- 
+@@ -8060,6 +8363,23 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+
    DEBUG_SYNC(thd, "bgc_after_sync_stage_before_commit_stage");
- 
+
 +#ifdef WESQL
 +  if (wesql::remote_commit::enabled()) {
 +    if (flush_error != 0 || sync_error != 0)
@@ -1512,7 +1524,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
    leave_mutex_before_commit_stage = &LOCK_sync;
    /*
      Stage #3: Commit all transactions in order.
-@@ -8080,10 +8381,19 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
+@@ -8080,10 +8400,19 @@ int MYSQL_BIN_LOG::ordered_commit(THD *thd, bool all, bool skip_commit) {
    */
  commit_stage:
    /* Clone needs binlog commit order. */
@@ -1533,10 +1545,10 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
        DBUG_PRINT("return", ("Thread ID: %u, commit_error: %d", thd->thread_id(),
                              thd->commit_error));
        return finish_commit(thd);
-@@ -8094,7 +8404,11 @@ commit_stage:
+@@ -8094,7 +8423,11 @@ commit_stage:
      DBUG_EXECUTE_IF("semi_sync_3-way_deadlock",
                      DEBUG_SYNC(thd, "before_process_commit_stage_queue"););
- 
+
 -    if (flush_error == 0 && sync_error == 0)
 +    if (flush_error == 0 && sync_error == 0
 +#ifdef WESQL
@@ -1544,12 +1556,19 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
 +#endif
 +    )
        sync_error = call_after_sync_hook(commit_queue);
- 
+
      /*
-@@ -8114,16 +8428,35 @@ commit_stage:
+@@ -8112,18 +8445,42 @@ commit_stage:
+       Gtid_set, and adding and removing intervals requires a mutex,
+       which would reduce performance.
      */
++#ifdef WESQL
++    if (remote_order_token != nullptr)
++      wesql::remote_commit::production_fault_point(
++          "remote_commit_crash_after_head_cas_before_engine_commit");
++#endif
      process_commit_stage_queue(thd, commit_queue);
- 
+
 +#ifdef WESQL
 +    if (remote_order_token != nullptr)
 +      wesql::remote_commit::check_engine_commits(commit_queue,
@@ -1570,7 +1589,7 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
                              thd->commit_error));
        return finish_commit(thd);
      }
- 
+
 +#ifdef WESQL
 +    // The final remote GETs must not run under LOCK_commit, and they must
 +    // complete before any transaction after_commit hook can run.
@@ -1582,14 +1601,17 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
      THD *after_commit_queue =
          Commit_stage_manager::get_instance().fetch_queue_acquire_lock(
              Commit_stage_manager::AFTER_COMMIT_STAGE);
-@@ -8150,8 +8483,19 @@ commit_stage:
+@@ -8150,8 +8507,22 @@ commit_stage:
        Binlog_group_commit_ctx::aggregate_rotate_settings(final_queue);
- 
+
    DEBUG_SYNC(thd, "before_signal_done");
 +#ifdef WESQL
 +  if (remote_order_token != nullptr)
 +    wesql::remote_commit::emit_ack_and_publish_cursor(
 +        this, final_queue, remote_order_token);
++  if (remote_order_token != nullptr)
++    wesql::remote_commit::production_fault_point(
++        "remote_commit_crash_after_engine_commit_before_reply");
 +#endif
    /* Commit done so signal all waiting threads */
    Commit_stage_manager::get_instance().signal_done(final_queue);
@@ -1613,7 +1635,7 @@ index 172339fc63f019588c079734f30c692663f056b4..4874ca76222223956a9173be33d7786a
 -      const bool check_and_skip_flush_logs = false);
 +      const bool check_and_skip_flush_logs = false,
 +      bool *engine_flush_error = nullptr);
- 
+
    /**
      Execute the flush stage.
 @@ -727,6 +728,18 @@ class MYSQL_BIN_LOG : public TC_LOG {
@@ -1641,7 +1663,7 @@ index f56b04bc3a28245bc651bc025209ec33974435f2..3d7fd0b7711b7513798b43c4cd21ad85
 +++ b/sql/clone_handler.cc
 @@ -126,13 +126,28 @@ bool Clone_handler::get_donor_error(Srv_session *session, int &error,
  }
- 
+
  int Clone_handler::clone_local(THD *thd, const char *data_dir) {
 +#ifdef WESQL
 +  return clone_local(thd, data_dir, nullptr);
@@ -1653,9 +1675,9 @@ index f56b04bc3a28245bc651bc025209ec33974435f2..3d7fd0b7711b7513798b43c4cd21ad85
 +#endif
    int error;
    char dir_name[FN_REFLEN];
- 
+
    error = validate_dir(data_dir, dir_name);
- 
+
    if (error == 0) {
 +#ifdef WESQL
 +    error = observer == nullptr
@@ -1666,7 +1688,7 @@ index f56b04bc3a28245bc651bc025209ec33974435f2..3d7fd0b7711b7513798b43c4cd21ad85
      error = m_plugin_handle->clone_local(thd, dir_name);
 +#endif
    }
- 
+
    return error;
 diff --git a/sql/clone_handler.h b/sql/clone_handler.h
 index 3ce032b4abbb6d76d43255a425811b9abf62fe37..e4d958d3099dcf9b9169b2a125db6d287b07bfbe 100644
@@ -1680,12 +1702,12 @@ index 3ce032b4abbb6d76d43255a425811b9abf62fe37..e4d958d3099dcf9b9169b2a125db6d28
 +struct Mysql_clone_local_observer;
 +#endif
  struct MYSQL_SOCKET;
- 
+
  /**
 @@ -68,6 +71,12 @@ class Clone_handler {
    @return error code */
    int clone_local(THD *thd, const char *data_dir);
- 
+
 +#ifdef WESQL
 +  /** Local clone with synchronous request bind and completion callbacks. */
 +  int clone_local(THD *thd, const char *data_dir,
@@ -1736,7 +1758,7 @@ index 7d0d55f22e9394ddb1974f203faa13d3afbbb8e5..a4bc1b4f36d51f19c0002efd10ce7694
 @@ -1841,6 +1854,17 @@ int ha_commit_trans(THD *thd, bool all, bool ignore_global_read_lock) {
        goto end;
      }
- 
+
 +#ifdef WESQL
 +    if (rw_trans) {
 +      if (wesql::remote_commit::begin_commit_admission(thd, true)) {
@@ -1754,7 +1776,7 @@ index 7d0d55f22e9394ddb1974f203faa13d3afbbb8e5..a4bc1b4f36d51f19c0002efd10ce7694
 @@ -1963,6 +1987,18 @@ int ha_commit_low(THD *thd, bool all, bool run_after_commit) {
        all ? Transaction_ctx::SESSION : Transaction_ctx::STMT;
    auto ha_list = trn_ctx->ha_trx_info(trx_scope);
- 
+
 +#ifdef WESQL
 +  const bool is_real_trans =
 +      all || !trn_ctx->is_active(Transaction_ctx::SESSION);
@@ -1773,7 +1795,7 @@ index 7d0d55f22e9394ddb1974f203faa13d3afbbb8e5..a4bc1b4f36d51f19c0002efd10ce7694
 @@ -1996,6 +2032,14 @@ int ha_commit_low(THD *thd, bool all, bool run_after_commit) {
        is_applier_wait_enabled = true;
      }
- 
+
 +#ifdef WESQL
 +    // This is the last common boundary before the first handlerton commit
 +    // callback. A durable authorization is one-shot and cannot be reused by a
@@ -1788,7 +1810,7 @@ index 7d0d55f22e9394ddb1974f203faa13d3afbbb8e5..a4bc1b4f36d51f19c0002efd10ce7694
 @@ -9002,6 +9046,22 @@ void ha_post_recover(void) {
                         MYSQL_STORAGE_ENGINE_PLUGIN, nullptr);
  }
- 
+
 +#ifdef WITH_SMARTENGINE
 +static bool post_engine_recover_handlerton(THD *, plugin_ref plugin, void *) {
 +  handlerton *hton = plugin_data<handlerton *>(plugin);
@@ -1815,7 +1837,7 @@ index a0466a847e8d95ca0acfe2c9b5e6857ce9c586c9..009629b26cc8dc8cbd3fc8857b102b8c
 @@ -215,6 +215,14 @@ enum enum_alter_inplace_result {
    HA_ALTER_INPLACE_INSTANT
  };
- 
+
 +#ifdef WITH_SMARTENGINE
 +#ifdef WITH_XENGINE_COMPATIBLE_MODE
 +#define SMARTENGINE_NAME "XENGINE"
@@ -1840,7 +1862,7 @@ index a0466a847e8d95ca0acfe2c9b5e6857ce9c586c9..009629b26cc8dc8cbd3fc8857b102b8c
 @@ -2337,6 +2348,40 @@ typedef void (*post_ddl_t)(THD *thd);
  */
  typedef void (*post_recover_t)(void);
- 
+
 +#ifdef WITH_SMARTENGINE
 +struct Smartengine_remote_extent_ref {
 +  uint64_t ordinal{0};
@@ -1879,7 +1901,7 @@ index a0466a847e8d95ca0acfe2c9b5e6857ce9c586c9..009629b26cc8dc8cbd3fc8857b102b8c
    Lock a handlerton (resource) log to collect log information.
  */
 @@ -3001,6 +3046,17 @@ struct handlerton {
- 
+
    post_ddl_t post_ddl;
    post_recover_t post_recover;
 +#ifdef WITH_SMARTENGINE
@@ -1893,24 +1915,24 @@ index a0466a847e8d95ca0acfe2c9b5e6857ce9c586c9..009629b26cc8dc8cbd3fc8857b102b8c
 +  release_backup_snapshot_t release_backup_snapshot;
 +  list_backup_snapshots_t list_backup_snapshots;
 +#endif
- 
+
    /** Clone data transfer interfaces */
    Clone_interface_t clone_interface;
 @@ -7378,6 +7434,10 @@ class handler {
      return false;
    }
- 
+
 +#ifdef WITH_SMARTENGINE
 +  virtual Handler_share **get_ha_share_ref() { return ha_share; }
 +#endif
 +
    void set_ha_table(TABLE *table_arg) { table = table_arg; }
- 
+
    int get_lock_type() const { return m_lock_type; }
 @@ -7863,6 +7923,10 @@ int ha_recover(Xid_commit_list *commit_list = nullptr,
  */
  void ha_post_recover();
- 
+
 +#ifdef WITH_SMARTENGINE
 +void ha_post_engine_recover();
 +#endif
@@ -1963,19 +1985,19 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
  #include <functional>
 +#include <limits>
  #include <new>
- 
+
  #ifndef EMBEDDED_LIBRARY
 @@ -1019,6 +1035,10 @@ using std::max;
  using std::min;
  using std::vector;
- 
+
 +#ifdef WESQL
 +extern bool auth_rsa_auto_generate_rsa_keys;
 +#endif
 +
  #define mysqld_charset &my_charset_latin1
  #define mysqld_default_locale_name "en_US"
- 
+
 @@ -1222,6 +1242,16 @@ bool opt_mandatory_roles_cache = false;
  bool opt_always_activate_granted_roles = false;
  bool opt_activate_mandatory_roles = true;
@@ -1996,7 +2018,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -1543,6 +1573,129 @@ char server_version[SERVER_VERSION_LENGTH];
  const char *mysqld_unix_port;
  char *opt_mysql_tmpdir;
- 
+
 +#ifdef WESQL
 +bool consistent_recovery_archive_recovery = false;
 +uint64_t consistent_recovery_snapshot_end_binlog_position = 0;
@@ -2121,18 +2143,18 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 +#endif
 +
  char *opt_authentication_policy;
- 
+
  /** name of reference on left expression in rewritten IN subquery */
 @@ -2431,6 +2584,10 @@ static void close_connections(void) {
- 
+
    (void)RUN_HOOK(server_state, before_server_shutdown, (nullptr));
- 
+
 +#ifdef WESQL
 +  stop_wesql_runtime();
 +#endif
 +
    Per_thread_connection_handler::kill_blocked_pthreads();
- 
+
    uint dump_thread_count = 0;
 @@ -2629,8 +2786,31 @@ static void unireg_abort(int exit_code) {
      mysqld::runtime::signal_parent(pipe_write_fd, 0);
@@ -2167,9 +2189,9 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
    mysqld_exit(exit_code);
  }
 @@ -2678,6 +2858,9 @@ static void mysqld_exit(int exit_code) {
- 
+
    log_final_messages(exit_code);
- 
+
 +#ifdef WESQL
 +  deinit_wesql_pthread_objects();
 +#endif
@@ -2179,17 +2201,17 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -2785,6 +2968,9 @@ static void clean_up(bool print_message) {
    authentication_policy::deinit();
    denit_command_maps();
- 
+
 +#ifdef WESQL
 +  stop_wesql_runtime();
 +#endif
    ha_pre_dd_shutdown();
    dd::shutdown();
- 
+
 @@ -6718,6 +6904,10 @@ int init_common_variables() {
    */
    mysql_bin_log.init_pthread_objects();
- 
+
 +#ifdef WESQL
 +  init_wesql_pthread_objects();
 +#endif
@@ -2198,9 +2220,9 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
    if (!is_time_t_valid_for_timestamp(server_start_time)) {
      LogErr(ERROR_LEVEL, ER_UNSUPPORTED_DATE);
 @@ -6799,6 +6989,32 @@ int init_common_variables() {
- 
+
    if (get_options(&remaining_argc, &remaining_argv)) return 1;
- 
+
 +#ifdef WESQL
 +  if (!opt_help) {
 +    std::string error;
@@ -2231,7 +2253,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
      return 1;
    }
 @@ -8113,6 +8329,9 @@ static void init_icu_data_directory() {
- 
+
  static int init_server_components() {
    DBUG_TRACE;
 +#ifdef WESQL
@@ -2243,7 +2265,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -8279,6 +8498,15 @@ static int init_server_components() {
        opt_bin_logname = my_strdup(key_memory_opt_bin_logname, buf, MYF(0));
      }
- 
+
 +#ifdef WESQL
 +    if (opt_serverless && !wesql::remote_commit::enabled() &&
 +        consistent_recovery.recovery_binlog(opt_binlog_index_name, ln)) {
@@ -2259,7 +2281,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -8503,6 +8731,33 @@ static int init_server_components() {
      unireg_abort(1);
    }
- 
+
 +#ifdef WESQL
 +  if (opt_serverless && !wesql::remote_commit::enabled()) {
 +    if (consistent_recovery.recovery_mysql_innodb()) {
@@ -2293,7 +2315,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -8889,9 +9144,31 @@ static int init_server_components() {
      mysql_mutex_t *log_lock = mysql_bin_log.get_log_lock();
      mysql_mutex_lock(log_lock);
- 
+
 -    if (mysql_bin_log.open_binlog(opt_bin_logname, nullptr, max_binlog_size,
 -                                  false, true /*need_lock_index=true*/,
 -                                  true /*need_tsid_lock=true*/, nullptr)) {
@@ -2326,7 +2348,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
        unireg_abort(MYSQLD_ABORT_EXIT);
      }
 @@ -9214,6 +9491,9 @@ int mysqld_main(int argc, char **argv)
- 
+
    // Substitute the full path to the executable in argv[0]
    substitute_progpath(argv);
 +#ifdef WESQL
@@ -2334,11 +2356,11 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 +#endif
    sysd::notify_connect();
    sysd::notify("STATUS=Server startup in progress\n");
- 
+
 @@ -9247,6 +9527,24 @@ int mysqld_main(int argc, char **argv)
      return MYSQLD_ABORT_EXIT;
    }
- 
+
 +  bool load_persisted_options = true;
 +#ifdef WESQL
 +  bool declarative_remote_commit = false;
@@ -2393,7 +2415,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -9711,7 +10015,8 @@ int mysqld_main(int argc, char **argv)
      log_dia_dest = "";
    }
- 
+
 -  if (opt_daemonize && !opt_validate_config) {
 +  if (opt_daemonize && !mysqld::runtime::is_daemon() &&
 +      !opt_validate_config) {
@@ -2403,7 +2425,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -9736,6 +10041,25 @@ int mysqld_main(int argc, char **argv)
    }
  #endif
- 
+
 +#ifdef WESQL
 +  if (!opt_help) {
 +    std::string error;
@@ -2471,7 +2493,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -9824,6 +10183,35 @@ int mysqld_main(int argc, char **argv)
      unireg_abort(MYSQLD_ABORT_EXIT); /* purecov: inspected */
    }
- 
+
 +#ifdef WESQL
 +  if (!is_help_or_validate_option() && opt_serverless &&
 +      (opt_recovery_from_objstore || opt_initialize_from_source_objectstore)) {
@@ -2505,13 +2527,13 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
     The subsequent calls may take a long time : e.g. innodb log read.
     Thus set the long running service control manager timeout
 @@ -9962,15 +10350,20 @@ int mysqld_main(int argc, char **argv)
- 
+
        /Alfranio
      */
 -    Previous_gtids_log_event prev_gtids_ev(&gtids_in_binlog);
 -
      global_tsid_lock->unlock();
- 
+
 -    (prev_gtids_ev.common_footer)->checksum_alg =
 -        static_cast<enum_binlog_checksum_alg>(binlog_checksum_options);
 +#ifdef WESQL
@@ -2520,7 +2542,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 +      Previous_gtids_log_event prev_gtids_ev(&gtids_in_binlog);
 +      (prev_gtids_ev.common_footer)->checksum_alg =
 +          static_cast<enum_binlog_checksum_alg>(binlog_checksum_options);
- 
+
 -    if (mysql_bin_log.write_event_to_binlog_and_sync(&prev_gtids_ev))
 -      unireg_abort(MYSQLD_ABORT_EXIT);
 +      if (mysql_bin_log.write_event_to_binlog_and_sync(&prev_gtids_ev))
@@ -2528,13 +2550,13 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 +#ifdef WESQL
 +    }
 +#endif
- 
+
      // run auto purge member function. It will evaluate auto purge controls
      // and configuration, calculate which log files are to be purged, and
 @@ -9992,12 +10385,40 @@ int mysqld_main(int argc, char **argv)
      (void)RUN_HOOK(server_state, after_engine_recovery, (nullptr));
    }
- 
+
 +#ifdef WITH_SMARTENGINE
 +  ha_post_engine_recover();
 +#endif
@@ -2560,7 +2582,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
    if (init_ssl_communication()) unireg_abort(MYSQLD_ABORT_EXIT);
    if (network_init()) unireg_abort(MYSQLD_ABORT_EXIT);
 +#endif
- 
+
  #ifdef _WIN32
 +#ifdef WESQL
 +  if (!wesql_defer_networking && opt_require_secure_transport &&
@@ -2580,13 +2602,13 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 +  if (wesql::remote_commit::startup_force_skip_replica_start())
 +    opt_skip_replica_start = true;
 +#endif
- 
+
    check_binlog_cache_size(nullptr);
    check_binlog_stmt_cache_size(nullptr);
 @@ -10115,6 +10540,55 @@ int mysqld_main(int argc, char **argv)
        opt_initialize, opt_skip_replica_start, rpl_channel_filters,
        &opt_replica_skip_errors);
- 
+
 +#ifdef WESQL
 +  if (wesql_initialize_security_before_admission) {
 +    std::string error;
@@ -2642,7 +2664,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -10148,6 +10622,12 @@ int mysqld_main(int argc, char **argv)
      unireg_abort(MYSQLD_ABORT_EXIT);
    }
- 
+
 +#ifdef WESQL
 +  if (!opt_initialize && !wesql::remote_commit::enabled() &&
 +      (start_wesql_archive_runtime() || start_wesql_replay_runtime()))
@@ -2665,7 +2687,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -10252,7 +10733,7 @@ int mysqld_main(int argc, char **argv)
    socket_listener_active = true;
    mysql_mutex_unlock(&LOCK_socket_listener_active);
- 
+
 -  if (opt_daemonize) {
 +  if (opt_daemonize || mysqld::runtime::is_daemon()) {
      if (nstdout != nullptr) {
@@ -2674,7 +2696,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -10327,8 +10808,32 @@ int mysqld_main(int argc, char **argv)
      LogErr(WARNING_LEVEL, ER_CANT_JOIN_SHUTDOWN_THREAD, "signal_", ret);
  #endif  // _WIN32
- 
+
 +  int final_exit_code = signal_hand_thr_exit_code;
 +#ifdef WESQL
 +  std::string remote_exit_error;
@@ -2703,12 +2725,12 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 +#endif
 +  mysqld_exit(final_exit_code);
  }
- 
+
  /****************************************************************************
 @@ -10674,6 +11179,20 @@ static void process_bootstrap() {
          unireg_abort(MYSQLD_ABORT_EXIT);
        }
- 
+
 +#ifdef WESQL
 +      {
 +        std::string startup_error;
@@ -2728,7 +2750,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
    }
 @@ -10841,6 +11360,34 @@ static void adjust_related_options(ulong *requested_open_files) {
  vector<my_option> all_options;
- 
+
  struct my_option my_long_early_options[] = {
 +#ifdef WESQL
 +    {"wesql-remote-startup-mode", OPT_WESQL_REMOTE_STARTUP_MODE, nullptr,
@@ -2764,7 +2786,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
 @@ -11280,6 +11827,20 @@ static int show_net_compression_level(THD *thd, SHOW_VAR *var, char *buff) {
    return 0;
  }
- 
+
 +#ifdef WESQL
 +static int show_remote_commit_status(THD *, SHOW_VAR *var, char *buff) {
 +  const std::string status = wesql::remote_commit::status_json();
@@ -2815,7 +2837,7 @@ index e8a2b1cbdf799b220cd2e476033aea89c40c0160..83de1e2e4795b3268a2d3bec8448f991
    add_plugin_options(&all_options, &mem_root);
 @@ -12765,6 +13343,32 @@ bool mysqld_get_one_option(int optid,
    }
- 
+
    switch (optid) {
 +#ifdef WESQL
 +    case OPT_WESQL_REMOTE_STARTUP_MODE:
@@ -2851,7 +2873,7 @@ index 1a0d22d3aea6d522a6f5f60471dc384fd9eb8170..d496aaa7e33ba050e3e8e970b0159003
 --- a/sql/mysqld.h
 +++ b/sql/mysqld.h
 @@ -160,6 +160,15 @@ enum_server_operational_state get_server_state();
- 
+
  extern bool opt_large_files, server_id_supplied;
  extern bool opt_bin_log;
 +extern bool opt_binlog_archive_remote_commit;
@@ -2867,9 +2889,9 @@ index 1a0d22d3aea6d522a6f5f60471dc384fd9eb8170..d496aaa7e33ba050e3e8e970b0159003
  extern bool opt_log_unsafe_statements;
  extern bool opt_general_log, opt_slow_log, opt_general_log_raw;
 @@ -692,6 +701,63 @@ extern MYSQL_PLUGIN_IMPORT char pidfile_name[];
- 
+
  #define mysql_tmpdir (my_tmpdir(&mysql_tmpdir_list))
- 
+
 +#ifdef WESQL
 +extern bool consistent_recovery_archive_recovery;
 +extern uint64_t consistent_recovery_snapshot_end_binlog_position;
@@ -2937,7 +2959,7 @@ index 3d34a6391fa10ea1fffc9269a20bc7ded0bc6717..3de97270cb08a774332f147f8a4a91f1
 @@ -53,6 +53,8 @@ bool is_daemon_proc = false;
   */
  bool mysqld::runtime::is_daemon() { return is_daemon_proc; }
- 
+
 +void mysqld::runtime::adopt_daemon_process() { is_daemon_proc = true; }
 +
  int mysqld::runtime::mysqld_daemonize() {
@@ -2956,7 +2978,7 @@ index c92e0c92107001c3465c96e14e8bb2dfb46f2d81..09c662435b0307b18a8abd4409f48f55
 +void adopt_daemon_process();
  /**
    Daemonize mysqld.
- 
+
 diff --git a/sql/options_mysqld.h b/sql/options_mysqld.h
 index 971c731e92b26120e4996d820ba17e60c0da0fbc..e6681fe24a810e818ac3686953eb4ec8f4673f26 100644
 --- a/sql/options_mysqld.h
@@ -2972,7 +2994,7 @@ index 971c731e92b26120e4996d820ba17e60c0da0fbc..e6681fe24a810e818ac3686953eb4ec8
 +  OPT_WESQL_REMOTE_STARTUP_OUTPUT,
 +  OPT_WESQL_REMOTE_STARTUP_DAEMON_PIPE_FD,
  };
- 
+
  #endif  // OPTIONS_MYSQLD_INCLUDED
 diff --git a/sql/sql_parse.cc b/sql/sql_parse.cc
 index b27ac33616839b51f472b0d6fef815fc15cc623e..24178dcdaedf2ae65154a0451cb22a40cb6a919c 100644
@@ -3016,7 +3038,7 @@ index f1164401bff9e1ff7e16853615ee6756feafb247..d092bcddcc1c17d7008d699df4cc8fa5
 @@ -1622,6 +1626,34 @@ bool plugin_register_builtin_and_init_core_se(int *argc, char **argv) {
        else
          tmp.state = PLUGIN_IS_UNINITIALIZED;
- 
+
 +#ifdef WESQL
 +      if (wesql::remote_commit::enabled() && !opt_help) {
 +        std::string managed_path_error;
@@ -3047,7 +3069,7 @@ index f1164401bff9e1ff7e16853615ee6756feafb247..d092bcddcc1c17d7008d699df4cc8fa5
 +
        struct st_plugin_int *plugin_ptr;  // Pointer to registered plugin
        if (register_builtin(plugin, &tmp, &plugin_ptr)) goto err_unlock;
- 
+
 diff --git a/sql/sql_table.cc b/sql/sql_table.cc
 index fe603cd8bb955e1e8bbac25ece2a7087ee8ba041..f766b714a12584cde29f85f9dad81056b901ca79 100644
 --- a/sql/sql_table.cc
@@ -3067,7 +3089,7 @@ index fe603cd8bb955e1e8bbac25ece2a7087ee8ba041..f766b714a12584cde29f85f9dad81056
 @@ -238,6 +243,51 @@ bool is_temp_table(const HA_CREATE_INFO &ci) {
    return (ci.options & HA_LEX_CREATE_TMP_TABLE);
  }
- 
+
 +#ifdef WESQL
 +bool enforce_remote_commit_table_engine(const char *db_name,
 +                                        const char *table_name,
@@ -3117,9 +3139,9 @@ index fe603cd8bb955e1e8bbac25ece2a7087ee8ba041..f766b714a12584cde29f85f9dad81056
    assert((ci.used_fields & HA_CREATE_USED_ENGINE) == 0 ||
           ci.db_type != nullptr);
 @@ -9657,6 +9707,13 @@ static bool create_table_impl(
- 
+
    if (check_engine(db, table_name, create_info)) return true;
- 
+
 +#ifdef WESQL
 +  if (enforce_remote_commit_table_engine(
 +          db, table_name, *create_info,
@@ -3131,21 +3153,21 @@ index fe603cd8bb955e1e8bbac25ece2a7087ee8ba041..f766b714a12584cde29f85f9dad81056
        create_info->secondary_engine.str != nullptr &&
        !hton_is_secondary_engine(create_info->db_type)) {
 @@ -9668,6 +9725,11 @@ static bool create_table_impl(
- 
+
    if (set_table_default_charset(thd, create_info, schema)) return true;
- 
+
 +#ifdef WESQL
 +  if (wesql_ddl_compat_rewrite_create(thd, create_info, alter_info))
 +    return true;
 +#endif
 +
    const char *alias = table_case_name(create_info, table_name);
- 
+
    partition_info *part_info = thd->work_part_info;
 @@ -17666,6 +17728,18 @@ bool mysql_alter_table(THD *thd, const char *new_db, const char *new_name,
    if (check_engine(alter_ctx.new_db, alter_ctx.new_name, create_info))
      return true;
- 
+
 +#ifdef WESQL
 +  if (enforce_remote_commit_table_engine(
 +          alter_ctx.new_db, alter_ctx.new_name, *create_info,
@@ -3162,9 +3184,9 @@ index fe603cd8bb955e1e8bbac25ece2a7087ee8ba041..f766b714a12584cde29f85f9dad81056
      Do not allow change of storage engine if table participates in a foreign
      key. Even in cases when both source and target storage engines support
 @@ -17984,6 +18058,11 @@ bool mysql_alter_table(THD *thd, const char *new_db, const char *new_name,
- 
+
    if (set_table_default_charset(thd, create_info, *schema)) return true;
- 
+
 +#ifdef WESQL
 +  if (wesql_ddl_compat_rewrite_alter_collation(thd, create_info, alter_info))
 +    return true;
@@ -3192,10 +3214,10 @@ index 7cca516a50e6dcd0079fcea34176883feecf324a..5af643b678f35aefc907b6d977f971a4
  #include "sql/xa.h"
 +#include "sql/xa/recovery.h"
  #include "thr_mutex.h"
- 
+
  namespace {
 @@ -108,6 +112,10 @@ int set_prepared_in_tc_one_ht(THD *thd, handlerton *ht);
- 
+
  bool trx_coordinator::commit_detached_by_xid(THD *thd, bool run_after_commit) {
    DBUG_TRACE;
 +  if (xa::recovery::reject_direct_xid_operation(
@@ -3206,7 +3228,7 @@ index 7cca516a50e6dcd0079fcea34176883feecf324a..5af643b678f35aefc907b6d977f971a4
    auto xs = trx_ctx->xid_state();
    assert(xs->is_detached());
 @@ -126,6 +134,10 @@ bool trx_coordinator::commit_detached_by_xid(THD *thd, bool run_after_commit) {
- 
+
  bool trx_coordinator::rollback_detached_by_xid(THD *thd) {
    DBUG_TRACE;
 +  if (xa::recovery::reject_direct_xid_operation(
@@ -3228,7 +3250,7 @@ index 7cca516a50e6dcd0079fcea34176883feecf324a..5af643b678f35aefc907b6d977f971a4
            ->is_detached())  // if processing a detached XA, commit by XID
 @@ -182,11 +197,14 @@ bool trx_coordinator::should_statement_set_prepared_in_tc(THD *thd) {
  }
- 
+
  namespace {
 -bool commit_one_ht(THD *, plugin_ref plugin, void *arg) {
 +bool commit_one_ht(THD *thd, plugin_ref plugin, void *arg) {
@@ -3240,12 +3262,12 @@ index 7cca516a50e6dcd0079fcea34176883feecf324a..5af643b678f35aefc907b6d977f971a4
 +            xa::recovery::Direct_xid_operation::COMMIT_BY_XID, thd))
 +      return true;
      xa_status_code ret = ht->commit_by_xid(ht, static_cast<XID *>(arg));
- 
+
      if (ret != XA_OK &&
 @@ -202,11 +220,14 @@ bool commit_one_ht(THD *, plugin_ref plugin, void *arg) {
    return false;
  }
- 
+
 -bool rollback_one_ht(THD *, plugin_ref plugin, void *arg) {
 +bool rollback_one_ht(THD *thd, plugin_ref plugin, void *arg) {
    DBUG_TRACE;
@@ -3256,7 +3278,7 @@ index 7cca516a50e6dcd0079fcea34176883feecf324a..5af643b678f35aefc907b6d977f971a4
 +            xa::recovery::Direct_xid_operation::ROLLBACK_BY_XID, thd))
 +      return true;
      xa_status_code ret = ht->rollback_by_xid(ht, static_cast<XID *>(arg));
- 
+
      if (ret != XA_OK &&
 @@ -237,4 +258,8 @@
  int TC_LOG_DUMMY::open(const char *) {
@@ -3273,7 +3295,7 @@ index 6cd97c373f391fba08b0db2c63dd534e05820d62..1152e18eddd6a62ed5d581d9c2fc2b61
 +++ b/sql/xa.cc
 @@ -246,6 +246,11 @@ static bool xarecover_create_mdl_backup(XA_recover_txn &txn,
  }
- 
+
  bool Recovered_xa_transactions::recover_prepared_xa_transactions() {
 +  if (!m_prepared_xa_trans.empty() &&
 +      xa::recovery::reject_direct_xid_operation(
@@ -3281,11 +3303,11 @@ index 6cd97c373f391fba08b0db2c63dd534e05820d62..1152e18eddd6a62ed5d581d9c2fc2b61
 +    return true;
 +
    bool ret = false;
- 
+
    if (m_mem_root_inited) {
 @@ -268,6 +273,10 @@ bool Recovered_xa_transactions::recover_prepared_xa_transactions() {
  }
- 
+
  int ha_recover(Xid_commit_list *commit_list, Xa_state_list *xa_list) {
 +  if (xa::recovery::reject_direct_xid_operation(
 +          xa::recovery::Direct_xid_operation::STOCK_HA_RECOVER))
@@ -3299,9 +3321,9 @@ index 2dbca9a0963fcc849131fe15279ac9cd1e0a9af5..828a90f24670578f10a00b1aa8c4b4a4
 --- a/sql/xa/recovery.cc
 +++ b/sql/xa/recovery.cc
 @@ -23,11 +23,61 @@
- 
+
  #include "sql/xa/recovery.h"
- 
+
 +#include <memory>
 +#include <new>
 +#include <string>
@@ -3313,7 +3335,7 @@ index 2dbca9a0963fcc849131fe15279ac9cd1e0a9af5..828a90f24670578f10a00b1aa8c4b4a4
  #include "sql/mysqld.h"  // tc_heuristic_recover
 +#include "sql/sql_const.h"
 +#include "sql/sql_plugin.h"  // plugin_foreach
- 
+
  namespace {  // Compilation unit local types and functions
 +constexpr uint REMOTE_XID_MIN_BATCH_SIZE = 128;
 +constexpr uint REMOTE_XID_MAX_BATCH_SIZE = 1024 * 128;
@@ -3363,7 +3385,7 @@ index 2dbca9a0963fcc849131fe15279ac9cd1e0a9af5..828a90f24670578f10a00b1aa8c4b4a4
 @@ -176,19 +226,111 @@ void report_trx_recovery_error(int error, ID const &id, handlerton const &ht,
  enum xa_status_code generate_xa_recovery_error();
  }  // namespace
- 
+
 +bool xa::recovery::reject_direct_xid_operation(
 +    Direct_xid_operation operation, THD *thd) {
 +  if (!opt_binlog_archive_remote_commit) return false;
@@ -3454,7 +3476,7 @@ index 2dbca9a0963fcc849131fe15279ac9cd1e0a9af5..828a90f24670578f10a00b1aa8c4b4a4
 +
    handlerton *ht = plugin_data<handlerton *>(plugin);
    xarecover_st *info = static_cast<struct xarecover_st *>(arg);
- 
+
    if (ht->state == SHOW_OPTION_YES && ht->recover_prepared_in_tc) {
      assert(info->xa_list != nullptr);
 -    return ht->recover_prepared_in_tc(ht, *info->xa_list);
@@ -3465,7 +3487,7 @@ index 2dbca9a0963fcc849131fe15279ac9cd1e0a9af5..828a90f24670578f10a00b1aa8c4b4a4
    }
    return false;
  }
- 
+
  bool xa::recovery::recover_one_ht(THD *, plugin_ref plugin, void *arg) {
 +  if (reject_direct_xid_operation(Direct_xid_operation::STOCK_HA_RECOVER))
 +    return true;
@@ -3502,7 +3524,7 @@ index 2dbca9a0963fcc849131fe15279ac9cd1e0a9af5..828a90f24670578f10a00b1aa8c4b4a4
 +      exec_status = XAER_RMFAIL;
      else
        exec_status = ht.commit_by_xid(&ht, const_cast<XID *>(&xa_trx.id));
- 
+
 @@ -261,6 +412,9 @@ void recover_one_internal_trx(xarecover_st const &info, handlerton &ht,
      enum xa_status_code exec_status;
      if (DBUG_EVALUATE_IF("xa_recovery_error_reporting", true, false))
@@ -3512,7 +3534,7 @@ index 2dbca9a0963fcc849131fe15279ac9cd1e0a9af5..828a90f24670578f10a00b1aa8c4b4a4
 +      exec_status = XAER_RMFAIL;
      else
        exec_status = ht.rollback_by_xid(&ht, const_cast<XID *>(&xa_trx.id));
- 
+
 @@ -286,6 +440,11 @@ void recover_one_external_trx(xarecover_st const &info, handlerton &ht,
    switch (state) {
      case enum_ha_recover_xa_state::COMMITTED_WITH_ONEPHASE:
@@ -3557,14 +3579,14 @@ index 37b7832a4fbf8bfe23830a226e5566cb9ef37e4a..ce0f4b839a199c8262edf74df152255d
 @@ -24,6 +24,8 @@
  #ifndef XA_RECOVERY_H_INCLUDED
  #define XA_RECOVERY_H_INCLUDED
- 
+
 +#include <cstddef>
 +
  #include "sql/handler.h"    // XA_recover_txn
  #include "sql/sql_class.h"  // THD
  #include "sql/xa.h"         // Xid_commit_list, Xa_state_list, XID, ...
 @@ -38,6 +40,61 @@ struct xarecover_st {
- 
+
  namespace xa {
  namespace recovery {
 +
@@ -3624,7 +3646,7 @@ index 37b7832a4fbf8bfe23830a226e5566cb9ef37e4a..ce0f4b839a199c8262edf74df152255d
 +
  /**
    Callback to be invoked by `ha_recover` over each storage engine plugin.
- 
+
 diff --git a/sql/xa/sql_xa_commit.cc b/sql/xa/sql_xa_commit.cc
 index a647d5d5a93177f33f2f9d1593e1ad5f01284c90..5a1ec183cb30435fc9316076a2df8930c9cc55af 100644
 --- a/sql/xa/sql_xa_commit.cc
@@ -3635,7 +3657,7 @@ index a647d5d5a93177f33f2f9d1593e1ad5f01284c90..5a1ec183cb30435fc9316076a2df8930
  #include "sql/transaction_info.h"      // Transaction_ctx
 +#include "sql/xa/recovery.h"
  #include "sql/xa/transaction_cache.h"  // xa::Transaction_cache
- 
+
  namespace {
 @@ -48,7 +49,7 @@ namespace {
    @param thd The `THD` session object within which the command is being
@@ -3644,19 +3666,19 @@ index a647d5d5a93177f33f2f9d1593e1ad5f01284c90..5a1ec183cb30435fc9316076a2df8930
 -void force_rollback(THD *thd);
 +bool force_rollback(THD *thd);
  }  // namespace
- 
+
  Sql_cmd_xa_commit::Sql_cmd_xa_commit(xid_t *xid_arg,
 @@ -80,6 +81,10 @@ bool Sql_cmd_xa_commit::execute(THD *thd) {
  bool Sql_cmd_xa_commit::trans_xa_commit(THD *thd) {
    auto xid_state = thd->get_transaction()->xid_state();
- 
+
 +  if (xa::recovery::reject_direct_xid_operation(
 +          xa::recovery::Direct_xid_operation::COMMIT_BY_XID, thd))
 +    return true;
 +
    assert(!thd->slave_thread || xid_state->get_xid()->is_null() ||
           m_xa_opt == XA_ONE_PHASE);
- 
+
 @@ -115,6 +120,12 @@ bool Sql_cmd_xa_commit::process_attached_xa_commit(THD *thd) const {
      if ((res = r)) my_error(r == 1 ? ER_XA_RBROLLBACK : ER_XAER_RMERR, MYF(0));
    } else if (xid_state->has_state(XID_STATE::XA_PREPARED) &&
@@ -3668,11 +3690,11 @@ index a647d5d5a93177f33f2f9d1593e1ad5f01284c90..5a1ec183cb30435fc9316076a2df8930
 +      return true;
 +
      MDL_request mdl_request;
- 
+
      /*
 @@ -228,6 +239,9 @@ bool Sql_cmd_xa_commit::process_detached_xa_commit(THD *thd) {
    DBUG_TRACE;
- 
+
    raii::Sentry<> dispose_guard{[this]() -> void { this->dispose(); }};
 +  if (xa::recovery::reject_direct_xid_operation(
 +          xa::recovery::Direct_xid_operation::COMMIT_BY_XID, thd))
@@ -3689,11 +3711,11 @@ index a647d5d5a93177f33f2f9d1593e1ad5f01284c90..5a1ec183cb30435fc9316076a2df8930
 +    result = ::force_rollback(thd) ? TC_LOG::enum_result::RESULT_ABORTED
 +                                   : TC_LOG::enum_result::RESULT_SUCCESS;
    }
- 
+
    this->exit_commit_order(thd);
 @@ -281,7 +295,11 @@ bool Sql_cmd_xa_commit::process_detached_xa_commit(THD *thd) {
  }
- 
+
  namespace {
 -void force_rollback(THD *thd) {
 +bool force_rollback(THD *thd) {
@@ -3721,12 +3743,12 @@ index d41f0268ff7145f25287623949b9dc5e45c3a130..ed7ae8f19b1f38517aec845065eb74c5
  #include "sql/transaction_info.h"      // Transaction_ctx
 +#include "sql/xa/recovery.h"
  #include "sql/xa/transaction_cache.h"  // xa::Transaction_cache
- 
+
  Sql_cmd_xa_rollback::Sql_cmd_xa_rollback(xid_t *xid_arg)
 @@ -62,6 +63,10 @@ bool Sql_cmd_xa_rollback::execute(THD *thd) {
  bool Sql_cmd_xa_rollback::trans_xa_rollback(THD *thd) {
    auto xid_state = thd->get_transaction()->xid_state();
- 
+
 +  if (xa::recovery::reject_direct_xid_operation(
 +          xa::recovery::Direct_xid_operation::ROLLBACK_BY_XID, thd))
 +    return true;
@@ -3736,7 +3758,7 @@ index d41f0268ff7145f25287623949b9dc5e45c3a130..ed7ae8f19b1f38517aec845065eb74c5
    if (!xid_state->has_same_xid(this->m_xid)) {
 @@ -127,6 +132,9 @@ bool Sql_cmd_xa_rollback::process_detached_xa_rollback(THD *thd) {
    DBUG_TRACE;
- 
+
    raii::Sentry<> dispose_guard{[this]() -> void { this->dispose(); }};
 +  if (xa::recovery::reject_direct_xid_operation(
 +          xa::recovery::Direct_xid_operation::ROLLBACK_BY_XID, thd))
@@ -3751,7 +3773,7 @@ index 7af832ba1de54c0a6a21e68b947d6bd184a8bddb..78417f934d238988551b70b090aa5fd8
 @@ -268,6 +268,10 @@ SET(INNOBASE_SOURCES
    ut/ut0vec.cc
    ut/ut0wqueue.cc)
- 
+
 +IF(WITH_WESQL)
 +  LIST(APPEND INNOBASE_SOURCES clone/clone0remotecuts.cc)
 +ENDIF()
@@ -3766,7 +3788,7 @@ index f24caa63b258470a9aa7e2322a5838ede6454e6d..7457182f06b09df930ff9e1433273772
 @@ -546,6 +546,71 @@ int innodb_clone_begin(handlerton *, THD *thd, const byte *&loc, uint &loc_len,
    return (0);
  }
- 
+
 +#ifdef WESQL
 +bool innodb_clone_bind_remote_snapshot_request(const byte *loc, uint loc_len,
 +                                               uint64_t request_id) {
@@ -3842,7 +3864,7 @@ index 18a54db710a435748fb70bbd98a21090daf7c46d..9ce1f2123a0b8a3bec77e8ae3011aced
 @@ -286,7 +286,20 @@ void Clone_Sys::drop_clone(Clone_Handle *clone_handle) {
      --m_num_apply_clones;
    }
- 
+
 +#ifdef WESQL
 +  Remote_clone_cut remote_cut;
 +  wesql::remote_commit::CloneCutBarrierLease remote_cut_barrier;
@@ -3858,7 +3880,7 @@ index 18a54db710a435748fb70bbd98a21090daf7c46d..9ce1f2123a0b8a3bec77e8ae3011aced
 +  }
 +#endif /* WESQL */
  }
- 
+
  Clone_Handle *Clone_Sys::get_clone_by_index(const byte *loc, uint loc_len) {
 @@ -1767,7 +1780,12 @@ int Clone_Task_Manager::finish_state(Clone_Task *task) {
  int Clone_Task_Manager::change_state(Clone_Task *task,
@@ -3872,10 +3894,10 @@ index 18a54db710a435748fb70bbd98a21090daf7c46d..9ce1f2123a0b8a3bec77e8ae3011aced
 +#endif
 +) {
    mutex_enter(&m_state_mutex);
- 
+
    num_wait = 0;
 @@ -1824,7 +1842,12 @@ int Clone_Task_Manager::change_state(Clone_Task *task,
- 
+
    err = m_clone_snapshot->change_state(state_desc, m_next_state,
                                         task->m_current_buffer,
 -                                       task->m_buffer_alloc_len, cbk);
@@ -3885,7 +3907,7 @@ index 18a54db710a435748fb70bbd98a21090daf7c46d..9ce1f2123a0b8a3bec77e8ae3011aced
 +                                       remote_cut
 +#endif
 +  );
- 
+
    if (err != 0) {
      return (err);
 @@ -1917,6 +1940,11 @@ Clone_Handle::Clone_Handle(Clone_Handle_Type handle_type, uint clone_version,
@@ -3903,7 +3925,7 @@ index 18a54db710a435748fb70bbd98a21090daf7c46d..9ce1f2123a0b8a3bec77e8ae3011aced
 @@ -2080,6 +2108,58 @@ byte *Clone_Handle::get_locator(uint &loc_len) {
    return (m_clone_locator);
  }
- 
+
 +#ifdef WESQL
 +bool Clone_Handle::bind_remote_snapshot_request(uint64_t request_id) {
 +  ut_ad(mutex_own(clone_sys->get_mutex()));
@@ -3960,7 +3982,7 @@ index 18a54db710a435748fb70bbd98a21090daf7c46d..9ce1f2123a0b8a3bec77e8ae3011aced
    Clone_Snapshot *snapshot;
    uint64_t snapshot_id = CLONE_LOC_INVALID_ID;
 @@ -2148,8 +2228,54 @@ int Clone_Handle::move_to_next_state(Clone_Task *task, Ha_clone_cbk *callback,
- 
+
    /* Move to new state */
    uint num_wait = 0;
 -  auto err = m_clone_task_manager.change_state(task, state_desc, next_state,
@@ -4013,7 +4035,7 @@ index 18a54db710a435748fb70bbd98a21090daf7c46d..9ce1f2123a0b8a3bec77e8ae3011aced
 +  };
 +
 +  auto err = change_state();
- 
+
    /* Need to wait for all other tasks to move over, if any. */
    if (num_wait > 0) {
 @@ -2159,8 +2285,7 @@ int Clone_Handle::move_to_next_state(Clone_Task *task, Ha_clone_cbk *callback,
@@ -4032,7 +4054,7 @@ index 6c61b9435146f9977bdb25a53aaf17d4ab1d25ac..a0447c62f434f503d2ad5ebff891409c
 +++ b/storage/innobase/clone/clone0copy.cc
 @@ -472,7 +472,12 @@ int Clone_Snapshot::wait_for_binlog_prepared_trx() {
  }
- 
+
  int Clone_Snapshot::init_redo_copy(Snapshot_State new_state,
 -                                   Clone_Alert_Func cbk) {
 +                                   Clone_Alert_Func cbk
@@ -4043,11 +4065,11 @@ index 6c61b9435146f9977bdb25a53aaf17d4ab1d25ac..a0447c62f434f503d2ad5ebff891409c
 +) {
    ut_ad(m_snapshot_handle_type == CLONE_HDL_COPY);
    ut_ad(m_snapshot_type != HA_CLONE_BLOCKING);
- 
+
 @@ -496,6 +501,17 @@ int Clone_Snapshot::init_redo_copy(Snapshot_State new_state,
      }
    }
- 
+
 +#ifdef WESQL
 +  if (binlog_error == 0 && remote_cut != nullptr &&
 +      wesql::remote_commit::enabled()) {
@@ -4065,7 +4087,7 @@ index 6c61b9435146f9977bdb25a53aaf17d4ab1d25ac..a0447c62f434f503d2ad5ebff891409c
 @@ -504,6 +520,14 @@ int Clone_Snapshot::init_redo_copy(Snapshot_State new_state,
      binlog_error = synchronize_binlog_gtid(cbk);
    }
- 
+
 +#ifdef WESQL
 +  char synchronized_file[TRX_SYS_MYSQL_LOG_NAME_LEN + 1]{};
 +  uint64_t synchronized_position = 0;
@@ -4080,7 +4102,7 @@ index 6c61b9435146f9977bdb25a53aaf17d4ab1d25ac..a0447c62f434f503d2ad5ebff891409c
 @@ -535,6 +559,23 @@ int Clone_Snapshot::init_redo_copy(Snapshot_State new_state,
      return transit_error; /* purecov: inspected */
    }
- 
+
 +#ifdef WESQL
 +  if (remote_cut != nullptr && remote_cut->active()) {
 +    Remote_clone_redo_locator redo_locator;
@@ -4099,14 +4121,14 @@ index 6c61b9435146f9977bdb25a53aaf17d4ab1d25ac..a0447c62f434f503d2ad5ebff891409c
 +#endif /* WESQL */
 +
    m_monitor.init_state(srv_stage_clone_redo_copy.m_key, m_enable_pfs);
- 
+
    /* Iterate all tablespace files and add new data files created. */
 diff --git a/storage/innobase/clone/clone0snapshot.cc b/storage/innobase/clone/clone0snapshot.cc
 index bc0b1d3d98171a70669687ec1427273d2e797864..cb704e5eb7acb223e4764eb75247f14c29034f28 100644
 --- a/storage/innobase/clone/clone0snapshot.cc
 +++ b/storage/innobase/clone/clone0snapshot.cc
 @@ -553,7 +553,12 @@ uint32_t Clone_Snapshot::get_blocks_per_chunk() const {
- 
+
  int Clone_Snapshot::change_state(Clone_Desc_State *state_desc,
                                   Snapshot_State new_state, byte *temp_buffer,
 -                                 uint temp_buffer_len, Clone_Alert_Func cbk) {
@@ -4117,12 +4139,12 @@ index bc0b1d3d98171a70669687ec1427273d2e797864..cb704e5eb7acb223e4764eb75247f14c
 +#endif
 +) {
    ut_ad(m_snapshot_state != CLONE_SNAPSHOT_NONE);
- 
+
    int err = 0;
 @@ -592,7 +597,12 @@ int Clone_Snapshot::change_state(Clone_Desc_State *state_desc,
      case CLONE_SNAPSHOT_REDO_COPY:
        ib::info(ER_IB_CLONE_OPERATION) << "Clone State BEGIN REDO COPY";
- 
+
 -      err = init_redo_copy(new_state, cbk);
 +      err = init_redo_copy(new_state, cbk
 +#ifdef WESQL
@@ -4130,9 +4152,9 @@ index bc0b1d3d98171a70669687ec1427273d2e797864..cb704e5eb7acb223e4764eb75247f14c
 +                           remote_cut
 +#endif
 +      );
- 
+
        break;
- 
+
 diff --git a/storage/innobase/handler/ha_innodb.cc b/storage/innobase/handler/ha_innodb.cc
 index 7bcd0e61b0ff694da85062bd421fdecad1e29ef1..f6324d9bcd83a0877465572e4b95b08efec59a25 100644
 --- a/storage/innobase/handler/ha_innodb.cc
@@ -4146,13 +4168,13 @@ index 7bcd0e61b0ff694da85062bd421fdecad1e29ef1..f6324d9bcd83a0877465572e4b95b08e
 +#include "sql/remote_commit/startup_dictionary.h"
 +#include "sql/remote_commit/startup_server.h"
 +#endif
- 
+
  #ifndef UNIV_HOTBACKUP
  #include <current_thd.h>
 @@ -336,6 +341,23 @@ static char *innobase_reset_monitor_counter = nullptr;
  static char *innobase_reset_all_monitor_counter = nullptr;
  static char *innobase_doublewrite_dir = nullptr;
- 
+
 +#ifdef WESQL
 +wesql::remote_commit::StartupInnoDBManagedPaths
 +wesql::remote_commit::innodb_startup_managed_paths_after_parse() {
@@ -4171,7 +4193,7 @@ index 7bcd0e61b0ff694da85062bd421fdecad1e29ef1..f6324d9bcd83a0877465572e4b95b08e
 +#endif
 +
  static ulong innodb_flush_method;
- 
+
  /* This variable can be set in the server configure file, specifying
 @@ -3923,4 +3945,17 @@ static bool update_innodb_temporary_metadata(THD *thd) {
    auto &dc = *thd->dd_client();
@@ -4198,7 +4220,7 @@ index 6d2590d3dfd7eab7adb4f7d8029720ea6deea8a0..b4efece24001027cfbcc60a74c790569
 @@ -86,6 +86,17 @@ class Log_Arch_Client_Ctx {
    /** Release archived data so that system can purge it */
    void release();
- 
+
 +#ifdef WESQL
 +  /** @return start LSN fixed when this archive client started. */
 +  lsn_t get_begin_lsn() const { return m_begin_lsn; }
@@ -4220,7 +4242,7 @@ index 5e2ad2004ca78d52fd82d6da65620b4ea9646b42..4af0466f9e8412bf1b78f4821dee7212
 @@ -33,10 +33,130 @@ this program; if not, write to the Free Software Foundation, Inc.,
  #ifndef CLONE_API_INCLUDE
  #define CLONE_API_INCLUDE
- 
+
 +#ifdef WESQL
 +#include <array>
 +#include <cstdint>
@@ -4234,7 +4256,7 @@ index 5e2ad2004ca78d52fd82d6da65620b4ea9646b42..4af0466f9e8412bf1b78f4821dee7212
  #include "univ.i"
  #ifndef UNIV_HOTBACKUP
  #include "sql/handler.h"
- 
+
 +#ifdef WESQL
 +/** SHA-256 digest used by the remote clone cut. */
 +using Remote_clone_digest = std::array<unsigned char, 32>;
@@ -4360,7 +4382,7 @@ index 8c706aacd0b30332203baa476d6c1716c0501031..bc7f3b6a9cf83cf96769778339073bab
 +#include "clone0remotecuts.h"
 +#endif
  #include "clone0snapshot.h"
- 
+
  #include <tuple>
 @@ -360,10 +363,16 @@ class Clone_Task_Manager {
    @param[in]    new_state       next state to move to
@@ -4377,13 +4399,13 @@ index 8c706aacd0b30332203baa476d6c1716c0501031..bc7f3b6a9cf83cf96769778339073bab
 +                   Remote_clone_cut_stage *remote_cut
 +#endif
 +  );
- 
+
    /** Check if state transition is over and all tasks moved to next state
    @param[in]    task            requesting task
 @@ -673,6 +682,36 @@ class Clone_Handle {
    @return version */
    uint get_version() { return (m_clone_desc_version); }
- 
+
 +#ifdef WESQL
 +  /** Bind one immutable nonzero runtime snapshot request. Caller must own the
 +  clone system mutex.
@@ -4416,11 +4438,11 @@ index 8c706aacd0b30332203baa476d6c1716c0501031..bc7f3b6a9cf83cf96769778339073bab
 +
    /** @return active snapshot */
    Clone_Snapshot *get_snapshot() { return m_clone_task_manager.get_snapshot(); }
- 
+
 @@ -843,6 +882,18 @@ class Clone_Handle {
    int move_to_next_state(Clone_Task *task, Ha_clone_cbk *callback,
                           Clone_Desc_State *state_desc);
- 
+
 +#ifdef WESQL
 +  /** Install the cut and barrier lease exactly once. Caller must own the clone
 +  system mutex.
@@ -4439,7 +4461,7 @@ index 8c706aacd0b30332203baa476d6c1716c0501031..bc7f3b6a9cf83cf96769778339073bab
 @@ -1035,6 +1086,17 @@ class Clone_Handle {
    /** Unique clone identifier */
    uint64_t m_clone_id;
- 
+
 +#ifdef WESQL
 +  /** Immutable runtime snapshot authority, or zero for an ordinary clone. */
 +  uint64_t m_remote_snapshot_request_id;
@@ -4453,7 +4475,7 @@ index 8c706aacd0b30332203baa476d6c1716c0501031..bc7f3b6a9cf83cf96769778339073bab
 +
    /** Reference count */
    uint m_ref_count;
- 
+
 diff --git a/storage/innobase/include/clone0snapshot.h b/storage/innobase/include/clone0snapshot.h
 index dce77679993fb118df92497ec9ef36c42b32f7cd..0f6116f879ea328290f9614e8947ec997bcfe386 100644
 --- a/storage/innobase/include/clone0snapshot.h
@@ -4461,7 +4483,7 @@ index dce77679993fb118df92497ec9ef36c42b32f7cd..0f6116f879ea328290f9614e8947ec99
 @@ -46,6 +46,10 @@ this program; if not, write to the Free Software Foundation, Inc.,
  #include <map>
  #include <vector>
- 
+
 +#ifdef WESQL
 +class Remote_clone_cut_stage;
 +#endif
@@ -4484,7 +4506,7 @@ index dce77679993fb118df92497ec9ef36c42b32f7cd..0f6116f879ea328290f9614e8947ec99
 +                   Remote_clone_cut_stage *remote_cut
 +#endif
 +  );
- 
+
    /** Add file metadata entry at destination
    @param[in]    file_meta       file metadata from donor
 @@ -791,8 +801,14 @@ class Clone_Snapshot {
@@ -4500,7 +4522,7 @@ index dce77679993fb118df92497ec9ef36c42b32f7cd..0f6116f879ea328290f9614e8947ec99
 +                     Remote_clone_cut_stage *remote_cut
 +#endif
 +  );
- 
+
    /** Initialize state while applying cloned data
    @param[in]    state_desc      snapshot state descriptor
 diff --git a/storage/innobase/log/log0pfs.cc b/storage/innobase/log/log0pfs.cc
@@ -4563,7 +4585,7 @@ index 77b6c09fd719cec91da4a4e743b5bc02a28ca0d7..4675aaf285d6b36718d166bda6be2125
 --- a/strings/ctype-simple.cc
 +++ b/strings/ctype-simple.cc
 @@ -1489,7 +1489,11 @@ unsigned my_strxfrm_flag_normalize(unsigned flags) {
- 
+
  size_t my_strxfrm_pad(const CHARSET_INFO *cs, uint8_t *str, uint8_t *frmend,
                        uint8_t *strend, unsigned nweights, unsigned flags) {
 +#ifdef WITH_SMARTENGINE
@@ -4581,7 +4603,7 @@ index 9e0ae3475841e455f93b2b63a2230ac3fba20d3a..bffc28e02add41493a6aa658fdcde497
 @@ -2076,7 +2076,11 @@ static size_t my_strnxfrm_uca(const CHARSET_INFO *cs, Mb_wc mb_wc, uint8_t *dst,
      if (dst < de) *dst++ = s_res & 0xFF;
    }
- 
+
 +#ifdef WITH_SMARTENGINE
 +  if (dst < de && !(flags & MY_STRXFRM_NOPAD_WITH_SPACE)) {
 +#else
@@ -4589,14 +4611,14 @@ index 9e0ae3475841e455f93b2b63a2230ac3fba20d3a..bffc28e02add41493a6aa658fdcde497
 +#endif
      /*
        PAD SPACE behavior.
- 
+
 diff --git a/strings/ctype-utf8.cc b/strings/ctype-utf8.cc
 index 469118e84f08f9c1e51703937f58db4a6562018f..9019f4c4a72f2cfe3eef4c1a0a06f0ffc0b5ea9f 100644
 --- a/strings/ctype-utf8.cc
 +++ b/strings/ctype-utf8.cc
 @@ -5083,7 +5083,11 @@ static inline size_t my_strnxfrm_unicode_tmpl(const CHARSET_INFO *cs,
    }
- 
+
  pad:
 +#ifdef WITH_SMARTENGINE
 +  if (dst < de && nweights && !(flags & MY_STRXFRM_NOPAD_WITH_SPACE))
@@ -4604,7 +4626,7 @@ index 469118e84f08f9c1e51703937f58db4a6562018f..9019f4c4a72f2cfe3eef4c1a0a06f0ff
    if (dst < de && nweights)  // PAD SPACE behavior.
 +#endif
      dst += my_strxfrm_pad_nweights_unicode(dst, de, nweights);
- 
+
    if ((flags & MY_STRXFRM_PAD_TO_MAXLEN) && dst < de)
 @@ -5151,7 +5155,11 @@ size_t my_strnxfrm_unicode_full_bin(const CHARSET_INFO *cs, uint8_t *dst,
          if (dst < de) *dst++ = 0x20;
@@ -4647,7 +4669,7 @@ index 7e63da1f3c4ca6b51b16083a7beab6cd4ae9d535..0019ddd69e6dd815790cdc4ae6a36ba4
 @@ -65,6 +65,10 @@ SET(TESTS
    ut0rnd
  )
- 
+
 +IF(WITH_WESQL_TEST)
 +  LIST(APPEND TESTS remote_clone_cut)
 +ENDIF()
@@ -4677,7 +4699,7 @@ index c689ab915a26f4bb168dddd654962fe7a3028a5b..5e04ee58c508414aa75301f4c2656dbf
 +  wesql::remote_commit::capture_startup_original_argv(6, argv);
 +  wesql::remote_commit::record_startup_declarative_remote_commit(false);
 +#endif
- 
+
    mysql_mutex_init(PSI_NOT_INSTRUMENTED, &LOCK_plugin, MY_MUTEX_INIT_FAST);
    sys_var_init();
 -  init_common_variables();
