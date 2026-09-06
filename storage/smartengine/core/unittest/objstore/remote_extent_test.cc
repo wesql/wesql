@@ -18,6 +18,22 @@
 #include "storage/storage_meta_struct.h"
 #include "storage/io_extent.h"
 #include "util/testharness.h"
+#include "backup/hotbackup_impl.h"
+#include "db/db_impl.h"
+#include "db/log_reader.h"
+#include "db/log_writer.h"
+#include "db/snapshot_impl.h"
+#include "db/version_set.h"
+#include "memory/page_arena.h"
+#include "options/db_options.h"
+#include "storage/storage_log_entry.h"
+#include "storage/extent_space_manager.h"
+#include "util/lock_free_fixed_queue.h"
+
+// Exercise the actual manifest replay and log writer without opening a DB.
+#define private public
+#include "storage/storage_logger.h"
+#undef private
 
 namespace smartengine {
 namespace storage {
@@ -77,13 +93,18 @@ class FakeObjectStore : public ::objstore::ObjectStore {
   }
   ::objstore::Status put_object(const std::string_view &,
                                 const std::string_view &key,
-                                const std::string_view &data, bool) override {
+                                const std::string_view &data, bool forbid_overwrite) override {
+    ++put_count;
+    if (forbid_overwrite && objects.contains(std::string(key)))
+      return object_error(::objstore::SE_OBJECT_FORBID_OVERWRITE, 409,
+                          "already exists");
     objects[std::string(key)] = std::string(data);
     return {};
   }
   ::objstore::Status get_object(const std::string_view &,
                                 const std::string_view &key,
                                 std::string &body) override {
+    ++get_count;
     const auto found = objects.find(std::string(key));
     if (found == objects.end())
       return object_error(::objstore::SE_NO_SUCH_KEY, 404, "not found");
@@ -138,14 +159,22 @@ class FakeObjectStore : public ::objstore::ObjectStore {
     return {};
   }
   ::objstore::Status list_object(const std::string_view &,
-                                 const std::string_view &, bool,
+                                 const std::string_view &prefix, bool,
                                  std::string &, bool &finished,
-                                 std::vector<::objstore::ObjectMeta> &) override {
+                                 std::vector<::objstore::ObjectMeta> &result) override {
+    ++list_count;
+    for (const auto &[key, body] : objects) {
+      if (!key.starts_with(prefix)) continue;
+      ::objstore::ObjectMeta meta;
+      meta.key = key;
+      result.push_back(std::move(meta));
+    }
     finished = true;
     return {};
   }
   ::objstore::Status delete_object(const std::string_view &,
                                     const std::string_view &key) override {
+    ++delete_count;
     objects.erase(std::string(key));
     return {};
   }
@@ -153,16 +182,179 @@ class FakeObjectStore : public ::objstore::ObjectStore {
   ::objstore::Status delete_objects(
       const std::string_view &,
       const std::vector<std::string_view> &keys) override {
+    ++delete_count;
     for (const auto key : keys) objects.erase(std::string(key));
     return {};
   }
 
   std::map<std::string, std::string> objects;
   size_t exact_get_count{0};
+  size_t put_count{0};
+  size_t get_count{0};
+  size_t list_count{0};
+  size_t delete_count{0};
 };
 
 RuntimeConfig test_config(FakeObjectStore *store = nullptr) {
   return {"cluster/root", std::string(64, 'a'), 37, store, "bucket"};
+}
+
+class BackupLockEnv : public util::EnvWrapper {
+ public:
+  explicit BackupLockEnv(FakeObjectStore *store)
+      : EnvWrapper(util::Env::Default()), store_(store) {}
+  bool IsObjectStoreInited() const override { return true; }
+  common::Status GetObjectStore(::objstore::ObjectStore *&store) override {
+    ++store_accesses;
+    store = store_;
+    return common::Status::OK();
+  }
+  const std::string &GetObjectStoreBucket() override { return bucket_; }
+  const std::string &GetClusterObjstoreId() override { return cluster_; }
+  size_t store_accesses{0};
+
+ private:
+  FakeObjectStore *store_;
+  std::string bucket_{"bucket"};
+  std::string cluster_{"cluster/root"};
+};
+
+class BackupLockPathTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    clear_test_runtime();
+    clear_runtime_provider();
+    std::string pattern = (std::filesystem::temp_directory_path() /
+                           "remote-backup-lock-XXXXXX").string();
+    const char *created = mkdtemp(pattern.data());
+    ASSERT_NE(nullptr, created);
+    root = created;
+    std::cout << "BACKUP_LOCK_ROOT=" << root << '\n';
+    common::Options options;
+    options.env = &env;
+    db_options = std::make_unique<common::ImmutableDBOptions>(options);
+    versions = std::make_unique<db::VersionSet>(
+        root, db_options.get(), util::EnvOptions(), nullptr, nullptr);
+    ASSERT_EQ(common::Status::kOk,
+              logger.init(&env, root, util::EnvOptions(), *db_options,
+                          versions.get(), 1LL << 30));
+    ASSERT_EQ(common::Status::kOk, logger.update_log_writer(1));
+    ASSERT_TRUE(util::WriteStringToFile(&env, "0.checkpoint:1.manifest:0\n",
+                                       root + "/CURRENT", true).ok());
+    prior_env = db::GlobalContext::env_;
+    db::GlobalContext::env_ = &env;
+    pin.ref_ = 1;  // Keep a local reference while checking backup pin release.
+    backup_id = backups.get_max_auto_increment_id() + 100;
+    auto_id = backups.get_max_auto_increment_id() + 1;
+  }
+
+  void TearDown() override {
+    db::MetaSnapshotSet removed;
+    bool existed = false;
+    backups.remove_backup_snapshot(backup_id, removed, existed);
+    logger.destroy();
+    // This fixture constructs the logger before allocator accounting TLS.
+    // Release retained arena pages while that accounting is still alive.
+    logger.allocator_.clear();
+    db::GlobalContext::env_ = prior_env;
+    clear_test_runtime();
+    clear_runtime_provider();
+  }
+
+  std::string key(uint64_t id) {
+    return "cluster/root/smartengine/v1/locks/snapshot_status_" +
+           std::to_string(id);
+  }
+
+  void add_pin() {
+    pin.backup_ref();
+    db::MetaSnapshotSet pins{&pin};
+    ASSERT_TRUE(backups.add_backup_snapshot(backup_id, auto_id, pins));
+  }
+
+  FakeObjectStore store;
+  BackupLockEnv env{&store};
+  util::Env *prior_env{db::GlobalContext::env_};
+  StorageLogger &logger{StorageLogger::get_instance()};
+  db::BackupSnapshotMap &backups{
+      util::BackupSnapshotImpl::get_instance()->get_backup_snapshot_map()};
+  std::unique_ptr<common::ImmutableDBOptions> db_options;
+  std::unique_ptr<db::VersionSet> versions;
+  db::SnapshotImpl pin;
+  std::string root;
+  BackupSnapshotId backup_id{0};
+  uint64_t auto_id{0};
+};
+
+TEST_F(BackupLockPathTest, RemoteReplayAndReleaseIgnoreConflictingLegacyLocks) {
+  std::string error;
+  ASSERT_TRUE(install_test_runtime(test_config(&store), &error)) << error;
+  store.objects[key(auto_id)] = "releasing";
+  store.objects[key(auto_id + 10)] = "recovering";
+  const auto original = store.objects;
+  const uint64_t previous_recovery = backups.get_auto_increment_id_for_recover();
+  memory::ArenaAllocator arena;
+  ASSERT_EQ(common::Status::kOk, logger.replay_after_ckpt(arena));
+  EXPECT_EQ(previous_recovery, backups.get_auto_increment_id_for_recover());
+
+  add_pin();
+  ASSERT_EQ(1, pin.backup_ref_);
+  const auto before = std::filesystem::file_size(root + "/1.manifest");
+  ASSERT_EQ(common::Status::kOk, backups.release_backup_snapshot(backup_id));
+  EXPECT_FALSE(backups.find_backup_snapshot(backup_id));
+  EXPECT_EQ(0, pin.backup_ref_);
+  EXPECT_EQ(1, pin.ref_);
+  EXPECT_GT(std::filesystem::file_size(root + "/1.manifest"), before);
+  EXPECT_EQ(original, store.objects);
+  EXPECT_EQ(0U, env.store_accesses);
+  EXPECT_EQ(0U, store.put_count + store.get_count + store.list_count +
+                    store.delete_count);
+}
+
+TEST_F(BackupLockPathTest, LegacyReplayLocksAndReleaseUpdatesTheRecoveryLock) {
+  ASSERT_FALSE(enabled());
+  store.objects[key(auto_id + 10)] = "releasing";
+  memory::ArenaAllocator arena;
+  ASSERT_EQ(common::Status::kOk, logger.replay_after_ckpt(arena));
+  EXPECT_EQ(auto_id, backups.get_auto_increment_id_for_recover());
+  EXPECT_EQ("recovering", store.objects.at(key(auto_id)));
+  EXPECT_FALSE(store.objects.contains(key(auto_id + 10)));
+  EXPECT_EQ(1U, store.put_count);
+  EXPECT_EQ(1U, store.list_count);
+  EXPECT_EQ(1U, store.delete_count);
+
+  add_pin();
+  ASSERT_EQ(common::Status::kOk, backups.release_backup_snapshot(backup_id));
+  EXPECT_EQ("releasing", store.objects.at(key(auto_id)));
+  EXPECT_EQ(0, pin.backup_ref_);
+  EXPECT_FALSE(backups.find_backup_snapshot(backup_id));
+  EXPECT_EQ(2U, env.store_accesses);
+  EXPECT_EQ(2U, store.put_count);
+  EXPECT_EQ(1U, store.get_count);
+}
+
+TEST_F(BackupLockPathTest, LegacyConflictsRejectRecoveryAndRetainTheBackupPin) {
+  ASSERT_FALSE(enabled());
+  store.objects[key(auto_id)] = "releasing";
+  memory::ArenaAllocator arena;
+  ASSERT_EQ(::objstore::SE_OHTER_DATA_NODE_MAYBE_RUNNING,
+            logger.replay_after_ckpt(arena));
+  EXPECT_EQ(0U, store.list_count);
+  EXPECT_EQ(0U, store.delete_count);
+
+  add_pin();
+  store.objects[key(auto_id)] = "recovering";
+  backups.save_auto_increment_id_for_recover(0);
+  const auto before = std::filesystem::file_size(root + "/1.manifest");
+  ASSERT_EQ(::objstore::SE_OHTER_DATA_NODE_MAYBE_RUNNING,
+            backups.release_backup_snapshot(backup_id));
+  EXPECT_TRUE(backups.find_backup_snapshot(backup_id));
+  EXPECT_EQ(1, pin.backup_ref_);
+  EXPECT_EQ(before, std::filesystem::file_size(root + "/1.manifest"));
+  store.objects.erase(key(auto_id));
+  ASSERT_EQ(common::Status::kOk, backups.release_backup_snapshot(backup_id));
+  EXPECT_EQ("releasing", store.objects.at(key(auto_id)));
+  EXPECT_EQ(0, pin.backup_ref_);
 }
 
 FakeObjectStore *g_provider_store = nullptr;

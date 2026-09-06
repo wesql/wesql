@@ -1301,7 +1301,10 @@ parent；崩溃后 target 只能是 absent 或完整新 root。
 5. 在 tail replay 前对全部 handler 做 mutation-free scan；internal prepared 和 external
    XA 都必须为空。随后由专用 RECOVERING THD 严格回放
    `(snapshot cursor, candidate durable cursor]`，source 不得越过 candidate，
-   authorization 逐事务绑定 manifest GTID/XID；temp replay 失败或进程崩溃就丢弃
+   authorization 逐事务绑定 manifest GTID/XID。串行 RLI 也必须先初始化
+   `Mts_submode_logical_clock`，因为 Query event 的临时表 attach/detach 会调用它；
+   不创建并行 worker。submode 归非 fake RLI 所有，清理时先销毁 RLI，再将 THD
+   还原为 BACKGROUND 并销毁 Auto_THD。temp replay 失败或进程崩溃就丢弃
    temp root 并从 snapshot 重来，不在旧/半成品 root 上补 decision；
 6. replay 后再次要求两类 prepared set 为空，并验证 recovered file:pos、server UUID、
    canonical GTID set+digest、DD、users/grants、空 replication repository 和 SmartEngine
