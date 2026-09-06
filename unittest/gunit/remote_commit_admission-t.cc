@@ -35,6 +35,7 @@
 #include "sql/partition_info.h"
 #include "sql/plugin_table.h"
 #include "sql/remote_commit/policy.h"
+#include "sql/remote_commit/native_recovery.h"
 #include "sql/remote_commit/protocol_codec.h"
 #include "sql/remote_commit/evidence.h"
 #include "sql/remote_commit/publisher.h"
@@ -59,6 +60,22 @@ namespace {
 using namespace std::chrono_literals;
 using my_testing::Server_initializer;
 namespace fs = std::filesystem;
+
+TEST(RemoteCommitNativeRecovery, SerialQueryContextAndThdLifecycle) {
+  Server_initializer initializer;
+  initializer.SetUp();
+  auto cleanup = create_scope_guard([&] { initializer.TearDown(); });
+  THD *const original = current_thd;
+  const auto original_system_thread = original->system_thread;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    std::string error;
+    ASSERT_TRUE(wesql::remote_commit::exercise_native_recovery_query_context_for_test(&error))
+        << error;
+    EXPECT_EQ(original, current_thd);
+    EXPECT_EQ(original_system_thread, current_thd->system_thread);
+    EXPECT_EQ(nullptr, current_thd->rli_slave);
+  }
+}
 
 TEST(RemoteCommitStartupPolicy, ReadsParsedGtidBeforeRuntimeInitialization) {
   const auto saved_mode = Gtid_mode::sysvar_mode;

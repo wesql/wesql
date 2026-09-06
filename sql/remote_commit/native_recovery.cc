@@ -24,6 +24,7 @@
 #include "sql/remote_commit/server_hooks.h"
 #include "sql/rpl_filter.h"
 #include "sql/rpl_info_dummy.h"
+#include "sql/rpl_mta_submode.h"
 #include "sql/rpl_replica.h"
 #include "sql/rpl_rli.h"
 #include "sql/sql_class.h"
@@ -416,6 +417,9 @@ class MysqlNativeRecoveryExecutor final : public NativeRecoveryExecutor {
 #endif
         1, "", false);
     if (rli_ == nullptr) return fail(error, "cannot allocate recovery RLI");
+    // Query events use this even on a serial SQL applier, as in
+    // handle_slave_sql. The non-fake RLI owns and destroys the submode.
+    rli_->current_mts_submode = new Mts_submode_logical_clock();
     rli_->set_rpl_info_handler(
         new Rpl_info_dummy(Relay_log_info::get_number_info_rli_fields()));
     filter_ = std::make_unique<Rpl_filter>();
@@ -782,6 +786,27 @@ NativeRecoveryResult replay_bounded_native_tail(
   MysqlNativeRecoveryExecutor executor;
   return run_bounded_native_recovery(request, &executor, prepared_verifier);
 }
+
+#ifdef WESQL_TEST
+bool exercise_native_recovery_query_context_for_test(std::string *error) {
+  MysqlNativeRecoveryExecutor executor;
+  if (!executor.start_session(error)) return false;
+  THD *thd = current_thd;
+  Relay_log_info *rli = thd == nullptr ? nullptr : thd->rli_slave;
+  if (rli == nullptr || rli->current_mts_submode == nullptr ||
+      rli->is_parallel_exec()) {
+    std::string ignored;
+    (void)executor.finish_session(&ignored);
+    return fail(error, "serial recovery Query context was not initialized");
+  }
+  constexpr char statement[] = "CREATE DATABASE recovery_context_test";
+  Query_log_event event(thd, statement, sizeof(statement) - 1, false, true,
+                        true, 0);
+  event.attach_temp_tables_worker(thd, rli);
+  event.detach_temp_tables_worker(thd, rli);
+  return executor.finish_session(error);
+}
+#endif
 #endif  // WESQL_NATIVE_RECOVERY_STATE_MACHINE_TEST
 
 }  // namespace wesql::remote_commit
