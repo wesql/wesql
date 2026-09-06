@@ -3025,6 +3025,13 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
     EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
     check_baseline(false);
   }
+  // Shutdown must reject even while the once-only restore is still unused.
+  rc::shutdown();
+  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
+  check_baseline(false);
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
   ASSERT_TRUE(rc::restore_recovery_snapshot_gtids(candidate, &error)) << error;
   check_baseline(true);
   EXPECT_EQ(nullptr, thd->open_tables);
@@ -3037,9 +3044,6 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
       (marker.server_uuid + ":5").c_str());
   global_tsid_lock->unlock();
   ASSERT_EQ(RETURN_STATUS_OK, replayed);
-  EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
-  check_baseline(false);
-  rc::shutdown();
   EXPECT_FALSE(rc::restore_recovery_snapshot_gtids(candidate, &error));
   check_baseline(false);
   rc::reset_startup_lifecycle_for_test();

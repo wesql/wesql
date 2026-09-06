@@ -425,6 +425,9 @@ class MysqlNativeRecoveryExecutor final : public NativeRecoveryExecutor {
         new Rpl_info_dummy(Relay_log_info::get_number_info_rli_fields()));
     filter_ = std::make_unique<Rpl_filter>();
     rli_->set_filter(filter_.get());
+    // The RLI constructor leaves this to the SQL applier startup. Recovery
+    // has no replication filters and must apply every authenticated event.
+    rli_->deferred_events_collecting = false;
     rli_->info_thd = thd;
     thd->rli_slave = rli_.get();
 
@@ -807,11 +810,14 @@ bool exercise_native_recovery_query_context_for_test(std::string *error) {
   THD *thd = current_thd;
   Relay_log_info *rli = thd == nullptr ? nullptr : thd->rli_slave;
   if (rli == nullptr || rli->current_mts_submode == nullptr ||
-      rli->is_parallel_exec()) {
+      rli->is_parallel_exec() || rli->deferred_events_collecting ||
+      rli->deferred_events != nullptr || rli->rpl_filter->is_on()) {
     std::string ignored;
     (void)executor.finish_session(&ignored);
     return fail(error, "serial recovery Query context was not initialized");
   }
+  if (slave_execute_deferred_events(thd))
+    return fail(error, "unfiltered recovery deferred-events execution failed");
   constexpr char statement[] = "CREATE DATABASE recovery_context_test";
   Query_log_event event(thd, statement, sizeof(statement) - 1, false, true,
                         true, 0);
