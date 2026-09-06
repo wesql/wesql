@@ -315,6 +315,10 @@ class Scoped_startup_pfs_initialization {
 // remote publication, or write admission.
 bool may_run_startup_bootstrap_snapshot_worker();
 
+// Read-only paired EMPTY_SOURCE sampling, before or after bootstrap install.
+// The installed phase requires its own exact epoch/HEAD/marker authority.
+bool may_collect_bootstrap_root_evidence(const THD *thd, bool installed);
+
 // True only for the pre-activation takeover worker: the parent's exact epoch
 // and candidate HEAD were adopted read-only, lifecycle is RECOVERING, and
 // commit admission remains CLOSED and drained. This is the only earlier phase

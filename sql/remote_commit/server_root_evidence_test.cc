@@ -531,13 +531,14 @@ void test_installed_exact_marker_and_snapshot() {
          "unavailable installed marker was accepted");
 }
 
-void test_bootstrap_requires_bootstrap_authorities() {
+void test_bootstrap_requires_bootstrap_authorities(bool installed) {
   Fixture fixture;
-  fixture.observation.smartengine_live_extents =
-      observed(std::vector<rc::SmartengineExtentRef>{});
+  if (!installed)
+    fixture.observation.smartengine_live_extents =
+        observed(std::vector<rc::SmartengineExtentRef>{});
   const rc::ServerRootVerificationRequest request{
       rc::StartupCoordinatorRoute::BOOTSTRAP, "/tmp/root", fixture.deployment,
-      false, nullptr, nullptr};
+      installed, nullptr, installed ? &fixture.published : nullptr};
   rc::StartupRootEvidence evidence;
   rc::StartupStepResult result =
       rc::compare_server_root_evidence(request, fixture.observation, &evidence);
@@ -691,7 +692,8 @@ int main() {
   test_malformed_request_shape_is_rejected();
   test_takeover_uses_post_replay_live_set();
   test_installed_exact_marker_and_snapshot();
-  test_bootstrap_requires_bootstrap_authorities();
+  test_bootstrap_requires_bootstrap_authorities(false);
+  test_bootstrap_requires_bootstrap_authorities(true);
   std::cout << "server root evidence tests passed\n";
   return EXIT_SUCCESS;
 }

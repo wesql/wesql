@@ -1612,6 +1612,13 @@ GTID 集；同时要求 SmartEngine 未加载、对应目录不存在、TC 与 b
 不存在，且授权和两个样本均保持不变。取得 epoch 后的快照阶段仍执行完整
 EMPTY_SOURCE、binlog cut 和 SmartEngine 精确 live-set 校验。
 
+首次 bootstrap 安装后的最终校验仍执行同一 EMPTY_SOURCE 双采样，但权限按
+实际安装阶段选择：安装前要求精确 bootstrap snapshot worker，安装后要求
+已绑定 epoch、HEAD 和 install marker 的 INSTALLED_ROOT 预恢复授权。两者都
+要求 BACKGROUND 内部线程、同版本 DD 的 FINISHED 阶段和关闭且排空的准入。
+全局读锁下的前后样本、prepared 排空、SmartEngine 快照以及全部一致性比较
+继续执行；采样结束重新核验权限，失权即拒绝。此只读能力不连接提交入口。
+
 复制清单保留原始通道数，并单独识别 MySQL 自动创建、尚未配置的默认通道。
 只有默认名称、无 source 配置、MI/RLI 未初始化、无线程和 worker，且三个
 持久仓库都零行时才视为无复制状态；其他通道仍拒绝。检查期间保持通道映射

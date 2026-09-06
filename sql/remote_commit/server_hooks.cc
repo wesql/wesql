@@ -2564,6 +2564,20 @@ bool may_run_startup_bootstrap_snapshot_worker() {
   return bootstrap_snapshot_worker_authorized_locked();
 }
 
+bool may_collect_bootstrap_root_evidence(const THD *thd, bool installed) {
+  if (!enabled() || opt_initialize || thd == nullptr ||
+      thd->system_thread != SYSTEM_THREAD_BACKGROUND)
+    return false;
+  const auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  if (context.get_stage() != dd::bootstrap::Stage::FINISHED ||
+      !context.is_restart())
+    return false;
+  std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
+  std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
+  return installed ? installed_reexec_pre_recovery_authorized_locked()
+                   : bootstrap_snapshot_worker_authorized_locked();
+}
+
 bool startup_existing_binlog_boundary(std::string *file, uint64_t *pos) {
   if (file == nullptr || pos == nullptr) return false;
   file->clear();

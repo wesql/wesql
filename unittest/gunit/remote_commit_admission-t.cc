@@ -2308,6 +2308,150 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,
+       BootstrapEvidenceSamplingSelectsExactRoleAndRechecksAuthority) {
+  auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  const auto saved_context = context;
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] {
+    context = saved_context;
+    opt_initialize = saved_initialize;
+  });
+  opt_initialize = false;
+  context.set_stage(dd::bootstrap::Stage::FINISHED);
+  context.set_actual_dd_version(dd::DD_VERSION);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_BACKGROUND;
+  const auto allowed = [&](bool installed) {
+    return rc::may_collect_bootstrap_root_evidence(&thd, installed);
+  };
+
+  initialize(false);
+  EXPECT_FALSE(allowed(false));
+  EXPECT_FALSE(allowed(true));
+  epoch_proof.head_body.clear();
+  epoch_proof.head_etag.clear();
+  epoch_proof.head_generation = 0;
+  adopt(rc::StartupEpochAdoptionRole::BOOTSTRAP_SNAPSHOT);
+  EXPECT_TRUE(allowed(false));
+  EXPECT_FALSE(allowed(true));
+  rc::reset_commit_admission_for_test(true);
+  EXPECT_FALSE(allowed(false));
+  rc::reset_commit_admission_for_test(false);
+  EXPECT_TRUE(allowed(false));
+  rc::shutdown();
+  EXPECT_FALSE(allowed(false));
+
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  epoch_proof.head_body = head_body;
+  epoch_proof.head_etag = head_etag;
+  epoch_proof.head_generation = head.generation;
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  EXPECT_FALSE(allowed(false));
+  EXPECT_FALSE(allowed(true));
+
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  EXPECT_FALSE(allowed(true));
+  ASSERT_FALSE(rc::activate_installed_root(activation));
+  EXPECT_TRUE(allowed(true));
+  EXPECT_FALSE(allowed(false));
+  EXPECT_FALSE(rc::may_collect_bootstrap_root_evidence(nullptr, true));
+  EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+  EXPECT_FALSE(rc::commit_admission_open_for_test());
+  EXPECT_EQ(0U, rc::commit_admission_count_for_test());
+  for (const auto kind : {NON_SYSTEM_THREAD, SYSTEM_THREAD_DD_INITIALIZE,
+                          SYSTEM_THREAD_DD_RESTART,
+                          SYSTEM_THREAD_SERVER_UPGRADE}) {
+    thd.system_thread = kind;
+    EXPECT_FALSE(allowed(true));
+  }
+  thd.system_thread = SYSTEM_THREAD_BACKGROUND;
+  context.set_stage(dd::bootstrap::Stage::SYNCED);
+  EXPECT_FALSE(allowed(true));
+  context.set_stage(dd::bootstrap::Stage::FINISHED);
+  context.set_actual_dd_version(dd::DD_VERSION - 1);
+  EXPECT_FALSE(allowed(true));
+  context.set_actual_dd_version(dd::DD_VERSION);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID - 1);
+  EXPECT_FALSE(allowed(true));
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  opt_initialize = true;
+  EXPECT_FALSE(allowed(true));
+  opt_initialize = false;
+  opt_binlog_archive_remote_commit = false;
+  EXPECT_FALSE(allowed(true));
+  opt_binlog_archive_remote_commit = true;
+  EXPECT_TRUE(allowed(true));
+  rc::reset_commit_admission_for_test(true);
+  EXPECT_FALSE(allowed(true));
+  rc::reset_commit_admission_for_test(false);
+  EXPECT_TRUE(allowed(true));
+  ASSERT_FALSE(rc::verify_installed_root_post_engine(full_proof));
+  EXPECT_FALSE(allowed(true));
+  EXPECT_FALSE(rc::commit_admission_open_for_test());
+  rc::open_commit_admission();
+  EXPECT_FALSE(allowed(true));
+  rc::shutdown();
+  EXPECT_FALSE(allowed(true));
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       BootstrapEvidenceSamplingRejectsMismatchedEpochHeadAndMarker) {
+  auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  const auto saved_context = context;
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] {
+    context = saved_context;
+    opt_initialize = saved_initialize;
+  });
+  opt_initialize = false;
+  context.set_stage(dd::bootstrap::Stage::FINISHED);
+  context.set_actual_dd_version(dd::DD_VERSION);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_BACKGROUND;
+  const auto allowed = [&] {
+    return rc::may_collect_bootstrap_root_evidence(&thd, true);
+  };
+  for (int field = 0; field != 6; ++field) {
+    rc::reset_startup_lifecycle_for_test();
+    initialize(true);
+    auto wrong = epoch_proof;
+    switch (field) {
+      case 0: ++wrong.value.epoch; break;
+      case 1: wrong.body += " "; break;
+      case 2: wrong.etag += "x"; break;
+      case 3: ++wrong.head_generation; break;
+      case 4: wrong.head_body += " "; break;
+      case 5: wrong.head_etag += "x"; break;
+    }
+    EXPECT_TRUE(rc::adopt_startup_epoch(
+        wrong, rc::StartupEpochAdoptionRole::INSTALLED_ROOT));
+    EXPECT_FALSE(allowed());
+  }
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  for (int field = 0; field != 3; ++field) {
+    auto wrong = activation;
+    switch (field) {
+      case 0: wrong.head_body += " "; break;
+      case 1: wrong.head_etag += "x"; break;
+      case 2: ++wrong.marker.installed_head.generation; break;
+    }
+    EXPECT_TRUE(rc::activate_installed_root(wrong));
+    EXPECT_FALSE(allowed());
+  }
+  ASSERT_FALSE(rc::activate_installed_root(activation));
+  EXPECT_TRUE(allowed());
+  rc::shutdown();
+  EXPECT_FALSE(allowed());
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
        InstalledReexecRequiresOrderedTwoPhaseVerification) {
   initialize(true);
   adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);

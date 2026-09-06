@@ -2025,10 +2025,10 @@ StartupStepResult collect_server_root_observation(
 
   if (request.route == StartupCoordinatorRoute::BOOTSTRAP) {
     const bool authorized_before =
-        may_run_startup_bootstrap_snapshot_worker();
+        may_collect_bootstrap_root_evidence(auto_thd->thd, request.installed);
     if (!authorized_before) {
       const std::string detail =
-          "bootstrap snapshot-worker authorization is not held";
+          "bootstrap root evidence sampling authorization is not held";
       set_bootstrap_scan_unavailable(detail, &observation);
       set_unavailable(&observation.smartengine_snapshot_cursor, detail);
       set_unavailable(&observation.smartengine_live_extents, detail);
@@ -2063,7 +2063,8 @@ StartupStepResult collect_server_root_observation(
         const bool after_ok = capture_bootstrap_server_sample(
             request, auto_thd->thd, true, &after, &after_detail);
         const bool authorized_after =
-            may_run_startup_bootstrap_snapshot_worker();
+            may_collect_bootstrap_root_evidence(auto_thd->thd,
+                                                request.installed);
         global_lock.release();
 
         if (!before_ok || !after_ok) {
@@ -2076,7 +2077,7 @@ StartupStepResult collect_server_root_observation(
           std::string stable_detail;
           if (!authorized_after)
             append_detail(
-                "bootstrap snapshot-worker authorization changed during scan",
+                "bootstrap root evidence sampling authorization changed during scan",
                 &stable_detail);
           if (before != after)
             append_detail("paired bootstrap server samples differ",
