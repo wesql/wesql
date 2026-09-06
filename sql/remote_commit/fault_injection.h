@@ -25,18 +25,21 @@ inline void production_fault_point(const char *point) {
   if (directory.empty()) return;
   const std::string stem = directory + "/" + point;
   const std::string arm = stem + ".arm";
-  const int input = open(arm.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int input = open(arm.c_str(),
+                         O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (input < 0) {
     if (errno == ENOENT) return;
     _exit(86);
   }
   struct stat metadata {};
+  if (fstat(input, &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
+    close(input);
+    _exit(86);
+  }
   char bytes[16];
   const ssize_t length = read(input, bytes, sizeof(bytes));
-  const bool regular = fstat(input, &metadata) == 0 && S_ISREG(metadata.st_mode);
   close(input);
-  if (!regular || length <= 0 ||
-      length == static_cast<ssize_t>(sizeof(bytes))) _exit(86);
+  if (length <= 0 || length == static_cast<ssize_t>(sizeof(bytes))) _exit(86);
   const std::string action(bytes, static_cast<size_t>(length));
   if (action != "pause\n" && action != "crash\n") _exit(86);
 
