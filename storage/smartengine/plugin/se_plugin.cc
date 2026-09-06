@@ -595,7 +595,7 @@ static int se_done_func(void *const p)
   if (env) {
     objstore::ObjectStore *se_objstore = nullptr;
     env->GetObjectStore(se_objstore);
-    if (se_objstore) {
+    if (se_objstore && !storage::remote_extent::enabled()) {
       int ret = 0;
       std::string err_msg;
       const std::string& bucket = env->GetObjectStoreBucket();
