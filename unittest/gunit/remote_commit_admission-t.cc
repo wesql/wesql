@@ -25,11 +25,13 @@
 #include "sql/dd/impl/types/charset_impl.h"
 #include "sql/dd/impl/types/collation_impl.h"
 #include "sql/dd/impl/types/resource_group_impl.h"
+#include "sql/dd/impl/types/table_impl.h"
 #include "sql/dd/impl/types/tablespace_impl.h"
 #include "sql/handler.h"
 #include "sql/item.h"
 #include "sql/mysqld.h"
 #include "sql/partition_info.h"
+#include "sql/plugin_table.h"
 #include "sql/remote_commit/policy.h"
 #include "sql/remote_commit/protocol_codec.h"
 #include "sql/remote_commit/evidence.h"
@@ -1876,6 +1878,157 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   epoch_proof.head_generation = 0;
   adopt(rc::StartupEpochAdoptionRole::BOOTSTRAP_SNAPSHOT);
   EXPECT_FALSE(rc::may_validate_startup_resource_groups(&thd));
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       RestoredPfsScopeBindsOneThreadDefinitionAndStartupAuthority) {
+  auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
+  const auto saved_context = context;
+  const bool saved_initialize = opt_initialize;
+  auto restore = create_scope_guard([&] {
+    context = saved_context;
+    opt_initialize = saved_initialize;
+  });
+  opt_initialize = false;
+  context.set_stage(dd::bootstrap::Stage::FINISHED);
+  context.set_actual_dd_version(dd::DD_VERSION);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  THD thd(false);
+  thd.system_thread = SYSTEM_THREAD_BACKGROUND;
+  const Plugin_table definition("performance_schema", "innodb_redo_log_files",
+                                "FILE_ID BIGINT NOT NULL",
+                                "engine = 'performance_schema'", nullptr);
+  const Plugin_table changed("performance_schema", "innodb_redo_log_files",
+                             "FILE_ID INT NOT NULL",
+                             "engine = 'performance_schema'", nullptr);
+  initialize(true);
+  {
+    rc::Scoped_startup_pfs_restore scope(&thd, &definition);
+    EXPECT_FALSE(scope.active());
+  }
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  {
+    rc::Scoped_startup_pfs_restore scope(&thd, &definition);
+    EXPECT_FALSE(scope.active());
+  }
+  ASSERT_FALSE(rc::activate_installed_root(activation));
+  const auto expect_scope = [&] {
+    EXPECT_FALSE(rc::startup_pfs_restore_active(&thd));
+    {
+      rc::Scoped_startup_pfs_restore scope(&thd, &definition);
+      ASSERT_TRUE(scope.active());
+      EXPECT_TRUE(rc::startup_pfs_restore_active(&thd));
+      EXPECT_FALSE(rc::startup_pfs_restore_active(nullptr));
+      EXPECT_FALSE(rc::may_initialize_system_tables(&thd));
+      EXPECT_EQ(SYSTEM_THREAD_BACKGROUND, thd.system_thread);
+      EXPECT_TRUE(rc::validate_startup_pfs_table(&thd, &changed));
+      std::thread other([&] {
+        EXPECT_FALSE(rc::startup_pfs_restore_active(&thd));
+      });
+      other.join();
+      rc::reset_commit_admission_for_test(true);
+      EXPECT_TRUE(rc::startup_pfs_restore_active(&thd));
+      EXPECT_TRUE(rc::validate_startup_pfs_table(&thd, &definition));
+      rc::reset_commit_admission_for_test(false);
+      EXPECT_EQ(0U, rc::commit_admission_count_for_test());
+    }
+    EXPECT_FALSE(rc::startup_pfs_restore_active(&thd));
+    EXPECT_EQ(SYSTEM_THREAD_BACKGROUND, thd.system_thread);
+  };
+  expect_scope();
+  for (const auto kind : {NON_SYSTEM_THREAD, SYSTEM_THREAD_DD_INITIALIZE,
+                          SYSTEM_THREAD_DD_RESTART,
+                          SYSTEM_THREAD_SERVER_UPGRADE}) {
+    thd.system_thread = kind;
+    rc::Scoped_startup_pfs_restore scope(&thd, &definition);
+    EXPECT_FALSE(scope.active());
+  }
+  thd.system_thread = SYSTEM_THREAD_BACKGROUND;
+  context.set_stage(dd::bootstrap::Stage::SYNCED);
+  {
+    rc::Scoped_startup_pfs_restore scope(&thd, &definition);
+    EXPECT_FALSE(scope.active());
+  }
+  context.set_stage(dd::bootstrap::Stage::FINISHED);
+  context.set_upgraded_server_version(MYSQL_VERSION_ID - 1);
+  {
+    rc::Scoped_startup_pfs_restore scope(&thd, &definition);
+    EXPECT_FALSE(scope.active());
+  }
+  context.set_upgraded_server_version(MYSQL_VERSION_ID);
+  opt_initialize = true;
+  {
+    rc::Scoped_startup_pfs_restore scope(&thd, &definition);
+    EXPECT_FALSE(scope.active());
+  }
+  opt_initialize = false;
+  rc::shutdown();
+  {
+    rc::Scoped_startup_pfs_restore scope(&thd, &definition);
+    EXPECT_FALSE(scope.active());
+  }
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  expect_scope();
+  rc::reset_startup_lifecycle_for_test();
+  initialize(false);
+  epoch_proof.head_body.clear();
+  epoch_proof.head_etag.clear();
+  epoch_proof.head_generation = 0;
+  adopt(rc::StartupEpochAdoptionRole::BOOTSTRAP_SNAPSHOT);
+  rc::Scoped_startup_pfs_restore scope(&thd, &definition);
+  EXPECT_FALSE(scope.active());
+}
+
+TEST(RemoteCommitStartupDictionary, PfsDefinitionComparisonRejectsMetadataChanges) {
+  namespace rc = wesql::remote_commit;
+  THD thd(false);
+  dd::Table_impl stored;
+  stored.set_name("innodb_redo_log_files");
+  stored.set_engine("performance_schema");
+  stored.set_collation_id(my_charset_utf8mb4_0900_ai_ci.number);
+  auto *column = stored.add_column();
+  column->set_name("FILE_ID");
+  column->set_type(dd::enum_column_types::LONGLONG);
+  column->set_nullable(false);
+  const auto clone = [&] {
+    return std::unique_ptr<dd::Table>(static_cast<const dd::Table &>(stored).clone());
+  };
+  const auto matches = [&](dd::Table *expected) {
+    return rc::startup_pfs_table_definition_matches(
+        &thd, &stored, expected, "performance_schema");
+  };
+  auto expected = clone();
+  ASSERT_TRUE(matches(expected.get()));
+  stored.set_id(12345);
+  expected->set_created(123);
+  expected->set_last_altered(456);
+  EXPECT_TRUE(matches(expected.get()));
+  expected->set_engine("InnoDB");
+  EXPECT_FALSE(matches(expected.get()));
+  expected = clone();
+  expected->set_name("other_table");
+  EXPECT_FALSE(matches(expected.get()));
+  expected = clone();
+  expected->set_comment("changed");
+  EXPECT_FALSE(matches(expected.get()));
+  expected = clone();
+  (*expected->columns()->begin())->set_type(dd::enum_column_types::LONG);
+  EXPECT_FALSE(matches(expected.get()));
+  expected = clone();
+  (*expected->columns()->begin())->set_nullable(true);
+  EXPECT_FALSE(matches(expected.get()));
+  expected = clone();
+  (*expected->columns()->begin())->set_comment("changed");
+  EXPECT_FALSE(matches(expected.get()));
+  expected = clone();
+  (*expected->columns()->begin())->set_default_option("CURRENT_TIMESTAMP");
+  EXPECT_FALSE(matches(expected.get()));
+  expected = clone();
+  expected->add_column()->set_name("EXTRA");
+  EXPECT_FALSE(matches(expected.get()));
+  EXPECT_FALSE(matches(nullptr));
 }
 
 TEST(RemoteCommitStartupDictionary, ResourceGroupCpuRangesPreserveTheHighestBit) {

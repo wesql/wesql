@@ -16,6 +16,7 @@
 #include "sql/remote_commit/protocol_codec.h"
 
 class MYSQL_BIN_LOG;
+class Plugin_table;
 class THD;
 namespace objstore {
 class ObjectStore;
@@ -276,6 +277,23 @@ bool validate_startup_dictionary_contents(THD *thd, std::string *error);
 
 // Resource-group deserialization follows the completed same-version DD restart.
 bool may_validate_startup_resource_groups(const THD *thd);
+
+// Bind memory-only PFS registration to the compiled redo table at startup.
+class Scoped_startup_pfs_restore {
+ public:
+  Scoped_startup_pfs_restore(THD *thd, const Plugin_table *definition);
+  ~Scoped_startup_pfs_restore();
+  Scoped_startup_pfs_restore(const Scoped_startup_pfs_restore &) = delete;
+  Scoped_startup_pfs_restore &operator=(const Scoped_startup_pfs_restore &) = delete;
+  bool active() const { return m_thd != nullptr; }
+
+ private:
+  THD *m_thd{nullptr};
+};
+
+// Scope detection is not authority; validation rechecks authority before reads.
+bool startup_pfs_restore_active(const THD *thd);
+bool validate_startup_pfs_table(THD *thd, const Plugin_table *definition);
 
 // Only for the fresh Auto_THD in InnoDB's compiled startup PFS table creation.
 // Restore its BACKGROUND tag before Auto_THD destroys the internal thread.

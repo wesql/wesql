@@ -1,3 +1,35 @@
+diff --git a/storage/perfschema/pfs_plugin_table.cc b/storage/perfschema/pfs_plugin_table.cc
+index 8d5f9c961234bfe46c28e23f1d6de8418bd1bd5e..b86a750ec16bc68c3d8a21576424f210cd8432ee 100644
+--- a/storage/perfschema/pfs_plugin_table.cc
++++ b/storage/perfschema/pfs_plugin_table.cc
+@@ -36,6 +36,10 @@
+ #include "sql/pfs_priv_util.h"
+ #include "sql/plugin_table.h"
+ #include "sql/table.h"
++#ifdef WESQL
++#include "sql/current_thd.h"
++#include "sql/remote_commit/server_hooks.h"
++#endif
+ #include "storage/perfschema/pfs_column_values.h"
+ #include "storage/perfschema/table_helper.h"
+ #include "storage/perfschema/table_plugin_table.h"
+@@ -423,7 +427,15 @@ static int pfs_add_tables_v1(PFS_engine_table_share_proxy **st_share_list,
+                          temp_st_share->m_table_name,
+                          temp_st_share->m_table_definition,
+                          "engine = 'performance_schema'", nullptr);
+-    if (create_native_table_for_pfs(&t)) {
++    bool table_error;
++#ifdef WESQL
++    if (wesql::remote_commit::startup_pfs_restore_active(current_thd))
++      table_error =
++          wesql::remote_commit::validate_startup_pfs_table(current_thd, &t);
++    else
++#endif
++      table_error = create_native_table_for_pfs(&t);
++    if (table_error) {
+       /* ============== CRITICAL SECTION 2 (begin) ================= */
+       pfs_external_table_shares.lock_share_list();
+       /* Delete all the initialized table share till now */
 diff --git a/sql/resourcegroups/resource_group_mgr.cc b/sql/resourcegroups/resource_group_mgr.cc
 index e10a351ab13bc3f593091bf3342ad5ee0f6b7bfe..4a5199dfe9ddfb1655460c69880b301c5029309d 100644
 --- a/sql/resourcegroups/resource_group_mgr.cc
@@ -4409,25 +4441,60 @@ index dce77679993fb118df92497ec9ef36c42b32f7cd..0f6116f879ea328290f9614e8947ec99
    /** Initialize state while applying cloned data
    @param[in]    state_desc      snapshot state descriptor
 diff --git a/storage/innobase/log/log0pfs.cc b/storage/innobase/log/log0pfs.cc
-index c928e2a5c2da5770443fc998bded91a60502ec4c..b98f9990f526745312205e69b8459cde4c028241 100644
+index c928e2a5c2da5770443fc998bded91a60502ec4c..568ec8702ae2bfebe17eb173c2eacbb07683f55e 100644
 --- a/storage/innobase/log/log0pfs.cc
 +++ b/storage/innobase/log/log0pfs.cc
-@@ -47,3 +47,7 @@
+@@ -44,6 +44,11 @@
+
+ #include "sql/dd/cache/dictionary_client.h" /* Dictionary_client */
+
 +#ifdef WESQL
++#include "sql/plugin_table.h"
 +#include "sql/remote_commit/server_hooks.h"
 +#endif
 +
  SERVICE_TYPE_NO_CONST(pfs_plugin_table_v1) * pfs_table{};
  SERVICE_TYPE_NO_CONST(pfs_plugin_column_tiny_v1) * pfs_col_tinyint{};
  SERVICE_TYPE_NO_CONST(pfs_plugin_column_integer_v1) * pfs_col_integer{};
-@@ -330,3 +334,7 @@ bool log_pfs_create_tables() {
+@@ -327,6 +332,16 @@ bool log_pfs_create_tables() {
+   Auto_THD auto_thd;
+   auto thd = auto_thd.thd;
+
 +#ifdef WESQL
 +  wesql::remote_commit::Scoped_startup_pfs_initialization initialization(thd);
++  const Plugin_table definition(
++      PERFORMANCE_SCHEMA_DB_NAME.str,
++      Log_files_pfs_table_share_proxy::TABLE_NAME,
++      pfs_table_share_proxy.m_table_definition,
++      "engine = 'performance_schema'", nullptr);
++  wesql::remote_commit::Scoped_startup_pfs_restore restore(thd, &definition);
 +#endif
 +
    /*
      Set tx_read_only to false to allow installing PFS tables even
      if the server is started with --transaction-read-only=true.
+@@ -336,6 +351,9 @@ bool log_pfs_create_tables() {
+
+   pfs_sdi_disable();
+
++#ifdef WESQL
++  if (!restore.active())
++#endif
+   {
+     Disable_autocommit_guard autocommit_guard{thd};
+     Disable_binlog_guard disable_binlog(thd);
+@@ -361,6 +379,11 @@ bool log_pfs_create_tables() {
+     if (pfs_table->add_tables(&pfs_proxy_tables, 1) != 0) {
+       end_transaction(thd, true);
+       pfs_sdi_enable();
++#ifdef WESQL
++      if (restore.active())
++        wesql::remote_commit::fail_stop(
++            "cannot validate or register restored startup PFS table");
++#endif
+       return false;
+     }
+
 diff --git a/strings/ctype-simple.cc b/strings/ctype-simple.cc
 index 77b6c09fd719cec91da4a4e743b5bc02a28ca0d7..4675aaf285d6b36718d166bda6be212561a3b936 100644
 --- a/strings/ctype-simple.cc

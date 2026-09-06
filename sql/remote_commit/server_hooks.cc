@@ -27,6 +27,7 @@
 
 #include "my_rnd.h"
 #include "my_sys.h"
+#include "scope_guard.h"
 #include "mysql/binlog/event/trx_boundary_parser.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/my_loglevel.h"
@@ -38,10 +39,16 @@
 #include "sql/dd/dd.h"
 #include "sql/dd/cache/dictionary_client.h"
 #include "sql/dd/dictionary.h"
+#include "sql/dd/dd_schema.h"
+#include "sql/dd/dd_table.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
+#include "sql/dd/impl/sdi.h"
+#include "sql/dd/types/schema.h"
+#include "sql/dd/types/table.h"
 #include "sql/item.h"
 #include "sql/log_event.h"
 #include "sql/mysqld.h"
+#include "sql/plugin_table.h"
 #include "sql/remote_commit/evidence.h"
 #include "sql/remote_commit/publisher.h"
 #include "sql/remote_commit/segment_sealer.h"
@@ -53,6 +60,9 @@
 #include "sql/set_var.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
+#include "sql/sql_db.h"
+#include "sql/sql_parse.h"
+#include "sql/sql_table.h"
 #include "sql/transaction_info.h"
 
 extern ulong srv_flush_log_at_trx_commit;
@@ -94,6 +104,9 @@ class CloneCutBinlogPin {
 namespace {
 
 namespace fs = std::filesystem;
+
+thread_local THD *g_pfs_restore_thd{nullptr};
+thread_local const Plugin_table *g_pfs_restore_definition{nullptr};
 
 struct AuthorizationRecord {
   CommitAuthorization authorization;
@@ -2371,9 +2384,10 @@ bool may_rebuild_startup_dictionary_cache(const THD *thd) {
 }
 
 static bool may_validate_restored_dictionary_stage(
-    const THD *thd, dd::bootstrap::Stage stage) {
+    const THD *thd, dd::bootstrap::Stage stage,
+    enum_thread_type thread_type = SYSTEM_THREAD_DD_INITIALIZE) {
   if (!enabled() || opt_initialize || thd == nullptr ||
-      thd->system_thread != SYSTEM_THREAD_DD_INITIALIZE)
+      thd->system_thread != thread_type)
     return false;
   const auto &context = dd::bootstrap::DD_bootstrap_ctx::instance();
   if (context.get_stage() != stage || !context.is_restart())
@@ -2392,6 +2406,118 @@ bool may_validate_startup_dictionary_contents(const THD *thd) {
 bool may_validate_startup_resource_groups(const THD *thd) {
   return may_validate_restored_dictionary_stage(thd,
                                                dd::bootstrap::Stage::FINISHED);
+}
+
+Scoped_startup_pfs_restore::Scoped_startup_pfs_restore(
+    THD *thd, const Plugin_table *definition) {
+  if (!may_validate_restored_dictionary_stage(
+          thd, dd::bootstrap::Stage::FINISHED, SYSTEM_THREAD_BACKGROUND))
+    return;
+  if (g_pfs_restore_thd != nullptr || definition == nullptr ||
+      definition->get_schema_name() == nullptr ||
+      definition->get_name() == nullptr ||
+      definition->get_table_definition() == nullptr ||
+      definition->get_table_options() == nullptr ||
+      std::string_view(definition->get_schema_name()) != "performance_schema" ||
+      std::string_view(definition->get_name()) != "innodb_redo_log_files")
+    fail_stop("invalid compiled startup PFS restore scope");
+  m_thd = thd;
+  g_pfs_restore_thd = thd;
+  g_pfs_restore_definition = definition;
+}
+
+Scoped_startup_pfs_restore::~Scoped_startup_pfs_restore() {
+  if (m_thd != nullptr) {
+    g_pfs_restore_thd = nullptr;
+    g_pfs_restore_definition = nullptr;
+  }
+}
+
+bool startup_pfs_restore_active(const THD *thd) {
+  return thd != nullptr && thd == g_pfs_restore_thd;
+}
+
+bool validate_startup_pfs_table(THD *thd, const Plugin_table *definition) {
+  const auto reject = [](const char *reason) {
+    LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG, reason);
+    return true;
+  };
+  if (!startup_pfs_restore_active(thd) || definition == nullptr ||
+      definition->get_name() == nullptr ||
+      definition->get_schema_name() == nullptr ||
+      definition->get_table_definition() == nullptr ||
+      definition->get_table_options() == nullptr ||
+      g_pfs_restore_definition == nullptr ||
+      !may_validate_restored_dictionary_stage(
+          thd, dd::bootstrap::Stage::FINISHED, SYSTEM_THREAD_BACKGROUND))
+    return reject("startup PFS validation is unauthorized");
+  const Plugin_table &compiled = *g_pfs_restore_definition;
+  if (definition->get_ddl() != compiled.get_ddl() ||
+      compiled.get_table_options() == nullptr ||
+      std::string_view(compiled.get_table_options()) !=
+          "engine = 'performance_schema'" ||
+      compiled.get_tablespace_name() != nullptr)
+    return reject("startup PFS registration differs from compiled definition");
+
+  dd::Schema_MDL_locker schema_lock(thd);
+  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  const dd::Schema *schema = nullptr;
+  const dd::Table *stored = nullptr;
+  if (schema_lock.ensure_locked(compiled.get_schema_name()) ||
+      dd::acquire_exclusive_table_mdl(thd, compiled.get_schema_name(),
+                                      compiled.get_name(), false, nullptr) ||
+      thd->dd_client()->acquire(compiled.get_schema_name(), &schema) ||
+      thd->dd_client()->acquire(compiled.get_schema_name(), compiled.get_name(),
+                                 &stored) ||
+      schema == nullptr || stored == nullptr || !stored->triggers().empty())
+    return reject("restored startup PFS table cannot be read or has triggers");
+
+  // Parse and prepare the compiled DDL, but never execute or persist it.
+  LEX lex;
+  LEX *saved_lex = thd->lex;
+  auto *saved_partition = thd->work_part_info;
+  thd->lex = &lex;
+  lex_start(thd);
+  auto restore_lex = create_scope_guard([&] {
+    lex_end(&lex);
+    thd->lex = saved_lex;
+    thd->work_part_info = saved_partition;
+  });
+  const auto ddl = compiled.get_ddl();
+  Parser_state parser;
+  if (parser.init(thd, ddl.data(), ddl.size()) ||
+      parse_sql(thd, &parser, nullptr) ||
+      lex.sql_command != SQLCOM_CREATE_TABLE || lex.create_info == nullptr ||
+      lex.alter_info == nullptr || thd->work_part_info != nullptr)
+    return reject("cannot parse compiled startup PFS definition");
+  auto *info = lex.create_info;
+  if (info->db_type == nullptr ||
+      get_default_db_collation(*schema, &info->default_table_charset))
+    return reject("cannot resolve compiled startup PFS engine or collation");
+  std::unique_ptr<handler, Destroy_only<handler>> file(
+      get_new_handler(nullptr, false, thd->mem_root, info->db_type));
+  KEY *keys = nullptr;
+  uint key_count = 0;
+  FOREIGN_KEY *foreign_keys = nullptr;
+  uint foreign_key_count = 0;
+  if (!file || mysql_prepare_create_table(
+                   thd, compiled.get_schema_name(), compiled.get_name(), info,
+                   lex.alter_info, file.get(), false, &keys, &key_count,
+                   &foreign_keys, &foreign_key_count, nullptr, 0, nullptr, 0,
+                   0, false))
+    return reject("cannot prepare compiled startup PFS definition");
+  auto expected = dd::create_dd_user_table(
+      thd, *schema, compiled.get_name(), info, lex.alter_info->create_list,
+      keys, key_count, lex.alter_info->keys_onoff, foreign_keys,
+      foreign_key_count, &lex.alter_info->check_constraint_spec_list, file.get());
+  if (!expected) return reject("cannot describe compiled startup PFS table");
+  if (!startup_pfs_table_definition_matches(thd, stored, expected.get(),
+                                           schema->name()))
+    return reject("restored startup PFS definition differs from compiled server");
+  if (!may_validate_restored_dictionary_stage(
+          thd, dd::bootstrap::Stage::FINISHED, SYSTEM_THREAD_BACKGROUND))
+    return reject("startup PFS validation authority changed");
+  return false;
 }
 
 bool validate_startup_dictionary_contents(THD *thd, std::string *error) {

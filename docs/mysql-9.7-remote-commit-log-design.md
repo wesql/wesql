@@ -1591,6 +1591,15 @@ WESQL 的自定义组 CPU 掩码转换保留最高位为 1 的尾段，避免原
 控制参数验证漏看 CPU 绑定；空掩码、每个单点、连续尾段、分离区间和全掩码均
 按 DD 掩码重新编码核对，验证前不丢失任何位。
 
+已发布根的 InnoDB redo PFS 注册同样只读恢复。FINISHED 阶段在编译内置调用点
+建立线程局部作用域，绑定 performance_schema.innodb_redo_log_files 的原始编译
+定义，不改变 BACKGROUND 线程类型或提交权限。此作用域只省去持久 DROP/CREATE，
+仍由原 PFS 服务注册内存表及其回调。服务先比对注册定义与作用域绑定，再用原
+SQL 解析器、mysql_prepare_create_table 和 DD 构建器生成内存描述；不执行 DDL。
+该描述与只读取得的已有表使用原 DD SDI 序列化器完整比对，仅忽略对象 ID 和
+创建/修改时间，并额外拒绝触发器。缺表、定义不同、授权失效或注册失败都会
+停止启动。验证前后重查启动授权；作用域退出后恢复正常服务路径。
+
 初始化预检不要求尚不存在的 binlog cursor，也不申请 SmartEngine 快照。
 它在全局读锁下前后两次检查 DD、初始账号及权限、复制仓库、prepared 和空
 GTID 集；同时要求 SmartEngine 未加载、对应目录不存在、TC 与 binlog 文件

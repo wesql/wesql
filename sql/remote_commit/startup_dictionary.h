@@ -9,14 +9,30 @@
 #include <vector>
 
 #include "mysql/strings/m_ctype.h"
+#include "sql/dd/impl/sdi.h"
 #include "sql/dd/impl/types/collation_impl.h"
 #include "sql/dd/types/charset.h"
 #include "sql/dd/types/collation.h"
 #include "sql/dd/types/resource_group.h"
+#include "sql/dd/types/table.h"
 #include "sql/dd/types/tablespace.h"
 #include "sql/dd/types/tablespace_file.h"
 
 namespace wesql::remote_commit {
+
+inline bool startup_pfs_table_definition_matches(
+    THD *thd, const dd::Table *stored, dd::Table *expected,
+    const dd::String_type &schema) {
+  if (stored == nullptr || expected == nullptr || !stored->triggers().empty())
+    return false;
+  // SDI omits object IDs; creation times are not part of the table definition.
+  expected->set_created(stored->created(false));
+  expected->set_last_altered(stored->last_altered(false));
+  const auto actual_sdi = dd::serialize(thd, *stored, schema);
+  const auto expected_sdi = dd::serialize(thd, *expected, schema);
+  return !actual_sdi.empty() && !expected_sdi.empty() &&
+         actual_sdi == expected_sdi;
+}
 
 inline std::vector<resourcegroups::Range> startup_resource_group_cpu_ranges(
     const std::bitset<dd::CPU_MASK_SIZE> &mask) {
