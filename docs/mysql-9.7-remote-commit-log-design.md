@@ -935,6 +935,9 @@ prefix 的 checkpoint 和 snapshot。任何 legacy live extent 都拒绝首次�
 `smartengine.index`、`snapshot.index`、
 snapshot status 和 lease 对象只能留在 legacy/advisory 路径，HEAD 模式的所有权、
 发布和恢复都不得依赖它们。
+远端不可变模式在 SmartEngine manifest replay 后不申请旧版 recovering 锁，
+也不枚举或删除旧版 status 锁；释放本地 snapshot pin 时不写 releasing 锁。
+本地 release 日志和引用清理仍执行，v2 extent 的物理删除仍被禁止。
 以上 prefix 持久化、create-only read-back、snapshot live-set 和 no-delete 任一项
 未落地时，SmartEngine remote commit 必须拒绝启动，不能降级为“靠 lease 单写”。
 
