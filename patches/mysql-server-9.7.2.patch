@@ -836,7 +836,7 @@ index fd78ea1260cbd37a1548d700f6963e84230d7377..72bb058e6e0fc5588efdcac7ab3a4e3e
  IF(BUILD_IS_SINGLE_CONFIG)
    GET_PROPERTY(CWD_DEFINITIONS DIRECTORY PROPERTY COMPILE_DEFINITIONS)
    IF(NOT CMAKE_CXX_FLAGS MATCHES "DENABLED_DEBUG_SYNC" AND
-@@ -1062,9 +1074,147 @@ SET(BINLOG_SOURCE
+@@ -1062,9 +1074,156 @@ SET(BINLOG_SOURCE
    rpl_utility.cc
    sql_binlog.cc
    )
@@ -944,6 +944,15 @@ index fd78ea1260cbd37a1548d700f6963e84230d7377..72bb058e6e0fc5588efdcac7ab3a4e3e
 +    LINK_LIBRARIES remote_commit_test_support
 +  )
 +
++  MYSQL_ADD_EXECUTABLE(remote_commit_runtime_snapshot_sources-t
++    remote_commit/runtime_snapshot_sources_test.cc
++    remote_commit/runtime_snapshot_sources.cc
++    ADD_TEST remote_commit_runtime_snapshot_sources
++    COMPILE_DEFINITIONS WESQL_RUNTIME_SNAPSHOT_SOURCES_TEST_ONLY
++    EXCLUDE_FROM_ALL
++    SKIP_TCMALLOC
++  )
++
 +  MYSQL_ADD_EXECUTABLE(remote_commit_runtime_snapshot_coordinator-t
 +    remote_commit/runtime_snapshot_coordinator_test.cc
 +    remote_commit/runtime_snapshot_coordinator.cc
@@ -984,7 +993,7 @@ index fd78ea1260cbd37a1548d700f6963e84230d7377..72bb058e6e0fc5588efdcac7ab3a4e3e
  
  SET (RPL_SOURCE rpl_handler.cc rpl_tblmap.cc rpl_context.cc)
  ADD_DEPENDENCIES(binlog GenError)
-@@ -1125,10 +1275,17 @@ SET (RPL_REPLICA_SRCS
+@@ -1125,10 +1284,17 @@ SET (RPL_REPLICA_SRCS
    udf_service_impl.cc
    udf_service_util.cc
    )

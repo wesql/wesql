@@ -1315,7 +1315,9 @@ parent；崩溃后 target 只能是 absent 或完整新 root。
    canonical GTID set+digest、DD、users/grants、空 replication repository 和 SmartEngine
    exact live extent set。业务 row/token 等价性属于验收 harness，不是 server-side
    recovery oracle；
-7. 在 temp root 制作 cursor 等于 candidate durable cursor 的完整 snapshot；再 GET
+7. 在 temp root 制作 cursor 等于 candidate durable cursor 的完整 snapshot。
+   用户 schema 内 MySQL 生成的 `table-prefix_ID.sdi` 作为 `mysql-dd-v1` 持久文件
+   进入快照；启动与运行时快照共享同一分类规则，未知文件和符号链接仍拒绝。再 GET
    HEAD/epoch。先验证 epoch 仍属于本 writer；失权时 snapshot/temp 作为孤儿并进入
    不可逆 FENCED，不得在本进程重试。仍持有 epoch 但 HEAD 不再等于 candidate
    body+ETag，表示旧 writer 的合法在途 CAS 已落地；此时丢弃 snapshot/temp，固定新

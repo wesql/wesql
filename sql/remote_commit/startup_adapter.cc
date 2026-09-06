@@ -34,6 +34,7 @@
 #include "sql/remote_commit/server_hooks.h"
 #include "sql/remote_commit/server_root_evidence.h"
 #include "sql/remote_commit/snapshot_publisher.h"
+#include "sql/remote_commit/snapshot_file_classification.h"
 #include "sql/remote_commit/startup_coordinator.h"
 #include "sql/remote_commit/startup_server.h"
 
@@ -1282,11 +1283,7 @@ bool classify_payload(const std::string &encoded,
     *excluded = true;
     return true;
   }
-  if (encoded == "auto.cnf" || encoded == "mysql.ibd" ||
-      encoded == "mysql_upgrade_history" ||
-      has_prefix_component(relative, "mysql") ||
-      has_prefix_component(relative, "sys") ||
-      has_prefix_component(relative, "performance_schema")) {
+  if (is_mysql_dictionary_snapshot_file(relative)) {
     payload->component = "mysql-dd";
     payload->format = std::string(kMysqlDdFormat);
   } else if (has_prefix_component(relative, "smartengine")) {

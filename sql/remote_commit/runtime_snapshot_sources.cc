@@ -1,6 +1,7 @@
 /* Copyright (c) 2026, ApeCloud Inc Holding Limited. */
 
 #include "sql/remote_commit/runtime_snapshot_sources.h"
+#include "sql/remote_commit/snapshot_file_classification.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -70,11 +71,7 @@ bool classify_clone_file(const fs::path &relative,
   const std::string encoded = relative.generic_string();
   const std::string filename = relative.filename().string();
   const std::string extension = relative.extension().string();
-  if (encoded == "auto.cnf" || encoded == "mysql.ibd" ||
-      encoded == "mysql_upgrade_history" ||
-      first_component_is(relative, "mysql") ||
-      first_component_is(relative, "sys") ||
-      first_component_is(relative, "performance_schema")) {
+  if (is_mysql_dictionary_snapshot_file(relative)) {
     payload->component = "mysql-dd";
     payload->format = std::string(kMysqlDdFormat);
   } else if (first_component_is(relative, "#innodb_redo") ||
