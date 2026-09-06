@@ -1165,7 +1165,18 @@ index b277284a01a84fecd1f4df387578ceb5e95ea06d..d71862fac13142efb75145fb45bed03c
            true /*need_lock_index=true*/);
      mysql_mutex_destroy(&LOCK_log);
      m_binlog_index_monitor.cleanup();
-@@ -5043,6 +5135,84 @@ err:
+@@ -4538,5 +4635,9 @@ bool MYSQL_BIN_LOG::init_gtid_sets(
+     last binlog file before the server restarts, so we remove
+     its file name from filename_list.
+   */
+-  if (is_server_starting && !is_relay_log && !filename_list.empty())
++  if (is_server_starting && !is_relay_log && !filename_list.empty()
++#ifdef WESQL
++      && !wesql::remote_commit::may_read_installed_terminal_binlog_gtids()
++#endif
++  )
+     filename_list.pop_back();
+@@ -5043,6 +5139,84 @@ err:
    return true;
  }
  

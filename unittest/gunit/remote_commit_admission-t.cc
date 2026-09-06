@@ -20,6 +20,7 @@
 
 #include "mysqld_error.h"
 #include "scope_guard.h"
+#include "sql/basic_ostream.h"
 #include "sql/binlog.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
 #include "sql/dd/impl/system_registry.h"
@@ -2567,6 +2568,71 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   rc::open_commit_admission();
   EXPECT_TRUE(rc::commit_admission_open_for_test());
   EXPECT_FALSE(rc::may_bypass_stock_binlog_recovery());
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       InstalledReexecReadsTheActualTerminalBinlogGtidSet) {
+  using remote_commit_admission_unittest::Scoped_temp_directory;
+  using remote_commit_admission_unittest::write_test_file;
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  auto restore_server = create_scope_guard([&] { initializer.TearDown(); });
+  Scoped_temp_directory directory;
+  ASSERT_FALSE(directory.path().empty());
+  const auto path = directory.path() / cursor.file;
+  const auto base = directory.path() / "binlog";
+  const auto index = directory.path() / "binlog.index";
+  Tsid_map map(nullptr);
+  Gtid_set expected(&map, nullptr);
+  ASSERT_EQ(RETURN_STATUS_OK, expected.add_gtid_text(
+      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:1-4"));
+  StringBuffer_ostream<1024> bytes;
+  ASSERT_FALSE(bytes.write(reinterpret_cast<const uchar *>(BINLOG_MAGIC),
+                           BIN_LOG_HEADER_SIZE));
+  Format_description_log_event format;
+  format.common_footer->checksum_alg =
+      mysql::binlog::event::BINLOG_CHECKSUM_ALG_CRC32;
+  ASSERT_FALSE(format.write(&bytes));
+  Previous_gtids_log_event previous(&expected);
+  previous.common_footer->checksum_alg =
+      mysql::binlog::event::BINLOG_CHECKSUM_ALG_CRC32;
+  ASSERT_FALSE(previous.write(&bytes));
+  write_test_file(path, std::string_view(bytes.ptr(), bytes.length()));
+  write_test_file(index, path.string() + "\n");
+
+  uint sync_period = 1;
+  MYSQL_BIN_LOG binlog(&sync_period);
+  binlog.set_psi_keys(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0);
+  binlog.init_pthread_objects();
+  auto cleanup = create_scope_guard([&] { binlog.cleanup(); });
+  ASSERT_FALSE(binlog.open_index_file(index.c_str(), base.c_str(), true));
+  const auto scan = [&](bool includes_terminal) {
+    Gtid_set all(&map, nullptr);
+    Gtid_set lost(&map, nullptr);
+    ASSERT_FALSE(binlog.init_gtid_sets(&all, &lost, true, true, nullptr,
+                                      nullptr, true));
+    EXPECT_EQ(includes_terminal, all.equals(&expected));
+    EXPECT_EQ(!includes_terminal, all.is_empty());
+  };
+
+  initialize(true);
+  EXPECT_FALSE(rc::may_read_installed_terminal_binlog_gtids());
+  scan(false);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  EXPECT_FALSE(rc::may_read_installed_terminal_binlog_gtids());
+  scan(false);
+  rc::reset_startup_lifecycle_for_test();
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
+  EXPECT_FALSE(rc::may_read_installed_terminal_binlog_gtids());
+  scan(false);
+  ASSERT_FALSE(rc::activate_installed_root(activation)) << rc::startup_error();
+  EXPECT_TRUE(rc::may_read_installed_terminal_binlog_gtids());
+  scan(true);
+  ASSERT_FALSE(rc::verify_installed_root_post_engine(full_proof));
+  EXPECT_FALSE(rc::may_read_installed_terminal_binlog_gtids());
+  scan(false);
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,

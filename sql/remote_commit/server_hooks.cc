@@ -2595,6 +2595,13 @@ bool startup_existing_binlog_boundary(std::string *file, uint64_t *pos) {
   return true;
 }
 
+bool may_read_installed_terminal_binlog_gtids() {
+  if (!enabled()) return false;
+  std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);
+  std::lock_guard<std::mutex> state_guard(g_runtime.state_mutex);
+  return installed_reexec_pre_recovery_authorized_locked();
+}
+
 bool may_bypass_stock_binlog_recovery() {
   if (!enabled()) return false;
   std::unique_lock<std::mutex> admission_lock(g_runtime.admission_mutex);

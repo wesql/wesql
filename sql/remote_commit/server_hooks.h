@@ -331,6 +331,11 @@ bool may_run_startup_recovery_worker();
 // Bootstrap routes and all ordinary runtime phases return false.
 bool startup_existing_binlog_boundary(std::string *file, uint64_t *pos);
 
+// An installed re-exec reopens the authenticated terminal file, rather than
+// creating an empty one. Its GTIDs must participate in stock initialization.
+// A takeover worker must not treat its pending replay tail as executed.
+bool may_read_installed_terminal_binlog_gtids();
+
 // True only for one exact CLOSED-admission startup role: installed re-exec
 // after pre-recovery activation, bootstrap snapshot worker, or takeover
 // recovery worker. Normal startup, bootstrap preflight, and post-engine ACTIVE
