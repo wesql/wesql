@@ -1636,6 +1636,35 @@ StartupAdapterAction startup_after_repositories(std::string *error) {
                      : activated.detail;
       return StartupAdapterAction::ERROR;
     }
+    fs::path configured_root;
+    if (!canonical_target_root(&configured_root, error))
+      return StartupAdapterAction::ERROR;
+    const StartupCoordinatorProof &verified = *activated.proof;
+    const StartupRootEvidence &root = verified.installed_root;
+    InstalledRootProof server_proof;
+    server_proof.head_body = verified.head.object.body;
+    server_proof.head_etag = verified.head.object.etag;
+    server_proof.recovered_file = root.recovered_cursor.file;
+    server_proof.recovered_pos = root.recovered_cursor.pos;
+    server_proof.canonical_gtid = root.recovered_gtid.canonical;
+    server_proof.gtid_sha256 = root.recovered_gtid.sha256;
+    server_proof.marker_matches = root.marker_matches;
+    server_proof.root_identity_matches =
+        same_root(configured_root, g_adapter.target_root);
+    server_proof.snapshot_matches = root.snapshot_matches;
+    server_proof.server_uuid_matches = root.server_uuid_matches;
+    server_proof.configuration_matches = root.configuration_matches;
+    server_proof.gtid_matches = root.gtid_matches;
+    server_proof.dd_matches = root.dd_matches;
+    server_proof.repository_empty = root.repository_empty;
+    server_proof.extent_live_set_matches = root.extent_live_set_matches;
+    server_proof.internal_prepared_empty = root.internal_prepared_empty;
+    server_proof.external_xa_empty = root.external_xa_empty;
+    if (verify_installed_root_post_engine(server_proof)) {
+      if (error != nullptr)
+        *error = "installed root server verification failed: " + startup_error();
+      return StartupAdapterAction::ERROR;
+    }
     if (!remove_startup_control_directory(g_adapter.control_directory, error))
       return StartupAdapterAction::ERROR;
     const fs::path snapshot_service_root =
