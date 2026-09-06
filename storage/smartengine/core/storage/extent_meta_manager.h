@@ -43,6 +43,7 @@ public:
   int load_checkpoint(util::RandomAccessFile *checkpoint_reader, CheckpointHeader *header);
   int replay(int64_t log_type, char *log_data, int64_t log_len);
   int clear_free_extent_meta();
+  int validate_all_remote_extents();
 
 private:
   void free_extent_meta(ExtentMeta *&extent_meta);

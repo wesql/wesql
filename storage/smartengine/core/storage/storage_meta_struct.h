@@ -84,6 +84,8 @@ public:
   table::BlockHandle index_block_handle_;
   schema::TableSchema table_schema_;
   std::string prefix_;
+  uint64_t object_size_;
+  std::string object_sha256_;
 
   ExtentMeta();
   ExtentMeta(uint8_t attr,

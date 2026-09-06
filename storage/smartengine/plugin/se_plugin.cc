@@ -28,6 +28,7 @@
 #include "mysql/plugin.h"
 #include "mysqld.h"
 #include "objstore/lease_lock.h"
+#include "objstore/remote_extent.h"
 #include "se_api.h"
 #include "se_hton.h"
 #include "se_i_s.h"
@@ -39,6 +40,10 @@
 #include "util/se_logger.h"
 #include "util/se_mutex_wrapper.h"
 
+#ifdef WESQL
+#include "sql/remote_commit/server_hooks.h"
+#endif
+
 // Internal MySQL APIs not exposed in any header.
 extern "C" {
 se_cb_t se_api_cb[] = { SE_API_FUNCS };
@@ -48,10 +53,73 @@ namespace smartengine
 {
 using namespace util;
 
+namespace {
+
+bool use_legacy_objstore_lease_lock()
+{
+  // Remote extents are immutable; writer epoch and HEAD CAS fence publication.
+  // A legacy exclusive lease would prevent takeover of a paused old writer.
+  return opt_objstore_lease_lock_timeout > 0 &&
+         !storage::remote_extent::enabled();
+}
+
+#ifdef WESQL
+bool remote_commit_enabled() { return wesql::remote_commit::enabled(); }
+
+bool load_remote_commit_runtime(storage::remote_extent::RuntimeConfig *config)
+{
+  if (config == nullptr) return false;
+  wesql::remote_commit::ImmutableExtentRuntime runtime;
+  if (!wesql::remote_commit::immutable_extent_runtime(&runtime)) return false;
+  *config = storage::remote_extent::RuntimeConfig{
+      runtime.cluster_object_prefix, runtime.stream_sha256,
+      runtime.writer_epoch, runtime.object_store, runtime.bucket};
+  return true;
+}
+
+bool remote_commit_is_fenced() { return wesql::remote_commit::is_fenced(); }
+
+void fence_remote_commit(std::string_view reason)
+{
+  const std::string stable_reason(reason);
+  wesql::remote_commit::fence(stable_reason.c_str());
+}
+
+constexpr storage::remote_extent::RuntimeProvider kRemoteCommitProvider{
+    remote_commit_enabled, load_remote_commit_runtime,
+    remote_commit_is_fenced, fence_remote_commit};
+
+class RemoteExtentProviderGuard {
+ public:
+  ~RemoteExtentProviderGuard()
+  {
+    if (armed_) storage::remote_extent::clear_runtime_provider();
+  }
+
+  void release() { armed_ = false; }
+
+ private:
+  bool armed_{true};
+};
+
+#endif
+}  // namespace
+
 /**Storage Engine initialization function, invoked when plugin is loaded.*/
 static int se_init_func(void *const p)
 {
   DBUG_ENTER_FUNC();
+
+#ifdef WESQL
+  std::string provider_error;
+  if (!storage::remote_extent::install_runtime_provider(
+          kRemoteCommitProvider, &provider_error)) {
+    sql_print_error("SE: failed to install remote extent provider: %s",
+                    provider_error.c_str());
+    DBUG_RETURN(HA_EXIT_FAILURE);
+  }
+  RemoteExtentProviderGuard provider_guard;
+#endif
 
   // Validate the assumption about the size of SE_SIZEOF_HIDDEN_PK_COLUMN.
   static_assert(sizeof(longlong) == 8, "Assuming that longlong is 8 bytes.");
@@ -67,14 +135,14 @@ static int se_init_func(void *const p)
   se_bg_thread.init(se_signal_bg_psi_mutex_key, se_signal_bg_psi_cond_key);
   se_drop_idx_thread.init(se_signal_drop_idx_psi_mutex_key,
                            se_signal_drop_idx_psi_cond_key);
-  if (opt_objstore_lease_lock_timeout > 0) {
+  if (use_legacy_objstore_lease_lock()) {
     se_renewal_objstore_lease_lock_thread.init(se_renewal_objstore_lease_lock_psi_mutex_key,
                                              se_renewal_objstore_lease_lock_psi_cond_key);
   }
 #else
   se_bg_thread.init();
   se_drop_idx_thread.init();
-  if (opt_objstore_lease_lock_timeout > 0) {
+  if (use_legacy_objstore_lease_lock()) {
     se_renewal_objstore_lease_lock_thread.init();
   }
 #endif
@@ -134,6 +202,10 @@ static int se_init_func(void *const p)
 
   se_hton->checkpoint = se_checkpoint;
   se_hton->create_backup_snapshot = se_create_backup_snapshot;
+  se_hton->create_remote_backup_snapshot =
+      se_create_remote_backup_snapshot;
+  se_hton->export_backup_snapshot_live_set =
+      se_export_backup_snapshot_live_set;
   se_hton->incremental_backup = se_incremental_backup;
   se_hton->cleanup_tmp_backup_dir = se_cleanup_tmp_backup_dir;
   se_hton->release_backup_snapshot = se_release_backup_snapshot;
@@ -300,7 +372,7 @@ static int se_init_func(void *const p)
 
     db::GlobalContext::set_env(main_opts.env);
 
-    if (opt_objstore_lease_lock_timeout > 0) {
+    if (use_legacy_objstore_lease_lock()) {
       int ret = se_renewal_objstore_lease_lock_thread.create_thread(RENEW_LEASE_LOCK_THREAD_NAME
 #ifdef HAVE_PSI_INTERFACE
                                                                   ,
@@ -437,6 +509,9 @@ static int se_init_func(void *const p)
 #endif
 
   sql_print_information("SE instance opened");
+#ifdef WESQL
+  provider_guard.release();
+#endif
   se_initialized = true;
   DBUG_RETURN(HA_EXIT_SUCCESS);
 }
@@ -465,7 +540,7 @@ static int se_done_func(void *const p)
   se_bg_thread.signal(true);
 
   if (opt_table_on_objstore && opt_serverless) {
-    if (opt_objstore_lease_lock_timeout > 0) {
+    if (use_legacy_objstore_lease_lock()) {
       // Signal the renewal object store lease lock thread to stop.
       se_renewal_objstore_lease_lock_thread.signal(true);
       // Wait for the renewal object store lease lock thread to finish.
@@ -520,7 +595,7 @@ static int se_done_func(void *const p)
   if (env) {
     objstore::ObjectStore *se_objstore = nullptr;
     env->GetObjectStore(se_objstore);
-    if (se_objstore) {
+    if (se_objstore && !storage::remote_extent::enabled()) {
       int ret = 0;
       std::string err_msg;
       const std::string& bucket = env->GetObjectStoreBucket();
@@ -557,6 +632,10 @@ static int se_done_func(void *const p)
   if (se_db_options.row_cache) {
     se_db_options.row_cache->destroy();
   }
+#endif
+
+#ifdef WESQL
+  storage::remote_extent::clear_runtime_provider();
 #endif
 
   DBUG_RETURN(error);

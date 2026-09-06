@@ -143,8 +143,13 @@ void strip_foreign_keys(THD *thd, Alter_info *alter_info) {
 }  // namespace
 
 bool wesql_is_smartengine_create(const HA_CREATE_INFO *create_info) {
+#ifndef WITH_SMARTENGINE
+  (void)create_info;
+  return false;
+#else
   return create_info != nullptr && create_info->db_type != nullptr &&
          create_info->db_type->db_type == DB_TYPE_SMARTENGINE;
+#endif
 }
 
 bool wesql_ddl_compat_rewrite_create(THD *thd, HA_CREATE_INFO *create_info,
