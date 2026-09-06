@@ -4781,3 +4781,71 @@ diff --git a/sql/rpl_gtid_persist.cc b/sql/rpl_gtid_persist.cc
 +#endif
    int error = 0;
    bool is_complete = false;
+diff --git a/sql/rpl_source.cc b/sql/rpl_source.cc
+--- a/sql/rpl_source.cc
++++ b/sql/rpl_source.cc
+@@ -22,6 +22,9 @@
+    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+
+ #include "sql/rpl_source.h"
++#ifdef WESQL
++#include "sql/remote_commit/server_hooks.h"
++#endif
+
+ #include <fcntl.h>
+ #include <stdio.h>
+@@ -1338,6 +1341,19 @@
+
+   if (mysql_bin_log.is_open()) {
+     Log_info li;
++#ifdef WESQL
++    if (wesql::remote_commit::enabled()) {
++      wesql::remote_commit::Cursor cursor;
++      if (!wesql::remote_commit::read_public_binlog_cursor(&cursor) ||
++          cursor.file.size() >= sizeof(li.log_file_name)) {
++        my_free(gtid_set_buffer);
++        my_error(ER_UNKNOWN_ERROR, MYF(0));
++        return true;
++      }
++      my_stpcpy(li.log_file_name, cursor.file.c_str());
++      li.pos = cursor.pos;
++    } else
++#endif
+     mysql_bin_log.get_current_log(&li);
+     size_t dir_len = dirname_length(li.log_file_name);
+     protocol->store(li.log_file_name + dir_len, &my_charset_bin);
+@@ -1376,8 +1392,17 @@
+
+   if (!mysql_bin_log.is_open()) {
+     my_error(ER_NO_BINARY_LOGGING, MYF(0));
++    return true;
++  }
++#ifdef WESQL
++  wesql::remote_commit::Cursor public_cursor;
++  const bool remote_commit = wesql::remote_commit::enabled();
++  if (remote_commit &&
++      !wesql::remote_commit::read_public_binlog_cursor(&public_cursor)) {
++    my_error(ER_UNKNOWN_ERROR, MYF(0));
+     return true;
+   }
++#endif
+
+   mem_root_deque<Item *> field_list(thd->mem_root);
+   field_list.push_back(new Item_empty_string("Log_name", 255));
+@@ -1397,5 +1422,16 @@
+   mysql_mutex_unlock(mysql_bin_log.get_log_lock());  // lockdep, OK
+
+   cur_dir_len = dirname_length(cur.log_file_name);
++#ifdef WESQL
++  if (remote_commit) {
++    if (public_cursor.file != cur.log_file_name + cur_dir_len ||
++        public_cursor.pos > cur.pos) {
++      mysql_bin_log.unlock_index();
++      my_error(ER_UNKNOWN_ERROR, MYF(0));
++      return true;
++    }
++    cur.pos = public_cursor.pos;
++  }
++#endif
+
+   reinit_io_cache(index_file, READ_CACHE, (my_off_t)0, false, false);

@@ -2681,6 +2681,9 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,
        AckCursorReservationPrecedesExternalPublication) {
+  rc::Cursor public_cursor;
+  EXPECT_FALSE(rc::read_public_binlog_cursor(&public_cursor));
+  EXPECT_FALSE(rc::read_public_binlog_cursor(nullptr));
   initialize(true);
   adopt(rc::StartupEpochAdoptionRole::INSTALLED_ROOT);
   ASSERT_FALSE(rc::activate_installed_root(activation)) << rc::startup_error();
@@ -2706,6 +2709,8 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   const std::string next_head_etag{"\"head-2\""};
   io.set(stream.remote_prefix + "/HEAD", next_head_body, next_head_etag);
   ASSERT_FALSE(rc::verify_ack_head_for_test(next, &error)) << error;
+  ASSERT_TRUE(rc::read_public_binlog_cursor(&public_cursor));
+  EXPECT_EQ(cursor, public_cursor);
 
   rc::AckReadyEvent ack;
   ack.stream_id = stream.stream_id;
@@ -2730,11 +2735,15 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
       next, mismatched, binding, cursor, &error));
   EXPECT_EQ("remote ACK token lost exact HEAD object identity", error);
   EXPECT_EQ(cursor, rc::public_committed_cursor_for_test());
+  ASSERT_TRUE(rc::read_public_binlog_cursor(&public_cursor));
+  EXPECT_EQ(cursor, public_cursor);
 
   ASSERT_FALSE(rc::reserve_ack_public_cursor_for_test(next, ack, binding, cursor,
                                                       &error))
       << error;
   EXPECT_EQ(next.durable_cursor, rc::public_committed_cursor_for_test());
+  ASSERT_TRUE(rc::read_public_binlog_cursor(&public_cursor));
+  EXPECT_EQ(next.durable_cursor, public_cursor);
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,

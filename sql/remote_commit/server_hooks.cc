@@ -2771,6 +2771,16 @@ void deinitialize() {
   if (provider_initialized) objstore::cleanup_objstore_provider(provider);
 }
 
+bool read_public_binlog_cursor(Cursor *cursor) {
+  if (cursor == nullptr || !enabled()) return false;
+  std::lock_guard<std::mutex> guard(g_runtime.state_mutex);
+  if (g_runtime.public_committed_cursor.file.empty() ||
+      g_runtime.public_committed_cursor.pos < BIN_LOG_HEADER_SIZE)
+    return false;
+  *cursor = g_runtime.public_committed_cursor;
+  return true;
+}
+
 std::string status_json() {
   std::lock_guard<std::mutex> guard(g_runtime.state_mutex);
   std::string json;

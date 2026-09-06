@@ -352,6 +352,8 @@ bool may_bypass_stock_binlog_recovery();
 // Returns the atomically formatted machine status. An empty result means the
 // formatter detected an invariant violation and the caller must fail closed.
 std::string status_json();
+// The atomic file/position pair published after engine commit and ACK checks.
+bool read_public_binlog_cursor(Cursor *cursor);
 
 // The value used by both the native range sealer and pre-prepare cache gate.
 uint64_t maximum_segment_bytes();
