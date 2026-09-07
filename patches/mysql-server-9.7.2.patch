@@ -4652,12 +4652,15 @@ index 7dc0aac3fdb09d86f2f09130bfb687fdae93c09a..5978331d30f5eee611202ad6fe3166c2
    security_context
    segfault
    select_lex_visitor
-@@ -301,6 +302,9 @@ SET(SERVER_TESTS
+@@ -301,6 +302,12 @@ SET(SERVER_TESTS
    xid_extract
    log_event_status_size
  )
 +IF(WITH_WESQL_TEST)
 +  LIST(APPEND SERVER_TESTS remote_commit_admission)
++  SET_SOURCE_FILES_PROPERTIES(remote_commit_admission-t.cc PROPERTIES
++    COMPILE_DEFINITIONS
++    "WESQL_NATIVE_RECOVERY_FIXTURE=\"${CMAKE_SOURCE_DIR}/sql/remote_commit/testdata/repeated-recovery-parser.binlog\"")
 +ENDIF()
  # Hangs forever.
  IF(LINUX_ARM AND CMAKE_BUILD_TYPE_UPPER STREQUAL "RELWITHDEBINFO")

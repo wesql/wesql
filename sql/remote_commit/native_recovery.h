@@ -11,6 +11,8 @@
 #include "sql/remote_commit/materializer.h"
 #include "sql/remote_commit/policy.h"
 
+class Query_log_event;
+
 namespace wesql::remote_commit {
 
 enum class NativeRecoveryOutcome : uint8_t {
@@ -110,6 +112,8 @@ NativeRecoveryResult replay_bounded_native_tail(
     NativeRecoveryPreparedVerifier *prepared_verifier);
 
 #ifdef WESQL_TEST
+bool native_query_requires_durable_authorization_for_test(
+    const Query_log_event &query, bool *required, std::string *error);
 bool exercise_native_recovery_query_context_for_test(std::string *error);
 NativeRecoveryScanResult scan_native_recovery_for_test(
     const NativeRecoveryRequest &request,

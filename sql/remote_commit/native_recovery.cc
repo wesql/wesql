@@ -14,9 +14,11 @@
 #include <utility>
 
 #ifndef WESQL_NATIVE_RECOVERY_STATE_MACHINE_TEST
+#include "my_byteorder.h"
 #include "my_inttypes.h"
 #include "my_psi_config.h"
 #include "mysql/binlog/event/trx_boundary_parser.h"
+#include "scope_guard.h"
 #include "sql/auto_thd.h"
 #include "sql/binlog_reader.h"
 #include "sql/log_event.h"
@@ -28,6 +30,8 @@
 #include "sql/rpl_replica.h"
 #include "sql/rpl_rli.h"
 #include "sql/sql_class.h"
+#include "sql/sql_lex.h"
+#include "sql/sql_parse.h"
 #endif
 
 namespace wesql::remote_commit {
@@ -343,6 +347,83 @@ bool ascii_starts_token(std::string_view value, std::string_view token) {
          std::isspace(static_cast<unsigned char>(value[token.size()])) != 0;
 }
 
+void restore_current_thd(THD *saved) {
+  if (saved != nullptr) saved->store_globals();
+#ifdef HAVE_PSI_THREAD_INTERFACE
+  if (PSI_thread *psi = PSI_THREAD_CALL(get_thread)(); psi != nullptr) {
+    PSI_THREAD_CALL(set_thread_THD)(psi, saved);
+    PSI_THREAD_CALL(set_thread_id)(psi, saved == nullptr ? 0 : saved->thread_id());
+  }
+#endif
+}
+
+bool query_requires_durable_authorization(const Query_log_event &query,
+                                          bool *required,
+                                          std::string *error) {
+  *required = true;
+  if (query.query == nullptr)
+    return fail(error, "native recovery Query has no SQL text");
+  const auto text = trim_ascii({query.query, query.q_len});
+  if (ascii_equal(text, "BEGIN") || ascii_equal(text, "COMMIT")) {
+    *required = false;
+    return true;
+  }
+  if (is_atomic_ddl_event(&query)) return true;
+
+  // Absence of Q_DDL_LOGGED_WITH_XID is meaningful only for conditional
+  // atomic CREATE/DROP. ANALYZE and other non-atomic Queries can write DD.
+  // Parse on an isolated THD with the event's lexical settings; never execute.
+  THD *const saved = current_thd;
+  auto restore = create_scope_guard([&] { restore_current_thd(saved); });
+  Auto_THD parser_thd;
+  THD *const thd = parser_thd.thd;
+  if (query.sql_mode_inited) {
+    if (query.sql_mode & ~(MODE_ALLOWED_MASK | MODE_IGNORED_MASK))
+      return fail(error, "native recovery Query has an unsupported SQL mode");
+    thd->variables.sql_mode = query.sql_mode & MODE_ALLOWED_MASK;
+  }
+  if (query.charset_inited) {
+    const auto *client = get_charset(uint2korr(query.charset), MYF(0));
+    const auto *connection = get_charset(uint2korr(query.charset + 2), MYF(0));
+    const auto *server = get_charset(uint2korr(query.charset + 4), MYF(0));
+    if (client == nullptr || connection == nullptr || server == nullptr ||
+        client->state_maps == nullptr)
+      return fail(error, "native recovery Query has an unparseable charset");
+    thd->variables.character_set_client = client;
+    thd->variables.collation_connection = connection;
+    thd->variables.collation_server = server;
+    thd->update_charset();
+  }
+  if (query.db != nullptr && thd->set_db({query.db, query.db_len}))
+    return fail(error, "cannot set native recovery Query database");
+  if (lex_start(thd))
+    return fail(error, "cannot initialize native recovery Query parser");
+  auto end_lex = create_scope_guard([&] { lex_end(thd->lex); });
+  Parser_state parser;
+  if (parser.init(thd, query.query, query.q_len))
+    return fail(error, "cannot initialize native recovery Query text");
+  parser.m_lip.multi_statements = false;
+  if (parse_sql(thd, &parser, nullptr))
+    return fail(error, "cannot parse native recovery Query");
+  const LEX &lex = *thd->lex;
+  switch (lex.sql_command) {
+    case SQLCOM_CREATE_DB:
+    case SQLCOM_CREATE_TABLE:
+      *required = lex.create_info == nullptr ||
+                  !(lex.create_info->options & HA_LEX_CREATE_IF_NOT_EXISTS) ||
+                  (lex.create_info->options & HA_LEX_CREATE_TMP_TABLE) ||
+                  lex.create_info->m_transactional_ddl;
+      break;
+    case SQLCOM_DROP_DB:
+    case SQLCOM_DROP_TABLE:
+      *required = !lex.drop_if_exists || lex.drop_temporary;
+      break;
+    default:
+      break;
+  }
+  return true;
+}
+
 bool is_row_mutation(mysql::binlog::event::Log_event_type type) {
   using mysql::binlog::event::DELETE_ROWS_EVENT;
   using mysql::binlog::event::PARTIAL_UPDATE_ROWS_EVENT;
@@ -642,12 +723,13 @@ class MysqlNativeRecoveryExecutor final : public NativeRecoveryExecutor {
               ascii_equal(trim_ascii(text), "ROLLBACK"))
             return scan_failure(NativeRecoveryScanOutcome::CORRUPT,
                                 "native recovery contains disallowed SQL");
-          // Native atomic DDL carries Q_DDL_LOGGED_WITH_XID. An IF NOT
-          // EXISTS/IF EXISTS no-op has the same SQL but no durable DD commit.
-          // Unexpected engine writes still consume the installed authorization
-          // and fail the read-only finish check.
-          if (is_atomic_ddl_event(query))
-            current->saw_mutation = true;
+          bool requires_authorization = true;
+          std::string query_error;
+          if (!query_requires_durable_authorization(
+                  *query, &requires_authorization, &query_error))
+            return scan_failure(NativeRecoveryScanOutcome::CORRUPT,
+                                std::move(query_error));
+          current->saw_mutation |= requires_authorization;
         } else if (type == mysql::binlog::event::XID_EVENT) {
           const auto *xid = dynamic_cast<const Xid_log_event *>(event.get());
           if (xid == nullptr || current->value.xid.has_value())
@@ -781,15 +863,7 @@ class MysqlNativeRecoveryExecutor final : public NativeRecoveryExecutor {
     }
     auto_thd_.reset();
     // Auto_THD clears thread locals; it does not restore an enclosing THD.
-    if (saved_thd_ != nullptr) saved_thd_->store_globals();
-#ifdef HAVE_PSI_THREAD_INTERFACE
-    if (PSI_thread *psi = PSI_THREAD_CALL(get_thread)(); psi != nullptr) {
-      PSI_THREAD_CALL(set_thread_THD)(psi, saved_thd_);
-      PSI_THREAD_CALL(set_thread_id)(psi,
-                                    saved_thd_ == nullptr ? 0
-                                                          : saved_thd_->thread_id());
-    }
-#endif
+    restore_current_thd(saved_thd_);
     saved_thd_ = nullptr;
   }
 
@@ -812,6 +886,11 @@ NativeRecoveryResult replay_bounded_native_tail(
 }
 
 #ifdef WESQL_TEST
+bool native_query_requires_durable_authorization_for_test(
+    const Query_log_event &query, bool *required, std::string *error) {
+  return query_requires_durable_authorization(query, required, error);
+}
+
 NativeRecoveryScanResult scan_native_recovery_for_test(
     const NativeRecoveryRequest &request,
     std::vector<NativeRecoveryTransaction> *transactions) {

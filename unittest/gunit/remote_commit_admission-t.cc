@@ -78,6 +78,142 @@ TEST(RemoteCommitNativeRecovery, SerialQueryContextAndThdLifecycle) {
   }
 }
 
+TEST(RemoteCommitNativeRecovery, ConditionalDdlRequiresBothSyntaxAndNoXid) {
+  Server_initializer initializer;
+  initializer.SetUp();
+  auto cleanup = create_scope_guard([&] { initializer.TearDown(); });
+  THD *const original = current_thd;
+  const char *queries[] = {
+      "CREATE DATABASE IF NOT EXISTS task34_probe",
+      "create /* conditional */ database if not exists task34_probe",
+      "CREATE TABLE IF NOT EXISTS task34_probe.t (id INT PRIMARY KEY)",
+      "/* prefix */ CrEaTe TABLE IF NOT EXISTS task34_probe.t (id INT)",
+      "DROP DATABASE IF EXISTS task34_probe",
+      "DROP /* conditional */ TABLE IF EXISTS task34_probe.t"};
+  for (const char *sql : queries) {
+    SCOPED_TRACE(sql);
+    Query_log_event query(initializer.thd(), sql, strlen(sql), false, true,
+                          false, 0);
+    for (bool mutated : {false, true}) {
+      SCOPED_TRACE(mutated);
+      query.ddl_xid = mutated ? 17 : mysql::binlog::event::INVALID_XID;
+      bool required = !mutated;
+      std::string error;
+      ASSERT_TRUE(wesql::remote_commit::
+          native_query_requires_durable_authorization_for_test(
+              query, &required, &error)) << error;
+      EXPECT_EQ(mutated, required);
+      EXPECT_EQ(original, current_thd);
+      EXPECT_FALSE(original->is_error());
+      EXPECT_EQ(nullptr, original->open_tables);
+    }
+  }
+}
+
+TEST(RemoteCommitNativeRecovery, NonAtomicQueriesStillRequireAuthorization) {
+  Server_initializer initializer;
+  initializer.SetUp();
+  auto cleanup = create_scope_guard([&] { initializer.TearDown(); });
+  const char *queries[] = {
+      "ANALYZE TABLE task34_probe.t",
+      "ANALYZE TABLE task34_probe.t UPDATE HISTOGRAM ON v WITH 8 BUCKETS",
+      "ANALYZE TABLE task34_probe.t DROP HISTOGRAM ON v",
+      "/* prefix */ analyze table task34_probe.t",
+      "OPTIMIZE TABLE task34_probe.t",
+      "REPAIR TABLE task34_probe.t",
+      "CREATE DATABASE task34_probe",
+      "CREATE TABLE task34_probe.t (id INT)",
+      "DROP DATABASE task34_probe",
+      "DROP TABLE task34_probe.t",
+      "CREATE TEMPORARY TABLE IF NOT EXISTS task34_probe.t (id INT)",
+      "DROP TEMPORARY TABLE IF EXISTS task34_probe.t"};
+  for (const char *sql : queries) {
+    SCOPED_TRACE(sql);
+    Query_log_event query(initializer.thd(), sql, strlen(sql), false, true,
+                          false, 0);
+    query.ddl_xid = mysql::binlog::event::INVALID_XID;
+    bool required = false;
+    std::string error;
+    ASSERT_TRUE(wesql::remote_commit::
+        native_query_requires_durable_authorization_for_test(
+            query, &required, &error)) << error;
+    EXPECT_TRUE(required);
+  }
+}
+
+TEST(RemoteCommitNativeRecovery, MalformedConditionalQueryFailsClosed) {
+  Server_initializer initializer;
+  initializer.SetUp();
+  auto cleanup = create_scope_guard([&] {
+    Server_initializer::set_expected_error(0);
+    initializer.TearDown();
+  });
+  THD *const original = current_thd;
+  for (const char *sql : {
+           "CREATE TABLE IF NOT EXISTS",
+           "CREATE DATABASE IF NOT EXISTS task34_probe; DROP DATABASE other"}) {
+    SCOPED_TRACE(sql);
+    Query_log_event query(initializer.thd(), sql, strlen(sql), false, true,
+                          false, 0);
+    query.ddl_xid = mysql::binlog::event::INVALID_XID;
+    bool required = false;
+    std::string error;
+    Server_initializer::set_expected_error(ER_PARSE_ERROR);
+    EXPECT_FALSE(wesql::remote_commit::
+        native_query_requires_durable_authorization_for_test(
+            query, &required, &error));
+    EXPECT_TRUE(required);
+    EXPECT_FALSE(error.empty());
+    EXPECT_EQ(original, current_thd);
+    EXPECT_FALSE(original->is_error());
+  }
+}
+
+TEST(RemoteCommitNativeRecovery, CapturedRepeatedDdlAndRows) {
+  Server_initializer initializer;
+  initializer.SetUp();
+  auto cleanup = create_scope_guard([&] { initializer.TearDown(); });
+  namespace rc = wesql::remote_commit;
+  const fs::path fixture(WESQL_NATIVE_RECOVERY_FIXTURE);
+  ASSERT_EQ(5215U, fs::file_size(fixture));
+  rc::RecoveryPlan plan;
+  rc::MaterializedRoot materialized;
+  materialized.binlog_files.push_back(fixture);
+  rc::SegmentRef segment;
+  segment.source = {fixture.filename().string(), 158, 5215};
+  segment.transaction_count = 11;
+  std::string error;
+  ASSERT_TRUE(rc::gtid_digest("ce17e2dc-aa77-11f1-b25d-4e03cffe25eb:1-11",
+                              &segment.gtid_set, &error));
+  ASSERT_TRUE(rc::xid_digest({14, 16, 22}, &segment.xids, &error));
+  plan.replay_segments.push_back(segment);
+  rc::NativeRecoveryRequest request;
+  request.candidate = &plan;
+  request.materialized = &materialized;
+  request.max_event_bytes = 1024 * 1024;
+  std::vector<rc::NativeRecoveryTransaction> transactions;
+  const auto scanned = rc::scan_native_recovery_for_test(request, &transactions);
+  ASSERT_TRUE(scanned.ready()) << scanned.detail;
+  ASSERT_EQ(11U, transactions.size());
+  for (size_t index = 0; index < transactions.size(); ++index) {
+    SCOPED_TRACE(transactions[index].gtid.canonical);
+    EXPECT_EQ(index < 6 || index == 10,
+              transactions[index].requires_durable_authorization);
+  }
+  for (int mismatch = 0; mismatch < 3; ++mismatch) {
+    SCOPED_TRACE(mismatch);
+    auto &changed = plan.replay_segments.front();
+    changed = segment;
+    if (mismatch == 0) ++changed.transaction_count;
+    if (mismatch == 1) changed.gtid_set.sha256 = std::string(64, '0');
+    if (mismatch == 2) changed.xids.sha256 = std::string(64, '0');
+    const auto rejected = rc::scan_native_recovery_for_test(request, &transactions);
+    EXPECT_EQ(rc::NativeRecoveryScanOutcome::CORRUPT, rejected.outcome);
+    EXPECT_EQ("native segment GTID/XID metadata differs from candidate",
+              rejected.detail);
+  }
+}
+
 TEST(RemoteCommitStartupPolicy, ReadsParsedGtidBeforeRuntimeInitialization) {
   const auto saved_mode = Gtid_mode::sysvar_mode;
   const auto saved_consistency = _gtid_consistency_mode;
@@ -3252,6 +3388,40 @@ TEST_F(RemoteCommitServerHooksLifecycleTest,
   EXPECT_FALSE(rc::finish_recovery_commit_authorization(thd, true, &error))
       << error;
   EXPECT_FALSE(rc::may_complete_recovery_gtid(thd));
+}
+
+TEST_F(RemoteCommitServerHooksLifecycleTest,
+       RecoveryAuthorizationConsumptionMustMatchExpectedMutation) {
+  initialize(true);
+  adopt(rc::StartupEpochAdoptionRole::TAKEOVER_RECOVERY);
+  std::string error;
+  std::string head_sha;
+  ASSERT_TRUE(rc::sha256_hex(head_body, &head_sha, &error));
+  rc::CommitBinding binding{stream.stream_id, head.generation, head_sha,
+                            cursor.file, cursor.pos, full_proof.gtid_sha256,
+                            std::string(64, 'f')};
+  THD admitted(false);
+  for (bool required : {false, true}) {
+    for (bool consumed : {false, true}) {
+      SCOPED_TRACE(::testing::Message() << "required=" << required
+                                      << " consumed=" << consumed);
+      ASSERT_FALSE(rc::install_recovery_commit_authorization(
+          &admitted, binding, &error)) << error;
+      if (consumed)
+        rc::consume_commit_authorization(&admitted, true, true, true);
+      EXPECT_EQ(required != consumed,
+                rc::finish_recovery_commit_authorization(
+                    &admitted, required, &error));
+      if (required != consumed)
+        EXPECT_EQ(required
+                      ? "durable recovery transaction bypassed authorization"
+                      : "read-only recovery transaction consumed authorization",
+                  error);
+      EXPECT_TRUE(rc::finish_recovery_commit_authorization(
+          &admitted, required, &error));
+      EXPECT_EQ("recovery THD lost its authorization", error);
+    }
+  }
 }
 
 TEST_F(RemoteCommitServerHooksLifecycleTest,
