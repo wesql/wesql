@@ -21,6 +21,7 @@
 #include "db/version_set.h"
 #include "logger/log_module.h"
 #include "objstore/snapshot_release_lock.h"
+#include "objstore/remote_extent.h"
 #include "storage/extent_meta_manager.h"
 #include "util/file_reader_writer.h"
 #include "util/file_name.h"
@@ -949,7 +950,10 @@ int StorageLogger::replay_after_ckpt(memory::ArenaAllocator &arena)
     log_file_number_ = log_file_number - 1;
   }
 
-  if (SUCCED(ret) && env_->IsObjectStoreInited()) {
+  // Immutable remote snapshots are retained independently of legacy backup
+  // pins. A source's released v1 pin is not recovery authority for v2 data.
+  if (SUCCED(ret) && env_->IsObjectStoreInited() &&
+      !remote_extent::enabled()) {
     objstore::ObjectStore *objstore = nullptr;
     std::string_view objstore_bucket = env_->GetObjectStoreBucket();
     const std::string &cluster_objstore_id = env_->GetClusterObjstoreId();

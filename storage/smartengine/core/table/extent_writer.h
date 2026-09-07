@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <unordered_map>
+
 #include "schema/table_schema.h"
 #include "table/bloom_filter.h"
 #include "table/extent_struct.h"
@@ -132,8 +134,17 @@ private:
   int build_large_object_extent_meta(const common::Slice &lob_key,
                                      const storage::ExtentId &extent_id,
                                      const int64_t data_size,
+                                     const std::string &prefix,
                                      storage::ExtentMeta &extent_meta);
   int write_extent_meta(const storage::ExtentMeta &extent_meta, bool is_large_object_extent);
+  int build_allocation_prefix(std::string &prefix) const;
+  int write_remote_extent_body(storage::IOExtent *extent,
+                               const common::Slice &data,
+                               storage::ExtentMeta &extent_meta);
+  int remember_remote_extent_prefix(const storage::ExtentId &extent_id,
+                                    const std::string &prefix);
+  int get_recycle_prefix(const storage::ExtentId &extent_id,
+                         std::string &prefix) const;
   int collect_migrating_block(const common::Slice &block,
                               const BlockHandle &block_handle,
                               const common::CompressionType &compress_type);
@@ -161,6 +172,7 @@ private:
   util::CompressorHelper data_block_compressor_;
   util::CompressorHelper index_block_compressor_;
   std::string prefix_;
+  std::unordered_map<int64_t, std::string> remote_extent_prefixes_;
   BlockInfo block_info_;
   ExtentInfo extent_info_;
   std::vector<ExtentInfo> writed_extent_infos_;

@@ -263,6 +263,16 @@ int se_create_backup_snapshot(THD *thd,
                               std::string &binlog_file,
                               uint64_t *binlog_file_offset);
 
+int se_create_remote_backup_snapshot(THD *thd,
+                                     const char *staging_directory,
+                                     uint64_t *backup_snapshot_id,
+                                     std::string &binlog_file,
+                                     uint64_t *binlog_file_offset);
+
+int se_export_backup_snapshot_live_set(
+    THD *thd, uint64_t backup_snapshot_id,
+    std::vector<Smartengine_remote_extent_ref> *extents);
+
 int se_incremental_backup(THD *thd);
 
 int se_cleanup_tmp_backup_dir(THD *thd);

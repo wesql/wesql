@@ -52,6 +52,7 @@
 #include "monitoring/thread_status_updater.h"
 #include "monitoring/thread_status_util.h"
 #include "objstore/snapshot_release_lock.h"
+#include "objstore/remote_extent.h"
 #include "options/cf_options.h"
 #include "options/options_helper.h"
 #include "storage/extent_meta_manager.h"
@@ -199,7 +200,10 @@ int BackupSnapshotMap::release_backup_snapshot(BackupSnapshotId backup_id)
   } else if (UINT64_MAX == (auto_increment_id = backup_snapshot_map.get_auto_increment_id(backup_id))) {
     ret = Status::kErrorUnexpected;
     SE_LOG(WARN, "unexpected error, auto_increment_id not found", K(backup_id), K(ret));
-  } else if (GlobalContext::env_->IsObjectStoreInited()) {
+  } else if (GlobalContext::env_->IsObjectStoreInited() &&
+             !storage::remote_extent::enabled()) {
+    // v2 release only drops local pins; immutable objects remain retained.
+    // Its lifecycle must not contend with legacy mutable status locks.
     objstore::ObjectStore *objstore = nullptr;
     std::string_view objstore_bucket = GlobalContext::env_->GetObjectStoreBucket();
     const std::string &cluster_objstore_id = GlobalContext::env_->GetClusterObjstoreId();

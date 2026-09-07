@@ -25,6 +25,7 @@
 #include "se_transaction_list_walker.h"
 #include "dict/se_table.h"
 #include "transactions/transaction_db_impl.h"
+#include "objstore/remote_extent.h"
 
 namespace smartengine
 {
@@ -147,6 +148,11 @@ int SeTransaction::finish_bulk_load()
 
 bool SeTransaction::flush_batch()
 {
+  if (storage::remote_extent::enabled()) {
+    storage::remote_extent::enter_fenced(
+        "SmartEngine middle transaction flush is forbidden in remote mode");
+    return true;
+  }
   if (get_write_count() == 0)
     return false;
 

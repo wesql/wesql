@@ -28,10 +28,13 @@
 #include "sql_class.h"
 #include "query_options.h"
 #include "ha_smartengine.h"
+#include "backup/hotbackup_impl.h"
 #include "db/db_impl.h"
 #include "transaction/se_transaction_factory.h"
 #include "transactions/transaction_db_impl.h"
 #include "core/util/memory_stat.h"
+#include "objstore/remote_extent.h"
+#include "storage/extent_meta_manager.h"
 
 namespace smartengine
 {
@@ -649,6 +652,26 @@ int se_rollback_to_savepoint(handlerton *const hton,
 bool se_flush_wal(handlerton *const hton, bool binlog_group_flush)
 {
   assert(se_db != nullptr);
+  if (storage::remote_extent::enabled()) {
+    if (se_flush_log_at_trx_commit != 1) {
+      storage::remote_extent::enter_fenced(
+          "remote commit requires smartengine_flush_log_at_trx_commit=1");
+      return HA_EXIT_FAILURE;
+    }
+    if (storage::ExtentMetaManager::get_instance()
+            .validate_all_remote_extents() != Status::kOk) {
+      storage::remote_extent::enter_fenced(
+          "SmartEngine WAL references an unverified remote extent");
+      return HA_EXIT_FAILURE;
+    }
+    global_stats.wal_group_syncs_++;
+    if (Status::kOk != se_db->sync_wal()) {
+      storage::remote_extent::enter_fenced(
+          "SmartEngine WAL sync failed in remote commit mode");
+      return HA_EXIT_FAILURE;
+    }
+    return HA_EXIT_SUCCESS;
+  }
   if (binlog_group_flush && se_flush_log_at_trx_commit == 0) {
     return HA_EXIT_SUCCESS;
   }
@@ -864,6 +887,106 @@ int se_create_backup_snapshot(THD *thd,
     ret = HA_ERR_INTERNAL_ERROR;
   }
   return ret;
+}
+
+int se_create_remote_backup_snapshot(THD *, const char *staging_directory,
+                                     uint64_t *backup_snapshot_id,
+                                     std::string &binlog_file,
+                                     uint64_t *binlog_file_offset) {
+  int ret = Status::kOk;
+  util::BackupSnapshot *backup = util::BackupSnapshot::get_instance();
+  db::BinlogPosition binlog_pos;
+
+  if (staging_directory == nullptr || staging_directory[0] == '\0' ||
+      backup_snapshot_id == nullptr || binlog_file_offset == nullptr) {
+    ret = Status::kInvalidArgument;
+  } else if (se_db == nullptr) {
+    ret = Status::kNotInit;
+  } else {
+    const int exists =
+        se_db->GetEnv()->FileExists(staging_directory).code();
+    if (exists != Status::kNotFound) {
+      ret = exists == Status::kOk ? Status::kErrorUnexpected : exists;
+    } else if (FAILED(backup->lock_one_step())) {
+      SE_LOG(WARN, "failed to acquire remote backup lock", K(ret));
+    } else {
+      if (FAILED(backup->do_checkpoint(se_db, staging_directory))) {
+        SE_LOG(WARN, "failed to create remote backup checkpoint", K(ret),
+               K(staging_directory));
+      } else if (FAILED(backup->accquire_backup_snapshot(
+                     se_db, backup_snapshot_id, binlog_pos))) {
+        SE_LOG(WARN, "failed to acquire remote backup snapshot", K(ret),
+               K(staging_directory));
+      } else {
+        binlog_file = binlog_pos.file_name_;
+        *binlog_file_offset = binlog_pos.offset_;
+        backup->set_backup_status(se_backup_status[1]);
+      }
+      const int unlock_ret = backup->unlock_one_step();
+      if (unlock_ret != Status::kOk) {
+        SE_LOG(WARN, "failed to release remote backup lock", K(unlock_ret));
+      }
+    }
+  }
+
+  if (FAILED(ret)) {
+    if (backup_snapshot_id != nullptr) *backup_snapshot_id = 0;
+    binlog_file.clear();
+    if (binlog_file_offset != nullptr) *binlog_file_offset = 0;
+    return HA_ERR_INTERNAL_ERROR;
+  }
+  return 0;
+}
+
+int se_export_backup_snapshot_live_set(
+    THD *, uint64_t backup_snapshot_id,
+    std::vector<Smartengine_remote_extent_ref> *extents) {
+  if (backup_snapshot_id == 0 || extents == nullptr) {
+    return HA_ERR_INTERNAL_ERROR;
+  }
+  extents->clear();
+
+  util::BackupSnapshotImpl *backup = util::BackupSnapshotImpl::get_instance();
+  int ret = backup->lock_one_step();
+  if (FAILED(ret)) return HA_ERR_INTERNAL_ERROR;
+
+  db::BackupSnapshotMap &snapshots = backup->get_backup_snapshot_map();
+  BackupSnapshotId previous = 0;
+  BackupSnapshotId current = 0;
+  uint64_t auto_increment_id = 0;
+  db::MetaSnapshotSet *meta_snapshots = nullptr;
+  while (snapshots.get_next_backup_snapshot(
+      previous, current, auto_increment_id, meta_snapshots)) {
+    if (current >= backup_snapshot_id) break;
+    previous = current;
+  }
+
+  std::vector<storage::remote_extent::LiveExtentRef> live_set;
+  std::string error;
+  if (current != backup_snapshot_id || meta_snapshots == nullptr ||
+      !storage::remote_extent::export_snapshot_live_set(*meta_snapshots,
+                                                        &live_set, &error)) {
+    ret = Status::kErrorUnexpected;
+  } else {
+    extents->reserve(live_set.size());
+    for (auto &ref : live_set) {
+      extents->push_back(Smartengine_remote_extent_ref{
+          ref.ordinal, ref.writer_epoch, ref.allocation_seq,
+          std::move(ref.database_name_hex), ref.index_id, ref.object_id,
+          std::move(ref.key), ref.size, std::move(ref.sha256)});
+    }
+  }
+
+  const int unlock_ret = backup->unlock_one_step();
+  if (FAILED(unlock_ret)) ret = unlock_ret;
+  if (FAILED(ret)) {
+    extents->clear();
+    if (!error.empty())
+      SE_LOG(WARN, "failed to export remote extent live set",
+             K(backup_snapshot_id), K(error));
+    return HA_ERR_INTERNAL_ERROR;
+  }
+  return 0;
 }
 
 int se_incremental_backup(THD *thd) {

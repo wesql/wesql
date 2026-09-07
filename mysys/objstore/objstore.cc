@@ -18,6 +18,7 @@
 
 #include "mysys/objstore/aliyun_oss.h"
 #include "mysys/objstore/local.h"
+#include "mysys/objstore/provider_lifecycle.h"
 #include "mysys/objstore/s3.h"
 
 #include <cerrno>
@@ -53,6 +54,17 @@ bool path_is_within(const fs::path &root, const fs::path &path) {
     }
   }
   return true;
+}
+
+detail::ProviderLifecycle &aws_provider_lifecycle() {
+  static detail::ProviderLifecycle lifecycle(init_aws_api, shutdown_aws_api);
+  return lifecycle;
+}
+
+detail::ProviderLifecycle &aliyun_provider_lifecycle() {
+  static detail::ProviderLifecycle lifecycle(init_aliyun_api,
+                                             shutdown_aliyun_api);
+  return lifecycle;
 }
 
 }  // namespace
@@ -119,9 +131,9 @@ int rm_f(std::string_view path) {
 
 void init_objstore_provider(const std::string_view &provider) {
   if (ObjectStore::use_s3_sdk(provider)) {
-    init_aws_api();
+    aws_provider_lifecycle().acquire();
   } else if (provider == "aliyun") {
-    init_aliyun_api();
+    aliyun_provider_lifecycle().acquire();
   } else if (provider == "local") {
     // do nothing
   }
@@ -129,9 +141,9 @@ void init_objstore_provider(const std::string_view &provider) {
 
 void cleanup_objstore_provider(const std::string_view &provider) {
   if (ObjectStore::use_s3_sdk(provider)) {
-    shutdown_aws_api();
+    aws_provider_lifecycle().release();
   } else if (provider == "aliyun") {
-    shutdown_aliyun_api();
+    aliyun_provider_lifecycle().release();
   } else if (provider == "local") {
     // do nothing
   }

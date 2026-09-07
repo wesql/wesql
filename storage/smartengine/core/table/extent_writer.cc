@@ -19,6 +19,7 @@
 #include "cache/row_cache.h"
 #include "memory/base_malloc.h"
 #include "objstore/objstore_layout.h"
+#include "objstore/remote_extent.h"
 #include "storage/change_info.h"
 #include "storage/extent_meta_manager.h"
 #include "storage/extent_space_manager.h"
@@ -113,6 +114,7 @@ ExtentWriter::ExtentWriter()
       data_block_compressor_(),
       index_block_compressor_(),
       prefix_(),
+      remote_extent_prefixes_(),
       block_info_(),
       extent_info_(),
       writed_extent_infos_(),
@@ -200,6 +202,7 @@ void ExtentWriter::destroy()
     data_block_writer_ = nullptr;
     se_assert(nullptr != buf_.data());
     base_memalign_free((buf_.data()));
+    remote_extent_prefixes_.clear();
     is_inited_ = false;
   }
 }
@@ -298,11 +301,19 @@ int ExtentWriter::rollback()
     int recycle_ret = Status::kOk;
     for (uint32_t i = 0; i < writed_extent_infos_.size(); ++i) {
       const ExtentInfo &extent_info = writed_extent_infos_.at(i);
-      if (Status::kOk != (recycle_ret = ExtentSpaceManager::get_instance().recycle(table_space_id_,
-                                                                                   extent_space_type_,
-                                                                                   prefix_,
-                                                                                   extent_info.extent_id_))) {
+      std::string recycle_prefix;
+      if (Status::kOk !=
+          (recycle_ret =
+               get_recycle_prefix(extent_info.extent_id_, recycle_prefix))) {
+        SE_LOG(WARN, "fail to find extent recycle prefix", K(recycle_ret),
+               K(extent_info));
+      } else if (Status::kOk !=
+                 (recycle_ret = ExtentSpaceManager::get_instance().recycle(
+                      table_space_id_, extent_space_type_, recycle_prefix,
+                      extent_info.extent_id_))) {
         SE_LOG(WARN, "fail to recycle extent meta", K(recycle_ret), K(extent_info));
+      } else if (remote_extent::enabled()) {
+        remote_extent_prefixes_.erase(extent_info.extent_id_.id());
       }
     }
   }
@@ -869,6 +880,11 @@ int ExtentWriter::write_extent()
 {
   int ret = Status::kOk;
   IOExtent *extent = nullptr;
+  std::string allocation_prefix;
+  const bool immutable_remote = remote_extent::enabled();
+  bool metadata_attempted = false;
+  bool extent_allocated = false;
+  ExtentId allocated_extent_id;
 
   if (UNLIKELY(!is_inited_)) {
     ret = Status::kNotInit;
@@ -877,12 +893,17 @@ int ExtentWriter::write_extent()
 #ifndef NDEBUG
     SE_LOG(INFO, "current extent is empty");
 #endif
+  } else if (FAILED(build_allocation_prefix(allocation_prefix))) {
+    SE_LOG(ERROR, "fail to build extent allocation prefix", K(ret));
   } else if (FAILED(ExtentSpaceManager::get_instance().allocate(table_space_id_,
                                                                 extent_space_type_,
-                                                                prefix_,
+                                                                allocation_prefix,
                                                                 extent))) {
-    SE_LOG(WARN, "fail to allocate writable extent", K(ret), K_(table_space_id), K_(extent_space_type), K_(prefix));
+    SE_LOG(WARN, "fail to allocate writable extent", K(ret), K_(table_space_id),
+           K_(extent_space_type), K(allocation_prefix));
   } else {
+    allocated_extent_id = extent->get_extent_id();
+    extent_allocated = true;
     extent_info_.table_space_id_ = table_space_id_;
     extent_info_.extent_space_type_ = extent_space_type_;
     extent_info_.extent_id_ = extent->get_extent_id();
@@ -892,23 +913,57 @@ int ExtentWriter::write_extent()
     } else if (FAILED(write_footer())) {
       SE_LOG(WARN, "fail to write footer", K(ret));
     } else {
-      ExtentMeta extent_meta(ExtentMeta::F_NORMAL_EXTENT, extent_info_, table_schema_, prefix_);
-      if (FAILED(write_extent_meta(extent_meta, false /*is_large_object_extent*/))) {
-        SE_LOG(WARN, "fail to write extent meta", K(ret), K(extent_meta));
+      const ExtentId current_extent_id = extent_info_.extent_id_;
+      ExtentMeta extent_meta(ExtentMeta::F_NORMAL_EXTENT, extent_info_,
+                             table_schema_, allocation_prefix);
+      if (immutable_remote &&
+          FAILED(write_remote_extent_body(
+              extent, Slice(buf_.data(), MAX_EXTENT_SIZE), extent_meta))) {
+        SE_LOG(ERROR, "fail to write immutable remote extent body", K(ret),
+               K(extent_meta));
+      } else if (immutable_remote &&
+                 FAILED(remember_remote_extent_prefix(
+                     current_extent_id, allocation_prefix))) {
+        SE_LOG(ERROR, "fail to remember immutable extent prefix", K(ret),
+               K(extent_meta));
       } else {
-        // Migrate the flagged blocks.This is a best-effort task and should not affect
-        // the normal data persistence process.
-        migrate_block_cache(extent);
-        writed_extent_infos_.push_back(extent_info_);
-        if (FAILED(submit_write_extent_request(extent, Slice(buf_.data(), MAX_EXTENT_SIZE)))) {
-          SE_LOG(WARN, "fail to submit write extent request", K(ret), K(extent_meta));
+        metadata_attempted = true;
+        if (FAILED(write_extent_meta(
+                extent_meta, false /*is_large_object_extent*/))) {
+          SE_LOG(WARN, "fail to write extent meta", K(ret), K(extent_meta));
         } else {
-          extent_info_.reset();
-          buf_.reuse();
-          SE_LOG(INFO, "success to write extent", K(extent_meta));
+          // Migrate the flagged blocks.This is a best-effort task and should not affect
+          // the normal data persistence process.
+          migrate_block_cache(extent);
+          writed_extent_infos_.push_back(extent_info_);
+          if (!immutable_remote &&
+              FAILED(submit_write_extent_request(
+                  extent, Slice(buf_.data(), MAX_EXTENT_SIZE)))) {
+            SE_LOG(WARN, "fail to submit write extent request", K(ret),
+                   K(extent_meta));
+          } else {
+            if (immutable_remote) DELETE_OBJECT(ModId::kIOExtent, extent);
+            extent_info_.reset();
+            buf_.reuse();
+            SE_LOG(INFO, "success to write extent", K(extent_meta));
+          }
         }
       }
     }
+  }
+
+  if (FAILED(ret) && immutable_remote && extent_allocated &&
+      !metadata_attempted) {
+    const int recycle_ret = ExtentSpaceManager::get_instance().recycle(
+        table_space_id_, extent_space_type_, allocation_prefix,
+        allocated_extent_id);
+    if (recycle_ret != Status::kOk)
+      SE_LOG(ERROR, "fail to release failed immutable extent allocation",
+             K(recycle_ret), K(allocated_extent_id), K(allocation_prefix));
+    remote_extent_prefixes_.erase(allocated_extent_id.id());
+  }
+  if (immutable_remote && IS_NOTNULL(extent)) {
+    DELETE_OBJECT(ModId::kIOExtent, extent);
   }
 
   return ret;
@@ -918,31 +973,74 @@ int ExtentWriter::flush_extent()
 {
   int ret = Status::kOk;
   storage::IOExtent *extent = nullptr;
+  std::string allocation_prefix;
+  const bool immutable_remote = remote_extent::enabled();
+  bool metadata_attempted = false;
+  bool extent_allocated = false;
+  ExtentId allocated_extent_id;
 
   if (UNLIKELY(!is_inited_)) {
     ret = Status::kNotInit;
     SE_LOG(WARN, "ExtentWriter should be inited", K(ret));
+  } else if (FAILED(build_allocation_prefix(allocation_prefix))) {
+    SE_LOG(ERROR, "fail to build extent allocation prefix", K(ret));
   } else if (FAILED(ExtentSpaceManager::get_instance().allocate(table_space_id_,
                                                                 extent_space_type_,
-                                                                prefix_,
+                                                                allocation_prefix,
                                                                 extent))) {
     SE_LOG(WARN, "fail to allocate extent", K(ret));
   } else {
+    allocated_extent_id = extent->get_extent_id();
+    extent_allocated = true;
     extent_info_.table_space_id_ = table_space_id_;
     extent_info_.extent_space_type_ = extent_space_type_;
     extent_info_.extent_id_ = extent->get_extent_id();
-    ExtentMeta extent_meta(storage::ExtentMeta::F_NORMAL_EXTENT, extent_info_, table_schema_, prefix_);
-    if (FAILED(write_extent_meta(extent_meta, false /*is_large_object_extent*/))) {
-      SE_LOG(WARN, "fail to write extent meta", K(ret));
+    const ExtentId current_extent_id = extent_info_.extent_id_;
+    ExtentMeta extent_meta(storage::ExtentMeta::F_NORMAL_EXTENT, extent_info_,
+                           table_schema_, allocation_prefix);
+    if (immutable_remote &&
+        FAILED(write_remote_extent_body(
+            extent, Slice(buf_.data(), MAX_EXTENT_SIZE), extent_meta))) {
+      SE_LOG(ERROR, "fail to write immutable remote extent body", K(ret),
+             K(extent_meta));
+    } else if (immutable_remote &&
+               FAILED(remember_remote_extent_prefix(
+                   current_extent_id, allocation_prefix))) {
+      SE_LOG(ERROR, "fail to remember immutable extent prefix", K(ret),
+             K(extent_meta));
     } else {
-      // Migrate the flagged blocks.This is a best-effort task and should not affect the
-      // normal data persistence process.
-      migrate_block_cache(extent);
-      writed_extent_infos_.push_back(extent_info_);
-      if (FAILED(submit_write_extent_request(extent, Slice(buf_.data(), MAX_EXTENT_SIZE)))) {
-        SE_LOG(WARN, "fail to submit write extent request", K(ret));
+      metadata_attempted = true;
+      if (FAILED(write_extent_meta(
+              extent_meta, false /*is_large_object_extent*/))) {
+        SE_LOG(WARN, "fail to write extent meta", K(ret));
+      } else {
+        // Migrate the flagged blocks.This is a best-effort task and should not affect the
+        // normal data persistence process.
+        migrate_block_cache(extent);
+        writed_extent_infos_.push_back(extent_info_);
+        if (!immutable_remote &&
+            FAILED(submit_write_extent_request(
+                extent, Slice(buf_.data(), MAX_EXTENT_SIZE)))) {
+          SE_LOG(WARN, "fail to submit write extent request", K(ret));
+        } else if (immutable_remote) {
+          DELETE_OBJECT(ModId::kIOExtent, extent);
+        }
       }
     }
+  }
+
+  if (FAILED(ret) && immutable_remote && extent_allocated &&
+      !metadata_attempted) {
+    const int recycle_ret = ExtentSpaceManager::get_instance().recycle(
+        table_space_id_, extent_space_type_, allocation_prefix,
+        allocated_extent_id);
+    if (recycle_ret != Status::kOk)
+      SE_LOG(ERROR, "fail to release failed immutable extent allocation",
+             K(recycle_ret), K(allocated_extent_id), K(allocation_prefix));
+    remote_extent_prefixes_.erase(allocated_extent_id.id());
+  }
+  if (immutable_remote && IS_NOTNULL(extent)) {
+    DELETE_OBJECT(ModId::kIOExtent, extent);
   }
 
   return ret;
@@ -999,6 +1097,8 @@ int ExtentWriter::convert_to_large_object_value(const Slice &value, LargeObject 
   int ret = Status::kOk;
   storage::IOExtent *extent = nullptr;
   storage::ExtentMeta extent_meta;
+  std::string allocation_prefix;
+  const bool immutable_remote = remote_extent::enabled();
   CompressionType actual_compress_type = common::kNoCompression;
   Slice compressed_value;
   char *value_buf = nullptr;
@@ -1020,34 +1120,77 @@ int ExtentWriter::convert_to_large_object_value(const Slice &value, LargeObject 
     large_object.value_.size_ = compressed_value.size();
 
     while (SUCCED(ret) && offset < (static_cast<int64_t>(compressed_value.size()))) {
+      bool metadata_attempted = false;
+      bool extent_allocated = false;
+      ExtentId allocated_extent_id;
       memset(value_buf, 0, storage::MAX_EXTENT_SIZE);
       size = ((compressed_value.size() - offset) > storage::MAX_EXTENT_SIZE)
              ? storage::MAX_EXTENT_SIZE : (compressed_value.size() - offset);
       memcpy(value_buf, compressed_value.data() + offset, size);
 
-      if (FAILED(storage::ExtentSpaceManager::get_instance().allocate(table_space_id_,
+      allocation_prefix.clear();
+      if (FAILED(build_allocation_prefix(allocation_prefix))) {
+        SE_LOG(ERROR, "fail to build LOB allocation prefix", K(ret));
+      } else if (FAILED(storage::ExtentSpaceManager::get_instance().allocate(table_space_id_,
                                                                       extent_space_type_,
-                                                                      prefix_,
+                                                                      allocation_prefix,
                                                                       extent))) {
         SE_LOG(WARN, "fail to allocate writable extent", K(ret));
-      } else if (FAILED(build_large_object_extent_meta(Slice(large_object.key_),
-                                                       extent->get_extent_id(),
-                                                       size,
-                                                       extent_meta))) {
-        SE_LOG(WARN, "fail to build large object extent meta", K(ret));
-      } else if (FAILED(write_extent_meta(extent_meta, true /*is_large_object_extent*/))) {
-        SE_LOG(WARN, "fail to write large object extent meta", K(ret), K(extent_meta));
       } else {
-        extent->set_large_object_extent();
-        large_object.value_.extents_.push_back(extent->get_extent_id());
-        offset += size;
-        extent_meta.reset();
-        // The last large object extent contains valid data of size.Since all extents are
-        // currently 2MB, we will directly write padding the data to 2MB size here.
-        // the valid size is recorded in ExtentMeta.
-        if (FAILED(submit_write_extent_request(extent, Slice(value_buf, storage::MAX_EXTENT_SIZE)))) {
-          SE_LOG(WARN, "fail to submit write extent request", K(ret));
+        allocated_extent_id = extent->get_extent_id();
+        extent_allocated = true;
+        if (FAILED(build_large_object_extent_meta(
+                Slice(large_object.key_), allocated_extent_id, size,
+                allocation_prefix, extent_meta))) {
+          SE_LOG(WARN, "fail to build large object extent meta", K(ret));
+        } else if (immutable_remote &&
+                   FAILED(write_remote_extent_body(
+                       extent, Slice(value_buf, storage::MAX_EXTENT_SIZE),
+                       extent_meta))) {
+          SE_LOG(ERROR, "fail to write immutable remote LOB extent body", K(ret),
+                 K(extent_meta));
+        } else if (immutable_remote &&
+                   FAILED(remember_remote_extent_prefix(
+                       allocated_extent_id, allocation_prefix))) {
+          SE_LOG(ERROR, "fail to remember immutable LOB extent prefix", K(ret),
+                 K(extent_meta));
+        } else {
+          metadata_attempted = true;
+          if (FAILED(write_extent_meta(
+                  extent_meta, true /*is_large_object_extent*/))) {
+            SE_LOG(WARN, "fail to write large object extent meta", K(ret),
+                   K(extent_meta));
+          } else {
+            extent->set_large_object_extent();
+            large_object.value_.extents_.push_back(allocated_extent_id);
+            offset += size;
+            extent_meta.reset();
+            // The last large object extent contains valid data of size.Since all extents are
+            // currently 2MB, we will directly write padding the data to 2MB size here.
+            // the valid size is recorded in ExtentMeta.
+            if (!immutable_remote &&
+                FAILED(submit_write_extent_request(
+                    extent, Slice(value_buf, storage::MAX_EXTENT_SIZE)))) {
+              SE_LOG(WARN, "fail to submit write extent request", K(ret));
+            } else if (immutable_remote) {
+              DELETE_OBJECT(ModId::kIOExtent, extent);
+            }
+          }
         }
+      }
+      if (immutable_remote && IS_NOTNULL(extent)) {
+        DELETE_OBJECT(ModId::kIOExtent, extent);
+      }
+      if (FAILED(ret) && immutable_remote && !metadata_attempted &&
+          !allocation_prefix.empty() && extent_allocated) {
+        const int recycle_ret = ExtentSpaceManager::get_instance().recycle(
+            table_space_id_, extent_space_type_, allocation_prefix,
+            allocated_extent_id);
+        if (recycle_ret != Status::kOk)
+          SE_LOG(ERROR,
+                 "fail to release failed immutable LOB extent allocation",
+                 K(recycle_ret), K(allocated_extent_id), K(allocation_prefix));
+        remote_extent_prefixes_.erase(allocated_extent_id.id());
       }
     }
   }
@@ -1073,10 +1216,18 @@ int ExtentWriter::recycle_large_object_extent(LargeObject &large_object)
   int ret = Status::kOk;
 
   for (uint32_t i = 0; SUCCED(ret) && i < large_object.value_.extents_.size(); ++i) {
-    if (FAILED(ExtentSpaceManager::get_instance()
-                   .recycle(table_space_id_, extent_space_type_, prefix_, large_object.value_.extents_[i]))) {
+    std::string recycle_prefix;
+    if (FAILED(get_recycle_prefix(large_object.value_.extents_[i],
+                                  recycle_prefix))) {
+      SE_LOG(WARN, "fail to find LOB recycle prefix", K(ret), K(i),
+             "extent_id", large_object.value_.extents_[i]);
+    } else if (FAILED(ExtentSpaceManager::get_instance().recycle(
+                   table_space_id_, extent_space_type_, recycle_prefix,
+                   large_object.value_.extents_[i]))) {
       SE_LOG(WARN, "fail to recycle large object extent", K(ret), K(i),
-          K_(prefix), "extent_id", large_object.value_.extents_[i]);
+          K(recycle_prefix), "extent_id", large_object.value_.extents_[i]);
+    } else if (remote_extent::enabled()) {
+      remote_extent_prefixes_.erase(large_object.value_.extents_[i].id());
     }
   }
 
@@ -1115,6 +1266,7 @@ int ExtentWriter::write_large_object(const LargeObject &large_object)
 int ExtentWriter::build_large_object_extent_meta(const common::Slice &lob_key,
                                                  const storage::ExtentId &extent_id,
                                                  const int64_t data_size,
+                                                 const std::string &prefix,
                                                  storage::ExtentMeta &extent_meta)
 {
   int ret = Status::kOk;
@@ -1137,7 +1289,7 @@ int ExtentWriter::build_large_object_extent_meta(const common::Slice &lob_key,
     extent_meta.num_deletes_ = 0;
     extent_meta.table_space_id_ = table_space_id_;
     extent_meta.extent_space_type_ = extent_space_type_;
-    extent_meta.prefix_ = prefix_;
+    extent_meta.prefix_ = prefix;
   }
 
   return ret;
@@ -1165,7 +1317,99 @@ int ExtentWriter::write_extent_meta(const storage::ExtentMeta &extent_meta, bool
     }
   }
 
+  if (FAILED(ret) && remote_extent::enabled()) {
+    remote_extent::enter_fenced(
+        "immutable extent metadata publication failed after verified upload");
+  }
+
   return ret;
+}
+
+int ExtentWriter::build_allocation_prefix(std::string &prefix) const
+{
+  int ret = Status::kOk;
+  if (!remote_extent::enabled()) {
+    prefix = prefix_;
+  } else {
+    std::string error;
+    if (extent_space_type_ != OBJECT_EXTENT_SPACE) {
+      ret = Status::kCorruption;
+      error = "remote mode attempted to allocate a file extent";
+    } else if (!remote_extent::allocate_prefix(
+                   table_schema_.get_database_name(),
+                   table_schema_.get_index_id(), &prefix, &error)) {
+      ret = Status::kCorruption;
+    }
+    if (FAILED(ret)) {
+      SE_LOG(ERROR, "fail to derive immutable extent allocation prefix", K(ret),
+             K(error), K_(extent_space_type), K_(table_schema));
+      remote_extent::enter_fenced(error);
+    }
+  }
+  return ret;
+}
+
+int ExtentWriter::write_remote_extent_body(
+    storage::IOExtent *extent, const common::Slice &data,
+    storage::ExtentMeta &extent_meta)
+{
+  int ret = Status::kOk;
+  std::string error;
+  if (!remote_extent::enabled()) {
+    ret = Status::kInvalidArgument;
+    error = "immutable extent write requested outside remote mode";
+  } else if (IS_NULL(extent) || data.size() != MAX_EXTENT_SIZE) {
+    ret = Status::kInvalidArgument;
+    error = "immutable extent write has an invalid body";
+  } else if (!remote_extent::sha256_hex(
+                 std::string_view(data.data(), data.size()),
+                 &extent_meta.object_sha256_, &error)) {
+    ret = Status::kCorruption;
+  } else {
+    extent_meta.object_size_ = static_cast<uint64_t>(data.size());
+    if (FAILED(extent->write(data, 0))) {
+      SE_LOG(ERROR, "fail to synchronously write immutable extent", K(ret),
+             K(extent_meta));
+    }
+  }
+  if (FAILED(ret) && remote_extent::enabled()) {
+    if (error.empty()) error = "immutable remote extent body write failed";
+    remote_extent::enter_fenced(error);
+  }
+  return ret;
+}
+
+int ExtentWriter::remember_remote_extent_prefix(
+    const storage::ExtentId &extent_id, const std::string &prefix)
+{
+  int ret = Status::kOk;
+  const auto inserted =
+      remote_extent_prefixes_.emplace(extent_id.id(), prefix);
+  if (!inserted.second) {
+    ret = Status::kCorruption;
+    SE_LOG(ERROR, "immutable extent id was registered more than once", K(ret),
+           K(extent_id), K(prefix), "prior_prefix", inserted.first->second);
+    remote_extent::enter_fenced(
+        "immutable extent id was registered more than once");
+  }
+  return ret;
+}
+
+int ExtentWriter::get_recycle_prefix(const storage::ExtentId &extent_id,
+                                     std::string &prefix) const
+{
+  if (!remote_extent::enabled()) {
+    prefix = prefix_;
+    return Status::kOk;
+  }
+  const auto found = remote_extent_prefixes_.find(extent_id.id());
+  if (found == remote_extent_prefixes_.end()) {
+    remote_extent::enter_fenced(
+        "immutable extent recycle lost its persisted prefix");
+    return Status::kCorruption;
+  }
+  prefix = found->second;
+  return Status::kOk;
 }
 
 int ExtentWriter::collect_migrating_block(const Slice &block,
@@ -1271,7 +1515,12 @@ int ExtentWriter::submit_write_extent_request(IOExtent *extent, const Slice &dat
   ExtentId extent_id;
   WriteExtentJob *job = nullptr;
 
-  if (FAILED(write_extent_ret_)) {
+  if (remote_extent::enabled()) {
+    ret = Status::kCorruption;
+    SE_LOG(ERROR, "remote extent entered the legacy asynchronous writer", K(ret));
+    remote_extent::enter_fenced(
+        "remote extent entered the legacy asynchronous writer");
+  } else if (FAILED(write_extent_ret_)) {
     SE_LOG(ERROR, "previous write extent job has failed, stop to submit new job", K(ret));
   } else if (IS_NULL(extent) || UNLIKELY(data.empty())) {
     ret = Status::kInvalidArgument;

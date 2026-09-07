@@ -17,6 +17,7 @@
 #include "storage/io_extent.h"
 #include <unistd.h>
 #include "cache/persistent_cache.h"
+#include "objstore/remote_extent.h"
 #include "table/extent_writer.h"
 #include "util/macro_utils.h"
 #include "util/misc_utility.h"
@@ -397,13 +398,37 @@ int ObjectIOExtent::init(const ExtentId &extent_id,
     SE_LOG(WARN, "invalid argument", K(ret), K(unique_id),
         KP(object_store), K(bucket));
   } else {
-    extent_id_ = extent_id;
-    unique_id_ = unique_id;
-    object_store_ = object_store;
-    bucket_ = bucket;
-    prefix_ = prefix;
+    std::string validation_error;
+    ::objstore::ObjectStore *io_object_store = object_store;
+    if (remote_extent::enabled()) {
+      remote_extent::RuntimeConfig config;
+      std::string object_key;
+      if (!remote_extent::runtime_config(&config, &validation_error) ||
+          config.bucket != bucket ||
+          !remote_extent::object_key(config, prefix, extent_id, &object_key,
+                                     nullptr, &validation_error)) {
+        ret = Status::kCorruption;
+        if (validation_error.empty())
+          validation_error =
+              "remote extent I/O does not match the process runtime";
+        SE_LOG(ERROR, "reject invalid remote extent I/O", K(ret),
+               K(validation_error), K(extent_id), K(bucket), K(prefix));
+        remote_extent::enter_fenced(validation_error);
+      } else {
+        // Env owns a separate client. Immutable I/O uses the client bound to
+        // the adopted remote-commit runtime and rechecks it on every write.
+        io_object_store = config.object_store;
+      }
+    }
+    if (SUCCED(ret)) {
+      extent_id_ = extent_id;
+      unique_id_ = unique_id;
+      object_store_ = io_object_store;
+      bucket_ = bucket;
+      prefix_ = prefix;
 
-    is_inited_ = true;
+      is_inited_ = true;
+    }
   }
 
   return ret;
@@ -515,7 +540,9 @@ int ObjectIOExtent::fill_aio_info(AIOHandle *aio_handle, int64_t offset, int64_t
   } else if (UNLIKELY((offset + size) > storage::MAX_EXTENT_SIZE)) {
     ret = Status::kOverLimit;
     SE_LOG(WARN, "the read range is overflow", K(ret), K(offset), K(size));
-  } else if (!PersistentCache::get_instance().is_enabled() || is_large_object_extent()) {
+  } else if (remote_extent::enabled() ||
+             !PersistentCache::get_instance().is_enabled() ||
+             is_large_object_extent()) {
     ret = Status::kNoSpace;
   } else if (IS_NOTNULL(aio_handle->aio_req_->handle_)) {
     ret = Status::kErrorUnexpected;
@@ -540,30 +567,74 @@ int ObjectIOExtent::fill_aio_info(AIOHandle *aio_handle, int64_t offset, int64_t
 int ObjectIOExtent::write_object(const char *data, int64_t data_size)
 {
   int ret = Status::kOk;
-  // bool forbid_overwrite = true;
-  bool forbid_overwrite = false;
-  ::objstore::Status object_status;
-  std::string object_id = prefix_ + std::to_string(assemble_objid_by_fdfn(extent_id_.file_number, extent_id_.offset));
-
-  object_status = object_store_->put_object(bucket_, object_id, std::string_view(data, data_size), forbid_overwrite);
-  if (UNLIKELY(!object_status.is_succ())) {
-    // if (object_status.error_code() == ::objstore::Errors::SE_OBJECT_FORBID_OVERWRITE) {
-    //   // there is maybe another wesql data node is writting an object with the same extent id.
-    //   // at now, we just abort and let the user to shutdown one wesql data node.
-    //   SE_LOG(FATAL,
-    //          "failed to write object, an object with the same key existed, forbid overwritting extent!",
-    //          K(ret),
-    //          KE(object_status.error_code()),
-    //          K(std::string(object_status.error_message())),
-    //          K(extent_id_),
-    //          K(object_id));
-    //   abort();
-    // }
-    ret = Status::kObjStoreError;
-    SE_LOG(WARN, "io error, failed to put obj", K(ret), KE((object_status.error_code())), K(object_status.error_message()),
-        K_(extent_id), K_(bucket), K(object_id), K(data_size), K_(bucket));
+  const bool immutable_remote = remote_extent::enabled();
+  std::string object_id;
+  std::string validation_error;
+  if (!remote_extent::object_key(prefix_, extent_id_, &object_id,
+                                 &validation_error)) {
+    ret = Status::kCorruption;
+    SE_LOG(ERROR, "fail to derive extent object key", K(ret),
+           K(validation_error), K_(extent_id), K_(prefix));
+    if (immutable_remote) remote_extent::enter_fenced(validation_error);
+  } else if (immutable_remote) {
+    remote_extent::RuntimeConfig config;
+    if (data_size != MAX_EXTENT_SIZE) {
+      ret = Status::kCorruption;
+      validation_error = "remote extent body is not exactly MAX_EXTENT_SIZE";
+    } else if (!remote_extent::runtime_config(&config, &validation_error) ||
+               config.object_store != object_store_ ||
+               config.bucket != bucket_) {
+      ret = Status::kCorruption;
+      if (validation_error.empty())
+        validation_error =
+            "remote extent writer does not match the process runtime";
+    } else {
+      remote_extent::ObjectStoreConditionalIo conditional_io(object_store_,
+                                                              bucket_);
+      const remote_extent::ImmutableWriteResult write_result =
+          remote_extent::create_and_verify(
+              &conditional_io, object_id,
+              std::string_view(data, static_cast<size_t>(data_size)));
+      if (!write_result.verified()) {
+        ret = write_result.outcome ==
+                      remote_extent::ImmutableWriteOutcome::PERMANENT_ERROR
+                  ? Status::kObjStoreError
+                  : Status::kCorruption;
+        validation_error = write_result.detail;
+      } else {
+        std::string digest;
+        if (!remote_extent::sha256_hex(
+                std::string_view(data, static_cast<size_t>(data_size)),
+                &digest, &validation_error) ||
+            !remote_extent::remember_verified(
+                object_id, static_cast<uint64_t>(data_size), digest,
+                &validation_error)) {
+          ret = Status::kCorruption;
+        }
+      }
+    }
+    if (FAILED(ret)) {
+      SE_LOG(ERROR, "immutable remote extent write failed", K(ret),
+             K(validation_error), K_(extent_id), K_(bucket), K(object_id),
+             K(data_size));
+      remote_extent::enter_fenced(validation_error);
+    } else {
+      SE_LOG(DEBUG, "success to create and verify immutable remote extent",
+             K_(extent_id), K_(bucket), K(object_id));
+    }
   } else {
-    if (PersistentCache::get_instance().is_enabled() && !is_large_object_extent()) {
+    const bool forbid_overwrite = false;
+    const ::objstore::Status object_status = object_store_->put_object(
+        bucket_, object_id,
+        std::string_view(data, static_cast<size_t>(data_size)),
+        forbid_overwrite);
+    if (UNLIKELY(!object_status.is_succ())) {
+      ret = Status::kObjStoreError;
+      SE_LOG(WARN, "io error, failed to put obj", K(ret),
+             KE((object_status.error_code())), K(object_status.error_message()),
+             K_(extent_id), K_(bucket), K(object_id), K(data_size));
+    } else if (PersistentCache::get_instance().is_enabled() &&
+               !is_large_object_extent()) {
       if (FAILED(PersistentCache::get_instance().insert(extent_id_,
                                             Slice(data, data_size),
                                             true /*write_process*/,
@@ -579,9 +650,10 @@ int ObjectIOExtent::write_object(const char *data, int64_t data_size)
         SE_LOG(INFO, "success to write extent data to persistent cache", K_(extent_id));
 #endif
       }
+    } else {
+      SE_LOG(DEBUG, "success to write object", K_(extent_id), K_(bucket),
+             K(object_id));
     }
-
-    SE_LOG(DEBUG, "success to write object", K_(extent_id), K_(bucket), K(object_id));
   }
 
 #ifndef NDEBUG
@@ -596,7 +668,12 @@ int ObjectIOExtent::sync_read(int64_t offset, int64_t size, char *buf, Slice &re
   int ret = Status::kOk;
   Cache::Handle *handle = nullptr;
 
-  if (PersistentCache::get_instance().is_enabled()) {
+  if (remote_extent::enabled()) {
+    if (FAILED(read_object(offset, size, buf, result))) {
+      SE_LOG(WARN, "fail to read immutable remote object", K(ret),
+             K_(extent_id), K(offset), K(size));
+    }
+  } else if (PersistentCache::get_instance().is_enabled()) {
     if (FAILED(PersistentCache::get_instance().lookup(extent_id_, handle))) {
       // Overwrite the ret if persistent cache miss.
       if (Status::kNotFound != ret) {
@@ -631,6 +708,9 @@ int ObjectIOExtent::sync_read(int64_t offset, int64_t size, char *buf, Slice &re
 int ObjectIOExtent::async_read(util::AIOHandle *aio_handle, int64_t offset, int64_t size, char *buf, Slice &result)
 {
   assert(IS_NOTNULL(aio_handle));
+  if (remote_extent::enabled()) {
+    return read_object(offset, size, buf, result);
+  }
   int ret = aio_handle->aio_req_->status_;
 
   if (Status::kNoSpace == ret) {
@@ -661,10 +741,20 @@ int ObjectIOExtent::read_object(int64_t offset, int64_t size, char *buf, common:
 {
   int ret = Status::kOk;
   ::objstore::Status object_status;
-  std::string object_id = prefix_ + std::to_string(assemble_objid_by_fdfn(extent_id_.file_number, extent_id_.offset));
+  std::string object_id;
+  std::string validation_error;
   std::string body;
 
-  if (PersistentCache::get_instance().is_enabled() && !is_large_object_extent()) {
+  if (!remote_extent::object_key(prefix_, extent_id_, &object_id,
+                                 &validation_error)) {
+    ret = Status::kCorruption;
+    SE_LOG(ERROR, "fail to derive extent object key", K(ret),
+           K(validation_error), K_(extent_id), K_(prefix));
+    if (remote_extent::enabled())
+      remote_extent::enter_fenced(validation_error);
+  } else if (!remote_extent::enabled() &&
+             PersistentCache::get_instance().is_enabled() &&
+             !is_large_object_extent()) {
     object_status = object_store_->get_object(bucket_, object_id, 0, MAX_EXTENT_SIZE, body);
     if (UNLIKELY(!object_status.is_succ())) {
       ret = Status::kObjStoreError;
@@ -712,30 +802,40 @@ int ObjectIOExtent::load_extent(cache::Cache::Handle **handle)
 {
   int ret = Status::kOk;
 
-  if (FAILED(PersistentCache::get_instance().lookup(extent_id_, *handle))) {
+  if (remote_extent::enabled()) {
+    ret = Status::kNoSpace;
+  } else if (FAILED(PersistentCache::get_instance().lookup(extent_id_, *handle))) {
     if (Status::kNotFound != ret) {
       SE_LOG(WARN, "fail to lookup from persistent cache", K(ret), K_(extent_id));
     } else {
-      std::string object_id = prefix_ + std::to_string(assemble_objid_by_fdfn(extent_id_.file_number, extent_id_.offset));
+      std::string object_id;
+      std::string validation_error;
       std::string body;
-      ::objstore::Status object_status = object_store_->get_object(bucket_, object_id, 0, MAX_EXTENT_SIZE, body);
+      if (!remote_extent::object_key(prefix_, extent_id_, &object_id,
+                                     &validation_error)) {
+        ret = Status::kCorruption;
+        SE_LOG(ERROR, "fail to derive extent object key", K(ret),
+               K(validation_error), K_(extent_id), K_(prefix));
+      } else {
+        const ::objstore::Status object_status = object_store_->get_object(
+            bucket_, object_id, 0, MAX_EXTENT_SIZE, body);
 
-      if (UNLIKELY(!object_status.is_succ())) {
+        if (UNLIKELY(!object_status.is_succ())) {
         ret = Status::kObjStoreError;
         SE_LOG(WARN, "io error, fail to get object", K(ret), KE(object_status.error_code()),
             K(object_status.error_message()), K_(extent_id), K(object_id));
-      } else if (UNLIKELY(MAX_EXTENT_SIZE != body.size())) {
+        } else if (UNLIKELY(MAX_EXTENT_SIZE != body.size())) {
         ret = Status::kCorruption;
         SE_LOG(WARN, "the data is corrupted", K(ret), "size", body.size());
-      } else if (FAILED(PersistentCache::get_instance().insert(extent_id_,
-                                                               Slice(body.data(), body.size()),
-                                                               false /*write_process*/,
-                                                               handle))) {
+        } else if (FAILED(PersistentCache::get_instance().insert(
+                       extent_id_, Slice(body.data(), body.size()),
+                       false /*write_process*/, handle))) {
         if (Status::kNoSpace != ret) {
           SE_LOG(WARN, "fail to insert into persistent cache", K(ret), K_(extent_id), K(object_id));
         }
-      } else {
+        } else {
         SE_LOG(DEBUG, "success to load extent", K_(extent_id), KP(*handle));
+        }
       }
     }
   }

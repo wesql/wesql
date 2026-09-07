@@ -27,6 +27,10 @@
 #include "core/cache/row_cache.h"
 #include "core/util/sync_point.h"
 #include "core/util/rate_limiter.h"
+#include "objstore/remote_extent.h"
+#ifdef WESQL
+#include "sql/remote_commit/startup_server.h"
+#endif
 
 namespace smartengine
 {
@@ -1536,6 +1540,7 @@ ulong se_thd_bulk_load_size(THD *thd)
 
 bool se_thd_write_disable_wal(THD *thd)
 {
+  if (storage::remote_extent::enabled()) return false;
   return THDVAR(thd, write_disable_wal);
 }
 
@@ -1640,3 +1645,15 @@ static SYS_VAR *se_system_vars_internal[] = {
 SYS_VAR **se_system_vars_export = se_system_vars_internal;
 
 } // namespace smartengine
+
+#ifdef WESQL
+wesql::remote_commit::StartupSmartengineManagedPaths
+wesql::remote_commit::smartengine_startup_managed_paths_after_parse() {
+  const auto view = [](const char *value) -> std::string_view {
+    return value == nullptr ? std::string_view{} : std::string_view{value};
+  };
+  return {view(smartengine::se_data_dir), view(smartengine::se_wal_dir),
+          view(smartengine::se_persistent_cache_dir),
+          smartengine::se_db_options.persistent_cache_size};
+}
+#endif

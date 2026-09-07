@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace objstore {
@@ -58,6 +59,11 @@ enum Errors {
   // object store errors, for aliyun
   SE_SYMLINK_TARGET_NOT_EXIST,
   SE_TOO_MANY_BUCKETS,
+
+  // Exact conditional object operations preserve the provider's decision.
+  SE_OBJECT_CONFLICT = 116,
+  SE_OBJECT_PRECONDITION_FAILED,
+  SE_CONDITIONAL_OPERATION_NOT_SUPPORTED,
 
   // not-retryable generic errors, for s3, like:
   // INCOMPLETE_SIGNATURE
@@ -123,6 +129,242 @@ class Status {
   std::string error_msg_;
 };
 
+enum class ExactObjectOutcome : uint8_t {
+  FOUND,
+  NOT_FOUND_404,
+  TRANSIENT_UNAVAILABLE,
+  PERMANENT_ERROR,
+  UNSUPPORTED,
+};
+
+enum class ExactFileOutcome : uint8_t {
+  APPLIED,
+  NOT_FOUND_404,
+  TRANSIENT_UNAVAILABLE,
+  PERMANENT_ERROR,
+  UNSUPPORTED,
+};
+
+inline bool is_valid_object_store_etag(std::string_view etag);
+
+class ExactFileResult {
+ public:
+  static ExactFileResult applied(uint64_t size, std::string etag) {
+    if (!is_valid_object_store_etag(etag)) {
+      return permanent_error(Status(Errors::SE_UNEXPECTED, 0,
+                                    "exact file GET returned an invalid ETag"));
+    }
+    return ExactFileResult(ExactFileOutcome::APPLIED, Status(), size,
+                           std::move(etag));
+  }
+
+  static ExactFileResult not_found(Status status) {
+    return ExactFileResult(ExactFileOutcome::NOT_FOUND_404,
+                           std::move(status));
+  }
+
+  static ExactFileResult transient_unavailable(Status status) {
+    return ExactFileResult(ExactFileOutcome::TRANSIENT_UNAVAILABLE,
+                           std::move(status));
+  }
+
+  static ExactFileResult permanent_error(Status status) {
+    return ExactFileResult(ExactFileOutcome::PERMANENT_ERROR,
+                           std::move(status));
+  }
+
+  static ExactFileResult unsupported() {
+    return ExactFileResult(
+        ExactFileOutcome::UNSUPPORTED,
+        Status(Errors::SE_CONDITIONAL_OPERATION_NOT_SUPPORTED, 0,
+               "exact streaming object GET is not supported by this provider"));
+  }
+
+  ExactFileOutcome outcome() const { return outcome_; }
+  bool is_applied() const { return outcome_ == ExactFileOutcome::APPLIED; }
+  uint64_t size() const { return size_; }
+  const std::string &etag() const { return etag_; }
+  const Status &status() const { return status_; }
+
+ private:
+  ExactFileResult(ExactFileOutcome outcome, Status status, uint64_t size = 0,
+                  std::string etag = {})
+      : outcome_(outcome),
+        size_(size),
+        etag_(std::move(etag)),
+        status_(std::move(status)) {}
+
+  ExactFileOutcome outcome_;
+  uint64_t size_{0};
+  std::string etag_;
+  Status status_;
+};
+
+inline bool is_valid_object_store_etag(std::string_view etag) {
+  if (etag.empty() || etag.front() == ' ' || etag.back() == ' ') return false;
+  for (const unsigned char ch : etag) {
+    if (ch < 0x20 || ch == 0x7f) return false;
+  }
+  return true;
+}
+
+class ExactObjectResult {
+ public:
+  static ExactObjectResult found(std::string body, std::string etag) {
+    if (!is_valid_object_store_etag(etag)) {
+      return permanent_error(Status(Errors::SE_UNEXPECTED, 0,
+                                    "exact GET returned an invalid ETag"));
+    }
+    return ExactObjectResult(ExactObjectOutcome::FOUND, Status(),
+                             std::move(body), std::move(etag));
+  }
+
+  static ExactObjectResult not_found(Status status) {
+    return ExactObjectResult(ExactObjectOutcome::NOT_FOUND_404,
+                             std::move(status));
+  }
+
+  static ExactObjectResult transient_unavailable(Status status) {
+    return ExactObjectResult(ExactObjectOutcome::TRANSIENT_UNAVAILABLE,
+                             std::move(status));
+  }
+
+  static ExactObjectResult permanent_error(Status status) {
+    return ExactObjectResult(ExactObjectOutcome::PERMANENT_ERROR,
+                             std::move(status));
+  }
+
+  static ExactObjectResult unsupported() {
+    return ExactObjectResult(
+        ExactObjectOutcome::UNSUPPORTED,
+        Status(Errors::SE_CONDITIONAL_OPERATION_NOT_SUPPORTED, 0,
+               "exact object GET is not supported by this provider"));
+  }
+
+  ExactObjectOutcome outcome() const { return outcome_; }
+  bool is_found() const { return outcome_ == ExactObjectOutcome::FOUND; }
+  const std::string &body() const { return body_; }
+  const std::string &etag() const { return etag_; }
+  uint64_t size() const { return size_; }
+  const Status &status() const { return status_; }
+
+ private:
+  ExactObjectResult(ExactObjectOutcome outcome, Status status,
+                    std::string body = {}, std::string etag = {})
+      : outcome_(outcome),
+        body_(std::move(body)),
+        etag_(std::move(etag)),
+        size_(body_.size()),
+        status_(std::move(status)) {}
+
+  ExactObjectOutcome outcome_;
+  std::string body_;
+  std::string etag_;
+  uint64_t size_;
+  Status status_;
+};
+
+enum class ConditionalPutMode : uint8_t { CREATE_ONLY, MATCH_ETAG };
+
+class ConditionalPutCondition {
+ public:
+  static ConditionalPutCondition create_only() {
+    return ConditionalPutCondition(ConditionalPutMode::CREATE_ONLY, {});
+  }
+
+  static ConditionalPutCondition match_etag(std::string etag) {
+    return ConditionalPutCondition(ConditionalPutMode::MATCH_ETAG,
+                                   std::move(etag));
+  }
+
+  ConditionalPutMode mode() const { return mode_; }
+  const std::string &etag() const { return etag_; }
+
+  bool is_valid() const {
+    if (mode_ == ConditionalPutMode::CREATE_ONLY) return etag_.empty();
+    return is_valid_object_store_etag(etag_);
+  }
+
+ private:
+  ConditionalPutCondition(ConditionalPutMode mode, std::string etag)
+      : mode_(mode), etag_(std::move(etag)) {}
+
+  ConditionalPutMode mode_;
+  std::string etag_;
+};
+
+enum class ConditionalPutOutcome : uint8_t {
+  APPLIED,
+  CONFLICT_409,
+  PRECONDITION_FAILED_412,
+  TRANSPORT_UNKNOWN,
+  PERMANENT_ERROR,
+  UNSUPPORTED,
+};
+
+class ConditionalPutResult {
+ public:
+  static ConditionalPutResult applied(std::string etag = {}) {
+    return ConditionalPutResult(ConditionalPutOutcome::APPLIED, Status(),
+                                std::move(etag));
+  }
+
+  static ConditionalPutResult conflict_409(Status status) {
+    return ConditionalPutResult(ConditionalPutOutcome::CONFLICT_409,
+                                std::move(status));
+  }
+
+  static ConditionalPutResult precondition_failed_412(Status status) {
+    return ConditionalPutResult(ConditionalPutOutcome::PRECONDITION_FAILED_412,
+                                std::move(status));
+  }
+
+  static ConditionalPutResult transport_unknown(Status status) {
+    return ConditionalPutResult(ConditionalPutOutcome::TRANSPORT_UNKNOWN,
+                                std::move(status));
+  }
+
+  static ConditionalPutResult permanent_error(Status status) {
+    return ConditionalPutResult(ConditionalPutOutcome::PERMANENT_ERROR,
+                                std::move(status));
+  }
+
+  static ConditionalPutResult unsupported() {
+    return ConditionalPutResult(
+        ConditionalPutOutcome::UNSUPPORTED,
+        Status(Errors::SE_CONDITIONAL_OPERATION_NOT_SUPPORTED, 0,
+               "conditional object PUT is not supported by this provider"));
+  }
+
+  ConditionalPutOutcome outcome() const { return outcome_; }
+  bool is_applied() const { return outcome_ == ConditionalPutOutcome::APPLIED; }
+  const std::string &etag() const { return etag_; }
+  const Status &status() const { return status_; }
+
+ private:
+  ConditionalPutResult(ConditionalPutOutcome outcome, Status status,
+                       std::string etag = {})
+      : outcome_(outcome), etag_(std::move(etag)), status_(std::move(status)) {}
+
+  ConditionalPutOutcome outcome_;
+  std::string etag_;
+  Status status_;
+};
+
+struct ConditionalObjectStoreCapabilities {
+  bool exact_get_with_etag{false};
+  bool exact_get_to_file{false};
+  bool create_only{false};
+  bool compare_and_swap{false};
+  bool create_from_file{false};
+  bool distinct_conflict_status{false};
+
+  bool supports_remote_commit_io() const {
+    return exact_get_with_etag && exact_get_to_file && create_only && compare_and_swap &&
+           create_from_file && distinct_conflict_status;
+  }
+};
+
 struct ObjectMeta {
   std::string key;
   int64_t last_modified{0};  // timestamp in milliseconds since epoch.
@@ -174,6 +416,63 @@ class ObjectStore {
   virtual Status get_object(const std::string_view &bucket,
                             const std::string_view &key, size_t off, size_t len,
                             std::string &body) = 0;
+
+  virtual ConditionalObjectStoreCapabilities conditional_capabilities() const {
+    return {};
+  }
+
+  // Failure results never retain body or ETag from an earlier operation.
+  virtual ExactObjectResult get_object_exact(const std::string_view &,
+                                             const std::string_view &) {
+    return ExactObjectResult::unsupported();
+  }
+
+  // Reads at most max_bytes of response data. Providers must enforce the
+  // limit in their response stream rather than buffering an oversized object
+  // before returning an error.
+  virtual ExactObjectResult get_object_exact(const std::string_view &,
+                                             const std::string_view &,
+                                             uint64_t) {
+    return ExactObjectResult::unsupported();
+  }
+
+  // Streams one strongly consistent full-object GET into an existing empty
+  // regular file. Implementations truncate the destination on every failure.
+  virtual ExactFileResult get_object_to_file_exact(
+      const std::string_view &, const std::string_view &,
+      const std::string_view &) {
+    return ExactFileResult::unsupported();
+  }
+
+  // Streams at most max_bytes into the destination. Providers must enforce
+  // the limit while receiving the response and truncate on every failure.
+  // The legacy overload remains available for callers without a byte cap.
+  virtual ExactFileResult get_object_to_file_exact(
+      const std::string_view &, const std::string_view &,
+      const std::string_view &, uint64_t) {
+    return ExactFileResult::unsupported();
+  }
+
+  virtual ConditionalPutResult put_object_conditional(
+      const std::string_view &, const std::string_view &,
+      const std::string_view &, const ConditionalPutCondition &condition) {
+    if (!condition.is_valid()) {
+      return ConditionalPutResult::permanent_error(
+          Status(Errors::SE_INVALID, 0, "invalid conditional PUT condition"));
+    }
+    return ConditionalPutResult::unsupported();
+  }
+
+  virtual ConditionalPutResult put_object_from_file_conditional(
+      const std::string_view &, const std::string_view &,
+      const std::string_view &, const ConditionalPutCondition &condition) {
+    if (!condition.is_valid()) {
+      return ConditionalPutResult::permanent_error(
+          Status(Errors::SE_INVALID, 0, "invalid conditional PUT condition"));
+    }
+    return ConditionalPutResult::unsupported();
+  }
+
   virtual Status get_object_meta(const std::string_view &bucket,
                                  const std::string_view &key,
                                  ObjectMeta &meta) = 0;

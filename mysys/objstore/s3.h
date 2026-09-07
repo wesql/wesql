@@ -66,6 +66,30 @@ class S3ObjectStore : public ObjectStore {
                     std::string *etag) override;
   Status get_object(const std::string_view &bucket, const std::string_view &key,
                     size_t off, size_t len, std::string &body) override;
+
+  ConditionalObjectStoreCapabilities conditional_capabilities() const override {
+    return {true, true, true, true, true, true};
+  }
+  ExactObjectResult get_object_exact(const std::string_view &bucket,
+                                     const std::string_view &key) override;
+  ExactObjectResult get_object_exact(const std::string_view &bucket,
+                                     const std::string_view &key,
+                                     uint64_t max_bytes) override;
+  ExactFileResult get_object_to_file_exact(
+      const std::string_view &bucket, const std::string_view &key,
+      const std::string_view &output_file_path) override;
+  ExactFileResult get_object_to_file_exact(
+      const std::string_view &bucket, const std::string_view &key,
+      const std::string_view &output_file_path, uint64_t max_bytes) override;
+  ConditionalPutResult put_object_conditional(
+      const std::string_view &bucket, const std::string_view &key,
+      const std::string_view &data,
+      const ConditionalPutCondition &condition) override;
+  ConditionalPutResult put_object_from_file_conditional(
+      const std::string_view &bucket, const std::string_view &key,
+      const std::string_view &data_file_path,
+      const ConditionalPutCondition &condition) override;
+
   Status get_object_meta(const std::string_view &bucket,
                          const std::string_view &key,
                          ObjectMeta &meta) override;
@@ -99,6 +123,17 @@ class S3ObjectStore : public ObjectStore {
       const std::vector<std::string_view> &object_keys) override;
 
   std::string_view get_provider() const override { return provider_; }
+
+ protected:
+  virtual Aws::S3::Model::GetObjectOutcome do_get_object(
+      const Aws::S3::Model::GetObjectRequest &request) {
+    return s3_client_.GetObject(request);
+  }
+
+  virtual Aws::S3::Model::PutObjectOutcome do_put_object(
+      const Aws::S3::Model::PutObjectRequest &request) {
+    return s3_client_.PutObject(request);
+  }
 
  private:
   static constexpr std::string_view provider_{"aws"};
