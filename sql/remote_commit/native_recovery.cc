@@ -496,8 +496,13 @@ class MysqlNativeRecoveryExecutor final : public NativeRecoveryExecutor {
       return false;
     }
     if (finish_recovery_commit_authorization(
-            thd, transaction.requires_durable_authorization, error))
+            thd, transaction.requires_durable_authorization, error)) {
+      if (error != nullptr)
+        error->append("; GTID ").append(transaction.gtid.canonical)
+            .append(" at ").append(transaction.endpoint.file)
+            .append(":").append(std::to_string(transaction.endpoint.pos));
       return false;
+    }
     return true;
   }
 
@@ -637,8 +642,11 @@ class MysqlNativeRecoveryExecutor final : public NativeRecoveryExecutor {
               ascii_equal(trim_ascii(text), "ROLLBACK"))
             return scan_failure(NativeRecoveryScanOutcome::CORRUPT,
                                 "native recovery contains disallowed SQL");
-          if (!ascii_equal(trim_ascii(text), "BEGIN") &&
-              !ascii_equal(trim_ascii(text), "COMMIT"))
+          // Native atomic DDL carries Q_DDL_LOGGED_WITH_XID. An IF NOT
+          // EXISTS/IF EXISTS no-op has the same SQL but no durable DD commit.
+          // Unexpected engine writes still consume the installed authorization
+          // and fail the read-only finish check.
+          if (is_atomic_ddl_event(query))
             current->saw_mutation = true;
         } else if (type == mysql::binlog::event::XID_EVENT) {
           const auto *xid = dynamic_cast<const Xid_log_event *>(event.get());
@@ -804,6 +812,13 @@ NativeRecoveryResult replay_bounded_native_tail(
 }
 
 #ifdef WESQL_TEST
+NativeRecoveryScanResult scan_native_recovery_for_test(
+    const NativeRecoveryRequest &request,
+    std::vector<NativeRecoveryTransaction> *transactions) {
+  MysqlNativeRecoveryExecutor executor;
+  return executor.scan(request, transactions);
+}
+
 bool exercise_native_recovery_query_context_for_test(std::string *error) {
   MysqlNativeRecoveryExecutor executor;
   if (!executor.start_session(error)) return false;

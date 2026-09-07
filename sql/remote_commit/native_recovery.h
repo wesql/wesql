@@ -111,6 +111,9 @@ NativeRecoveryResult replay_bounded_native_tail(
 
 #ifdef WESQL_TEST
 bool exercise_native_recovery_query_context_for_test(std::string *error);
+NativeRecoveryScanResult scan_native_recovery_for_test(
+    const NativeRecoveryRequest &request,
+    std::vector<NativeRecoveryTransaction> *transactions);
 #endif
 
 }  // namespace wesql::remote_commit
