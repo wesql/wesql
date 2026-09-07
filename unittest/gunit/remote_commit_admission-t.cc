@@ -741,7 +741,7 @@ TEST_F(RemoteCommitAdmissionTest, ParsedBinlogSuppressionRemainsRejected) {
       {"ANALYZE NO_WRITE_TO_BINLOG TABLE task34_probe.t", true},
       {"SELECT @@GLOBAL.gtid_executed", false},
       {"ANALYZE LOCAL TABLE task34_probe.t", true},
-      {"ANALYZE TABLE task34_probe.t", false},
+      {"ANALYZE TABLE task34_probe.t", true},
       {"ALTER TABLE task34_probe.t REBUILD PARTITION NO_WRITE_TO_BINLOG ALL", true},
       {"SELECT COUNT(*) FROM mysql.gtid_executed", false},
       {"ALTER TABLE task34_probe.t REBUILD PARTITION LOCAL ALL", true},
@@ -766,6 +766,39 @@ TEST_F(RemoteCommitAdmissionTest, ParsedBinlogSuppressionRemainsRejected) {
     auto restore = create_scope_guard([] { Server_initializer::set_expected_error(0); });
     EXPECT_EQ(rejected, wesql::remote_commit::enforce_sql_command_admission(thd()));
     EXPECT_FALSE(thd()->is_error());
+  }
+}
+
+TEST_F(RemoteCommitAdmissionTest, AnalyzeIsRejectedBeforeExecutionOnlyInRemoteMode) {
+  const char *queries[] = {
+      "ANALYZE TABLE task34_probe.t",
+      "ANALYZE TABLE task34_probe.t UPDATE HISTOGRAM ON v WITH 8 BUCKETS",
+      "ANALYZE TABLE task34_probe.t DROP HISTOGRAM ON v",
+      "ANALYZE LOCAL TABLE task34_probe.t",
+      "ANALYZE NO_WRITE_TO_BINLOG TABLE task34_probe.t",
+      "ALTER TABLE task34_probe.t ANALYZE PARTITION ALL",
+      "ALTER TABLE task34_probe.t ANALYZE PARTITION LOCAL ALL"};
+  for (const char *query : queries) {
+    SCOPED_TRACE(query);
+    std::string sql(query);
+    Parser_state parser;
+    ASSERT_FALSE(parser.init(thd(), sql.data(), sql.size()));
+    ASSERT_FALSE(lex_start(thd()));
+    mysql_reset_thd_for_next_command(thd());
+    auto cleanup = create_scope_guard([&] {
+      opt_binlog_archive_remote_commit = true;
+      Server_initializer::set_expected_error(0);
+      lex_end(thd()->lex);
+    });
+    ASSERT_FALSE(parse_sql(thd(), &parser, nullptr));
+    Server_initializer::set_expected_error(ER_NOT_SUPPORTED_YET);
+    EXPECT_TRUE(wesql::remote_commit::enforce_sql_command_admission(thd()));
+    EXPECT_EQ(nullptr, thd()->open_tables);
+    EXPECT_EQ(0U, thd()->get_transaction()->rw_ha_count(Transaction_ctx::STMT));
+    EXPECT_EQ(0U, thd()->get_transaction()->rw_ha_count(Transaction_ctx::SESSION));
+    opt_binlog_archive_remote_commit = false;
+    Server_initializer::set_expected_error(0);
+    EXPECT_FALSE(wesql::remote_commit::enforce_sql_command_admission(thd()));
   }
 }
 

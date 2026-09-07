@@ -11,6 +11,7 @@
 #include "sql/remote_commit/server_hooks.h"
 #include "sql/remote_commit/sql_command_policy.h"
 #include "sql/set_var.h"
+#include "sql/sql_admin.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
@@ -105,6 +106,11 @@ bool enforce_sql_command_admission(THD *thd) {
 
   const enum_sql_command command = thd->lex->sql_command;
   const SqlCommandClass command_class = classify_sql_command(command);
+  if (command == SQLCOM_ANALYZE ||
+      (command == SQLCOM_ALTER_TABLE &&
+       dynamic_cast<Sql_cmd_analyze_table *>(thd->lex->m_sql_cmd) != nullptr))
+    return reject(thd,
+                  "ANALYZE statistics commit outside the remote binlog boundary");
   // The parser initializes this field only for these statement families.
   // Other commands can retain an earlier value or leave it uninitialized.
   switch (command) {

@@ -74,7 +74,7 @@ constexpr C kSqlCommandClasses[] = {
     L,  // SQLCOM_PRELOAD_KEYS
     L,  // SQLCOM_FLUSH
     N,  // SQLCOM_KILL
-    R,  // SQLCOM_ANALYZE
+    L,  // SQLCOM_ANALYZE (DD commits precede the logged Query)
     N,  // SQLCOM_ROLLBACK
     N,  // SQLCOM_ROLLBACK_TO_SAVEPOINT
     R,  // SQLCOM_COMMIT

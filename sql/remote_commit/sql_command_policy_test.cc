@@ -55,6 +55,9 @@ void test_command_table() {
   expect(rc::classify_sql_command(SQLCOM_ALTER_TABLESPACE) ==
              rc::SqlCommandClass::LOCAL_MUTATING_REJECT,
          "tablespace DDL cannot create storage outside the managed root");
+  expect(rc::classify_sql_command(SQLCOM_ANALYZE) ==
+             rc::SqlCommandClass::LOCAL_MUTATING_REJECT,
+         "ANALYZE DD commits precede its logged Query and are rejected");
 }
 
 void test_set_assignments() {

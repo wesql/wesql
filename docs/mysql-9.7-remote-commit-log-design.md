@@ -720,6 +720,13 @@ compile-time 校验，启动自检不允许任何 `UNCLASSIFIED`。`SET`、`RESE
 用户伪造的 `RECOVERING` capability，固定 replay 上界为 HEAD，写 admission 打开前
 销毁该 capability。
 
+`ANALYZE TABLE`（含普通统计、`UPDATE/DROP HISTOGRAM`、`LOCAL` 和
+`NO_WRITE_TO_BINLOG`）及 `ALTER TABLE ... ANALYZE PARTITION` 在 remote 模式
+执行前返回不支持错误。MySQL 会在写入对应 Query event 之前提交统计数据字典，
+不能满足当前远程提交授权顺序；不得接受命令后依靠提交 guard 中止进程。
+非 remote 模式不受此限制。恢复扫描对非原子 Query 仍保守要求消费授权，
+没有 atomic-DDL XID 本身不构成空操作证明。
+
 单个事务不得拆成多个 segment。P0 在 engine prepare 前检查本事务两类 binlog cache
 的实际 encoded bytes，加 16 MiB 固定 envelope 预算后必须小于等于
 `remote_commit_max_segment_bytes`；超限返回明确 statement error，尚未 prepare、
